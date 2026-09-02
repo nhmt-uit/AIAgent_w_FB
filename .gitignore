@@ -1,0 +1,9 @@
+# Secrets and live browser session state — never commit
+.env
+accounts/
+runtime_config.json
+content_queue/
+__pycache__/
+*.pyc
+.venv/
+.DS_Store

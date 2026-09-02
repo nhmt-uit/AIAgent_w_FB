@@ -1,0 +1,14 @@
+# Core — required for the normal pipeline (Playwright-based execution,
+# see human_bot/actions.py and human_bot/browser_pool.py).
+playwright>=1.60
+fastapi>=0.115
+uvicorn>=0.30
+pydantic>=2.8
+python-dotenv>=1.0
+python-multipart>=0.0.9  # needed for the /admin file-upload form (human_bot/admin.py)
+
+# Optional — only needed if/when human_bot/llm.py's fallback path is
+# actually used (an AI-assisted lookup when a recorded Facebook selector
+# breaks — see docs/skills/vision-fallback.md). Not required for normal
+# operation; install later if you wire up that fallback.
+# browser-use>=0.2
