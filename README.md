@@ -2,7 +2,7 @@
 
 > File này viết bằng tiếng Việt để bạn đọc và theo dõi dự án. Các file kỹ
 > thuật (trong `docs/agents/`, `docs/skills/`, `docs/architecture.md`, và
-> toàn bộ code) được viết bằng tiếng Anh có chủ đích. Xem mục 6 bên dưới.
+> toàn bộ code) được viết bằng tiếng Anh có chủ đích. Xem mục 7 bên dưới.
 
 ## 1. Dự án này là gì
 
@@ -26,7 +26,74 @@ kế đầu tiên) hiện được **giữ lại làm phương án dự phòng c
 (`human_bot/llm.py`) — dùng khi một selector đã ghi bị lỗi do Facebook đổi
 giao diện và chưa kịp ghi lại — chứ không còn nằm trong luồng chạy chính.
 
-## 2. Đã nghiên cứu gì
+## 2. Bắt đầu nhanh — chạy lần đầu
+
+Làm đúng thứ tự 6 bước dưới đây, trên máy thật của bạn (không phải qua
+sandbox/bridge nào) — mỗi bước có lệnh cụ thể để copy-paste.
+
+**Bước 1 — Cài dependencies Python:**
+```
+cd AIAgent_w_FB
+pip3 install -r requirements.txt
+```
+
+**Bước 2 — Cài trình duyệt Chromium cho Playwright** (bắt buộc, dependencies
+ở bước 1 không tự tải sẵn):
+```
+python3 -m playwright install chromium
+```
+
+**Bước 3 — Tạo file `.env`:**
+```
+cp .env.example .env
+```
+Với luồng chính (đăng bài/comment bằng Playwright thuần), bạn **không cần
+điền API key AI nào** — cứ để `.env` gần như trống cũng chạy được. Chỉ cần
+điền khi bạn dùng tới `/admin` ở nơi không phải máy cá nhân (`ADMIN_USERNAME`/
+`ADMIN_PASSWORD`) hoặc dùng `fallback_auto_login.py` (xem mục 8, bảng file map).
+
+**Bước 4 — Đăng ký tài khoản Facebook trong `human_bot/config.py`:**
+Mở file, thêm một dòng vào dict `ACCOUNTS`, ví dụ:
+```python
+ACCOUNTS: dict[str, AccountConfig] = {
+    "troy": AccountConfig(account_id="troy", display_name="Troy"),
+    "my_page": AccountConfig(account_id="my_page", display_name="Trang của tôi"),  # dòng mới
+}
+```
+`account_id` là tên bạn tự đặt (chữ thường, không dấu cách) — dùng lại
+đúng tên này ở bước 5 và mọi lệnh sau này.
+
+**Bước 5 — Đăng nhập thủ công một lần, lưu phiên đăng nhập:**
+```
+python3 human_bot/bootstrap_login.py my_page
+```
+Một cửa sổ trình duyệt thật sẽ mở ra trang đăng nhập Facebook — bạn tự tay
+đăng nhập (kể cả 2FA nếu có), đợi vào được trang chủ Facebook bình thường,
+rồi quay lại Terminal nhấn Enter. Lệnh này tạo ra
+`accounts/my_page/storage_state.json` — phiên đăng nhập được lưu lại, các
+bước sau sẽ dùng lại, không cần đăng nhập lại nữa.
+
+**Bước 6 — Chạy thử một hành động thật:** chọn một trong hai cách:
+
+- Qua giao diện web `/admin` (khuyên dùng, đỡ lỗi gõ dấu ngoặc trong
+  terminal):
+  ```
+  uvicorn human_bot.service:app --host 0.0.0.0 --port 8000
+  ```
+  rồi mở `http://localhost:8000/admin` trên trình duyệt, vào mục "Đăng
+  bài", chọn tài khoản `my_page`, gõ nội dung, bấm Đăng.
+
+- Qua dòng lệnh (test nhanh, không cần chạy service):
+  ```
+  python3 -m human_bot.test_run_task post_to_own_profile my_page "Nội dung test"
+  ```
+
+Nếu bước 6 báo `TaskResult(success=True, ...)` và bạn thấy bài đăng thật
+trên Facebook (mặc định audience "Only me" — chỉ mình bạn thấy), vậy là
+mọi thứ đã chạy đúng. Chi tiết kiến trúc/lý do thiết kế nằm ở các mục
+bên dưới.
+
+## 3. Đã nghiên cứu gì
 
 - Đánh giá công nghệ browser-use (bản thiết kế đầu tiên): xem
   `docs/research/browser-use.md` (tiếng Việt — ghi chú nghiên cứu).
@@ -37,7 +104,7 @@ giao diện và chưa kịp ghi lại — chứ không còn nằm trong luồng 
 - Cú pháp Playwright (Codegen, storage_state, Page/Locator API) đã được
   đưa vào các file kỹ thuật trong `docs/skills/`.
 
-## 3. Kiến trúc: 3 agent, không hơn
+## 4. Kiến trúc: 3 agent, không hơn
 
 1. **Content Strategist Agent** — chỉ "nghĩ": quyết định nên đăng gì, comment
    gì, khi nào, dựa trên ngữ cảnh bài viết thật. Không chạm trình duyệt.
@@ -51,7 +118,7 @@ giao diện và chưa kịp ghi lại — chứ không còn nằm trong luồng 
 Chi tiết đầy đủ, sơ đồ luồng dữ liệu: `docs/architecture.md`.
 Vai trò từng agent: `docs/agents/`.
 
-## 4. Các "kỹ năng" (skills) — tài liệu tham chiếu cho từng phần
+## 5. Các "kỹ năng" (skills) — tài liệu tham chiếu cho từng phần
 
 Nằm trong `docs/skills/` — bảng dưới đây cũng khớp với đoạn giới thiệu
 song ngữ ở đầu mỗi file:
@@ -74,7 +141,7 @@ rồi restart service. Các file skill giờ đóng vai trò tài liệu tham ch
 quy tắc thiết kế cho người phát triển (và cho AI hỗ trợ code sau này),
 không phải "bộ nhớ" agent tự đọc lại nữa.
 
-## 5. Khung code đã dựng (`human_bot/`) — trình duyệt chạy 24/24, không cần AI
+## 6. Khung code đã dựng (`human_bot/`) — trình duyệt chạy 24/24, không cần AI
 
 `human_bot/service.py` là một **tiến trình chạy liên tục** — khi khởi
 động, tự mở sẵn một trình duyệt Playwright đã đăng nhập cho mỗi tài khoản
@@ -112,7 +179,7 @@ thẳng hàm đó — không có bước "AI chọn công cụ" ở giữa.
 - `human_bot/smoke_test/open_facebook.py` — script kiểm tra môi trường ban
   đầu, đã xác nhận chạy được trên máy bạn
 
-Xem mục 7 bên dưới để biết đầy đủ từng file `.py` dùng để làm gì.
+Xem mục 8 bên dưới để biết đầy đủ từng file `.py` dùng để làm gì.
 
 **Giao diện quản trị `/admin` (mới):** thay vì sửa `.env` + khởi động lại
 service để đổi thông số gõ phím, hoặc gõ nội dung bài đăng trực tiếp trong
@@ -133,7 +200,7 @@ lệnh terminal (dễ lỗi dấu ngoặc kép như từng gặp), giờ có th�
 Nhớ chạy lại `pip3 install -r requirements.txt` một lần (có thêm
 `python-multipart` cho form tải file lên).
 
-## 6. Quy ước ngôn ngữ trong dự án (quan trọng)
+## 7. Quy ước ngôn ngữ trong dự án (quan trọng)
 
 - **Tiếng Việt**: `README.md` (file này), và các file mô tả/nghiên cứu dưới
   `docs/research/`, `docs/brand-voice.md` — dành cho người đọc.
@@ -142,7 +209,7 @@ Nhớ chạy lại `pip3 install -r requirements.txt` một lần (có thêm
 - Từ chuyên ngành tiếng Anh vẫn dùng bình thường trong file tiếng Việt khi
   không có từ tương đương tự nhiên.
 
-## 7. Bản đồ file — mỗi file .py dùng để làm gì
+## 8. Bản đồ file — mỗi file .py dùng để làm gì
 
 | File | Dùng để làm gì | Nằm trong pipeline chính? |
 |---|---|---|
@@ -163,7 +230,7 @@ Nhớ chạy lại `pip3 install -r requirements.txt` một lần (có thêm
 | `human_bot/test_run_task.py` | Chạy thử một hành động trực tiếp, không cần n8n/FastAPI | **Không** — công cụ test thủ công |
 | `human_bot/smoke_test/open_facebook.py` | Kiểm tra môi trường: mở trình duyệt vào facebook.com | **Không** — chỉ để kiểm tra ban đầu |
 
-## 8. Việc cần làm tiếp theo
+## 9. Việc cần làm tiếp theo
 
 - [x] Cài Playwright, xác nhận mở được trình duyệt thật vào facebook.com.
 - [x] Tạo `docs/brand-voice.md` — **còn cần bạn tự điền nội dung thật**.
@@ -194,7 +261,7 @@ Nhớ chạy lại `pip3 install -r requirements.txt` một lần (có thêm
 - [ ] Viết Content Strategist Agent (hiện mới có spec trong
       `docs/agents/content-strategist.md`, chưa có code).
 
-## 9. Cấu trúc thư mục
+## 10. Cấu trúc thư mục
 
 ```
 AIAgent_w_FB/
@@ -205,7 +272,7 @@ AIAgent_w_FB/
     brand-voice.md             # giọng văn / nội dung — bạn cần điền (VN)
     agents/                    # spec từng agent (EN)
     skills/                    # tài liệu tham chiếu/quy tắc thiết kế (EN)
-  human_bot/                   # code Executor Agent (EN, xem mục 7)
+  human_bot/                   # code Executor Agent (EN, xem mục 8)
     config.py
     actions.py                 # Playwright thuần — luồng chính
     browser_pool.py
