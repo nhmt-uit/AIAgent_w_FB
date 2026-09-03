@@ -33,6 +33,7 @@ sandbox/bridge nào) — mỗi bước có lệnh cụ thể để copy-paste.
 
 **Bước 1 — Cài dependencies Python:**
 ```
+cd ~/Documents/Company_Project/iizuki/AIAgent_w_FB
 cd AIAgent_w_FB
 pip3 install -r requirements.txt
 ```
@@ -62,6 +63,16 @@ ACCOUNTS: dict[str, AccountConfig] = {
 ```
 `account_id` là tên bạn tự đặt (chữ thường, không dấu cách) — dùng lại
 đúng tên này ở bước 5 và mọi lệnh sau này.
+
+> **Lưu ý quan trọng trước khi đăng nhập:** vào tài khoản Facebook bạn sắp
+> dùng cho bot → **Cài đặt → Ngôn ngữ (Language)** → đặt thành **English
+> (US)**, trước khi chạy bước 5. Toàn bộ selector trong
+> `human_bot/actions.py` được ghi lại theo giao diện tiếng Anh — nếu tài
+> khoản hiển thị tiếng Việt (hoặc ngôn ngữ khác), hành động đăng bài sẽ
+> timeout ngay ở bước đầu tiên (nút mở khung soạn bài không tìm thấy). Xem
+> chi tiết lý do ở `docs/skills/facebook-custom-actions.md`, mục "Facebook
+> UI language". Nội dung bài đăng vẫn viết tiếng Việt bình thường — chỉ
+> giao diện Facebook cần là tiếng Anh.
 
 **Bước 5 — Đăng nhập thủ công một lần, lưu phiên đăng nhập:**
 ```
@@ -228,6 +239,7 @@ Nhớ chạy lại `pip3 install -r requirements.txt` một lần (có thêm
 | `human_bot/bootstrap_login.py` | Đăng nhập **thủ công** một lần để lưu phiên đăng nhập đầu tiên | **Không** — chạy tay khi thiết lập tài khoản mới |
 | `human_bot/fallback_auto_login.py` | Phương án dự phòng: tự động điền email/mật khẩu để đăng nhập | **Không** — chỉ chạy tay khi cần |
 | `human_bot/test_run_task.py` | Chạy thử một hành động trực tiếp, không cần n8n/FastAPI | **Không** — công cụ test thủ công |
+| `human_bot/test_service_api.py` | Gọi thử `GET /health` và `POST /tasks` qua HTTP thật (không đi tắt qua run_task() như file trên) — mô phỏng đúng cách n8n hoặc một service ngoài (VD: bên B) sẽ gọi vào | **Không** — công cụ test thủ công |
 | `human_bot/smoke_test/open_facebook.py` | Kiểm tra môi trường: mở trình duyệt vào facebook.com | **Không** — chỉ để kiểm tra ban đầu |
 
 ## 9. Việc cần làm tiếp theo
@@ -254,15 +266,66 @@ Nhớ chạy lại `pip3 install -r requirements.txt` một lần (có thêm
       (`pause_after_page_load`, `pause_after_composer_open`, `pause_between_ui_steps`,
       `reading_pause`) và nối tất cả vào `post_to_own_profile` trong `actions.py`. Cả 3
       nhóm cấu hình (gõ phím / khoảng chờ / chuột) đều chỉnh được qua `/admin/config`.
-      **Chưa test lại bằng bài đăng thật** — bài đăng giờ sẽ mất lâu hơn hẳn (nhiều
-      khoảng chờ dài hơn theo đúng yêu cầu), cần bạn chạy thử để xác nhận.
-- [ ] Lặp lại Codegen cho các hành động còn lại: `post_to_group`,
-      `comment_on_friend_post`, `comment_on_group_post`, `like_post`.
-- [ ] Test `human_bot/service.py` cục bộ (`uvicorn human_bot.service:app`),
-      gọi thử `POST /tasks` bằng một Task JSON mẫu.
-- [ ] Dựng workflow n8n gọi vào service này.
-- [ ] Viết Content Strategist Agent (hiện mới có spec trong
-      `docs/agents/content-strategist.md`, chưa có code).
+      **Đã test lại bằng bài đăng thật (2026-09-03), thành công.**
+- [x] Chuyển toàn bộ tài khoản bot sang giao diện Facebook **tiếng Anh** (English) —
+      selector tiếng Việt ghi lúc đầu (tài khoản `troy`) không đáng tin cậy khi có
+      tài khoản mới hiển thị tiếng Anh mặc định. `browser_pool.py` ép
+      `locale="en-US"`, và mỗi tài khoản Facebook cũng cần tự đặt ngôn ngữ English
+      trong Cài đặt — xem `docs/skills/facebook-custom-actions.md`, mục "Facebook
+      UI language". `post_to_own_profile` đã được ghi lại Codegen lần 2 bằng tiếng
+      Anh (tài khoản `tu_iizuki`) và xác nhận chạy thật thành công qua `/admin`.
+- [x] Làm lại giao diện `/admin` (`human_bot/admin.py`) — layout dạng card, màu sắc
+      nhất quán, và dropdown chọn tài khoản/hành động tự thiết kế (mở panel bên dưới
+      thay vì `<select>` mặc định của trình duyệt), vẫn giữ nguyên `<select>` thật ẩn
+      phía sau để form submit không đổi gì.
+- [x] Test `human_bot/service.py` qua HTTP thật (`human_bot/test_service_api.py`)
+      — xác nhận `GET /health`, `POST /tasks` (đường lỗi và đường thật) đều hoạt
+      động; phát hiện và sửa timeout phía client quá ngắn so với thời gian đăng bài
+      thật (pacing giống người cố tình chậm, có thể hơn 60s tuỳ độ dài nội dung).
+
+### Đang tập trung tiếp theo (theo thứ tự)
+
+- [x] **`post_to_group` — lớp 4 (`goto()` thẳng URL) đã ghi Codegen và xác nhận
+      chạy thật thành công (2026-09-04)**, tài khoản `tu_iizuki`. Không có bước
+      chọn audience/quyền riêng tư như `post_to_own_profile` — hiển thị theo đúng
+      cài đặt của nhóm. Phát hiện "chờ duyệt" (`_PENDING_APPROVAL_TEXT_SIGNALS`
+      trong `actions.py`) **vẫn chưa xác minh thật** vì nhóm dùng để ghi không bật
+      duyệt bài — cần test lại với một nhóm có bật duyệt khi thuận tiện.
+- [ ] `post_to_group` — ghi tiếp 3 lớp điều hướng còn lại (lối tắt đã ghim → danh
+      sách "Groups you've joined" → search), theo đúng thứ tự ưu tiên trong
+      `docs/skills/group-targeting.md`.
+- [ ] Viết Content Strategist Agent — bản tối thiểu trước, không chờ bên B chốt
+      xong định dạng dữ liệu. Xem kế hoạch chi tiết trong
+      `docs/agents/content-strategist.md`, mục "Implementation plan (đợt 1)".
+- [ ] Thêm xác thực (auth) cho endpoint `POST /tasks` trong `human_bot/service.py`
+      — hiện đang mở, ai gọi tới cổng cũng đăng bài thật được, không cần token/API
+      key gì cả. Cần làm trước khi một hệ thống khác (VD: bên B lấy dữ liệu, gửi
+      JSON content sang để đăng) gọi vào từ ngoài máy/mạng nội bộ. `/admin` đã có
+      Basic Auth tùy chọn (`ADMIN_USERNAME`/`ADMIN_PASSWORD`) — `/tasks` thì chưa,
+      nên làm tương tự (API key header là đủ, không cần phức tạp).
+
+### Còn lại (chưa tới lượt ngay, nhưng đã ghi nhận — xem đánh giá 2026-09-03)
+
+- [ ] Ghi Codegen cho 3 hành động còn lại: `comment_on_friend_post`,
+      `comment_on_group_post`, `like_post`.
+- [ ] Làm Safety Monitor thật (hiện mới có spec trong
+      `docs/agents/safety-monitor.md`) — đếm số lần `detect_anomaly()` bắt được
+      trong một khoảng thời gian cho từng tài khoản, tự động chuyển
+      `account.status` sang tạm dừng (không chỉ raise lỗi tại chỗ như hiện tại),
+      và báo cho người vận hành (email/Telegram/Slack, tuỳ chọn sau) khi có dấu
+      hiệu bất thường — quan trọng vì đây là lớp bảo vệ tài khoản duy nhất khi hệ
+      thống chạy không có người theo dõi sát.
+- [ ] Thêm hỗ trợ đăng kèm ảnh/video (`media_path`) — hiện `post_to_own_profile`
+      (và các hành động post khác khi ghi Codegen) mới đăng được text thuần.
+- [ ] Cân nhắc audience thật (không chỉ luôn "Only me") — cần thêm tham số
+      `audience` và có thể thêm bước xác nhận an toàn trước khi mở rộng phạm vi
+      hiển thị bài đăng, xem docstring `post_to_own_profile` trong `actions.py`.
+- [ ] Dựng workflow n8n gọi vào service này (nối toàn bộ các phần lại thành một
+      luồng chạy tự động theo lịch hoặc theo trigger từ bên B).
+- [ ] Về lâu dài — nếu định chạy nhiều tài khoản song song trên nhiều máy,
+      `human_bot/browser_pool.py` hiện tự ghi rõ trong docstring là chỉ an toàn
+      với đúng 1 process; cần tính lại kiến trúc (pool theo process riêng cho mỗi
+      account, hoặc hàng đợi công việc) nếu muốn scale.
 
 ## 10. Cấu trúc thư mục
 

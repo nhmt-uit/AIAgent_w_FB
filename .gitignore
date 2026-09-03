@@ -3,6 +3,8 @@
 accounts/
 runtime_config.json
 content_queue/
+# scratch Playwright Codegen recordings — merged into human_bot/actions.py, not kept
+codegen_*.py
 __pycache__/
 *.pyc
 .venv/

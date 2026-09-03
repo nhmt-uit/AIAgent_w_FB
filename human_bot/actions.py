@@ -60,7 +60,12 @@ async def post_to_own_profile(
     media_path: str | None = None,
 ) -> ActionResult:
     """
-    Recorded via Playwright Codegen against account "troy" on 2026-09-02.
+    Recorded via Playwright Codegen against account "troy" on 2026-09-02
+    (Vietnamese UI), then RE-RECORDED and confirmed against account
+    "tu_iizuki" on 2026-09-03 after switching the project standard to the
+    ENGLISH Facebook UI (see docs/skills/facebook-custom-actions.md,
+    "Facebook UI language") — every selector below is taken close to
+    verbatim from that second, English-locale recording, not guessed.
     Sets the post's audience to "Only me" every time — this matches the
     safe default used while testing (see docs/skills/rate-limiting-pacing.md
     for why a new/low-trust account should start conservative). If a wider
@@ -76,30 +81,35 @@ async def post_to_own_profile(
         # person actually would, before touching anything.
         await pause_after_page_load(pacing)
 
+        # Facebook UI language for all bot accounts is standardized to
+        # ENGLISH (locale="en-US" in browser_pool.py + the Facebook account
+        # itself must have English set in its own language settings — see
+        # docs/skills/facebook-custom-actions.md, "Facebook UI language").
         # The composer trigger button's accessible name is personalized per
-        # account ("<Name> ơi, bạn đang nghĩ gì thế?") — matched with a
-        # partial regex so this works for any account, not just "troy".
-        await human_click(page, page.get_by_role("button", name=re.compile("đang nghĩ gì thế")), mouse)
+        # account ("What's on your mind, <Name>?") — matched with a partial
+        # regex so this works for any account.
+        await human_click(page, page.get_by_role(
+            "button", name=re.compile("what.?s on your mind", re.IGNORECASE)
+        ), mouse)
         await pause_after_composer_open(pacing)
-        await human_click(page, page.get_by_role("paragraph"), mouse)
-        await pause_between_ui_steps(pacing)
 
         # --- Set audience to "Only me" ---
-        # FRAGILE: the privacy-list item below is selected by CSS position
-        # (nth-child), because Facebook doesn't expose a stable accessible
-        # name for it. If this stops matching "Only me" after a Facebook UI
-        # change, see docs/skills/vision-fallback.md — re-record this one
-        # step with Codegen rather than guessing a new selector.
-        await human_click(page, page.get_by_role("button", name=re.compile("Chỉnh sửa quyền riêng tư")), mouse)
-        await pause_between_ui_steps(pacing)
-        await human_click(page, page.locator(
-            "label:nth-child(6) > div > .x9f619.x1n2onr6.x1ja2u2z.x78zum5.xdt5ytf.x1iyjqo2.x2lwn1j > "
-            ".x9f619.x1n2onr6.x1ja2u2z.x78zum5.xdt5ytf.x2lah0s.x193iq5w.xmzvs34 > .x1i10hfl.x1qjc9v5 > "
-            ".html-div > .x9f619.x1ja2u2z.x78zum5.x2lah0s.x1n2onr6.x1qughib > "
-            ".x9f619.x1ja2u2z.x78zum5.x1n2onr6.x1iyjqo2.xs83m0k > .x9f619"
+        # Confirmed live 2026-09-03 (see docstring above) — the privacy list
+        # item is a plain text node ("Only me"), no CSS-position hack
+        # needed anymore. If this stops matching after a Facebook UI
+        # change, re-record with Codegen — see docs/skills/
+        # facebook-custom-actions.md, "How selectors get filled in".
+        await human_click(page, page.get_by_role(
+            "button", name=re.compile("edit privacy", re.IGNORECASE)
         ), mouse)
         await pause_between_ui_steps(pacing)
-        await human_click(page, page.get_by_role("button", name=re.compile("Đã lựa chọn xong đối tượng")), mouse)
+        await human_click(page, page.get_by_text(re.compile("^only me$", re.IGNORECASE)), mouse)
+        await pause_between_ui_steps(pacing)
+        await human_click(page, page.get_by_role(
+            "button", name=re.compile("done with privacy audience", re.IGNORECASE)
+        ), mouse)
+        await pause_between_ui_steps(pacing)
+        await human_click(page, page.get_by_role("paragraph"), mouse)
         await pause_between_ui_steps(pacing)
 
         # --- Type and submit the post ---
@@ -107,18 +117,13 @@ async def post_to_own_profile(
         # instead of instantly filling the field — see human_bot/humanize.py
         # and docs/skills/human-like-interaction.md.
         #
-        # FRAGILE, scoped fix (2026-09-02): this CSS class combo is one of
-        # Facebook's shared "atomic" classes and can also match unrelated
-        # elements on the feed page sitting behind the composer dialog
-        # (e.g. a group link), which breaks Playwright's strict mode. We
-        # scope the search to the open dialog only, and use `.xmper1u`
-        # (present only on the composer's own div, per the real DOM) to
-        # disambiguate. If this breaks again after a Facebook UI change,
-        # re-record with Codegen — see docs/skills/vision-fallback.md.
+        # Confirmed live 2026-09-03: the composer's text field has an
+        # accessible role of "textbox" and Facebook doesn't render any
+        # other textbox while the composer dialog is open, so scoping to
+        # the dialog (not page-wide) is enough to keep this unique — no
+        # more fragile obfuscated CSS class combo needed here.
         composer_dialog = page.get_by_role("dialog")
-        await human_click(page, composer_dialog.locator(
-            ".x1ejq31n.x18oe1m7.x1sy0etr.xstzfhl.x9f619.xzsf02u.xmper1u"
-        ).first, mouse)
+        await human_click(page, composer_dialog.get_by_role("textbox").first, mouse)
         await human_type(page, content, config=get_human_typing_config())
 
         if media_path:
@@ -131,12 +136,38 @@ async def post_to_own_profile(
         # "Read it back" before submitting — scales with content length
         # instead of a flat pause, see human_bot/humanize.py's reading_pause().
         await reading_pause(content, pacing)
-        await human_click(page, page.get_by_role("button", name="Đăng"), mouse)
+        # Confirmed live 2026-09-03. Scoped to composer_dialog (not
+        # page-wide) and exact=True since "Post" is a common word that
+        # could otherwise match unrelated buttons.
+        await human_click(page, composer_dialog.get_by_role(
+            "button", name="Post", exact=True
+        ), mouse)
         await page.wait_for_timeout(2000)  # let the post submit before we move on
 
         return ActionResult(success=True, message="posted_to_own_profile")
     except RuntimeError as e:
         return ActionResult(success=False, message=str(e))
+
+
+# Best-effort text signals for "your post is awaiting admin approval"
+# rather than already published — see docs/skills/group-targeting.md,
+# "Post approval". UNVERIFIED (2026-09-04): the group used to record
+# post_to_group did not have approval enabled, so this list was written
+# from general knowledge of Facebook's own wording, not observed directly.
+# Re-verify (and fix this list) the first time this actually runs against
+# an approval-required group — see docs/skills/facebook-custom-actions.md,
+# "How selectors get filled in".
+_PENDING_APPROVAL_TEXT_SIGNALS = [
+    "pending approval",
+    "awaiting approval",
+    "post is being reviewed",
+    "will be visible once",
+]
+
+
+async def _looks_like_pending_approval(page: Page) -> bool:
+    text = (await page.inner_text("body") or "").lower()
+    return any(signal in text for signal in _PENDING_APPROVAL_TEXT_SIGNALS)
 
 
 async def post_to_group(
@@ -145,16 +176,64 @@ async def post_to_group(
     content: str,
     media_path: str | None = None,
 ) -> ActionResult:
+    """
+    Recorded via Playwright Codegen against account "tu_iizuki" on
+    2026-09-04 (English UI, tier-4/direct-URL navigation — see
+    docs/skills/group-targeting.md for the full 4-tier navigation strategy;
+    this function currently only implements tier 4, `page.goto(group_url)`,
+    the guaranteed-to-work fallback. Tiers 1-3 — pinned shortcut, "Groups
+    you've joined" list, search — are still TODO; see that doc for why
+    they matter and the planned recording order).
+
+    Unlike `post_to_own_profile`, a group post has no audience/privacy
+    step to record — visibility follows the group's own settings, not a
+    per-post choice.
+    """
+    pacing = get_pacing_config()
+    mouse = get_mouse_config()
     try:
-        await page.goto(group_url)
+        # Tier 4 only for now (see docstring). Explicit referer so this
+        # fallback doesn't leave the single cleanest "arrived with no
+        # referer at all" signal — see docs/skills/group-targeting.md.
+        await page.goto(group_url, referer="https://www.facebook.com/")
         await _check_anomaly_or_raise(page)
+        await pause_after_page_load(pacing)
 
-        # TODO: fill in from a Codegen recording of posting in a group —
-        # group composers can require an extra "post to group" confirmation
-        # step and sometimes admin approval; the action should still report
-        # success once the post is submitted, even if pending approval —
-        # note that in the returned message.
+        await human_click(page, page.get_by_role(
+            "button", name=re.compile("write something", re.IGNORECASE)
+        ), mouse)
+        await pause_after_composer_open(pacing)
+        await human_click(page, page.get_by_role("paragraph"), mouse)
+        await pause_between_ui_steps(pacing)
 
+        # Confirmed live 2026-09-04: same as post_to_own_profile, the
+        # composer's text field has role "textbox". UNSCOPED here (no
+        # `dialog` wrapper — a group's composer expands inline in the
+        # page, not as a modal like the profile composer) since it
+        # resolved uniquely in the recording; if this ever breaks with a
+        # strict-mode violation, scope it to whatever container wraps the
+        # composer, the same fix used for post_to_own_profile.
+        await human_click(page, page.get_by_role("textbox"), mouse)
+        await human_type(page, content, config=get_human_typing_config())
+
+        if media_path:
+            # TODO: media upload wasn't captured in this recording yet —
+            # see the matching TODO in post_to_own_profile.
+            pass
+
+        # Confirmed live 2026-09-04: the recording clicked back into the
+        # paragraph once more before submitting — kept as-is rather than
+        # guessed away, it plausibly reflects a real "glance back over
+        # what I wrote" moment.
+        await human_click(page, page.get_by_role("paragraph"), mouse)
+        await reading_pause(content, pacing)
+        await human_click(page, page.get_by_role(
+            "button", name="Post", exact=True
+        ), mouse)
+        await page.wait_for_timeout(2000)  # let the post submit before we move on
+
+        if await _looks_like_pending_approval(page):
+            return ActionResult(success=True, message="posted_to_group_pending_approval")
         return ActionResult(success=True, message="posted_to_group")
     except RuntimeError as e:
         return ActionResult(success=False, message=str(e))

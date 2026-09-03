@@ -48,7 +48,16 @@ class AccountSession:
         self._playwright = await async_playwright().start()
         self.browser = await self._playwright.chromium.launch(headless=self.headless)
         self.context = await self.browser.new_context(
-            storage_state=str(self.account.storage_state_path)
+            storage_state=str(self.account.storage_state_path),
+            # All recorded selectors in human_bot/actions.py are written
+            # against Facebook's ENGLISH UI (decided 2026-09-03 — see
+            # docs/skills/facebook-custom-actions.md, "Facebook UI
+            # language"). Forcing it here means the bot doesn't depend on
+            # the machine's own locale or Facebook's guess from IP/device
+            # — but the FACEBOOK ACCOUNT ITSELF must also have its display
+            # language set to English in its own settings, since an
+            # account-level language preference can still override this.
+            locale="en-US",
         )
         self.page = await self.context.new_page()
 

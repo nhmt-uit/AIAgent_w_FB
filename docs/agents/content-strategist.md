@@ -65,6 +65,63 @@ decisions easy to spot in logs.
 
 - [[content-context-awareness]] — how to read prior context before drafting.
 
+## Implementation plan (batch 1 — 2026-09-03)
+
+Not blocking on side B finalizing their data format. Building a thin,
+swappable adapter now so this agent has real code the moment B is ready,
+instead of everything queuing up behind a decision that isn't ours to make.
+
+1. **Input adapter.** A single function, `normalize_signal(raw: dict) ->
+   ContentSignal`, is the only place that knows B's actual data shape.
+   `ContentSignal` (a small local dataclass: `target_type` — "own_profile"
+   | "group" | "friend_post" | "group_post", `target_url: str | None`,
+   `account_id: str`, `topic_or_source_text: str`, `media_path: str |
+   None`) is what the rest of this agent's code is written against. When
+   B's real format lands, only `normalize_signal()` changes — everything
+   downstream is untouched. Until then, develop and test against a few
+   hand-written sample `ContentSignal` objects.
+
+2. **Drafting call.** One LLM call per task: system context = this file +
+   `docs/brand-voice.md` + (for comment actions) the target post's content
+   and recent comments, fetched read-only via `read_recent_comments` +
+   this account's own recent posts/comments (`skills/
+   content-context-awareness.md`, to satisfy Guardrail 1). Reuse
+   `human_bot/llm.py`'s provider-selection helper (pick whichever of
+   `ANTHROPIC_API_KEY`/`OPENAI_API_KEY` is set in `.env`) instead of
+   writing a second one — that logic is generic, not specific to the
+   vision-fallback use it was originally reserved for.
+
+3. **Mechanical guardrails, not just prompt instructions.** After the LLM
+   drafts content, check it in code before it goes anywhere: reject (or
+   re-roll once) if it's near-identical to the account's last 5
+   posts/comments (simple string-similarity check against the rolling
+   log), reject if it contains any banned word/topic listed in
+   `brand-voice.md`, reject if `action` isn't one of the actions
+   `human_bot/actions.py` has actually implemented yet (skip with a clear
+   `reasoning`, don't crash) — a prompt saying "don't do X" is not
+   enforcement, the code checking for X is.
+
+4. **Stage before posting, at first.** Batch 1 does NOT call `POST
+   /tasks` directly. It writes the drafted Task JSON's `content` into
+   `content_queue/pending/` (reusing `human_bot/content_queue.py`, already
+   built for `/admin`) so a human (you) reviews and clicks "Đăng mục này"
+   in `/admin` before anything goes live. Once there's enough trust in the
+   drafting quality, remove this staging step and call `POST /tasks`
+   directly — that's a one-line change (swap the write-to-queue call for
+   an HTTP POST), not a redesign.
+
+5. **Scope for batch 1: `post_to_own_profile` and `post_to_group` only**
+   (whichever of those human_bot/actions.py has implemented by the time
+   this is built) — comment actions need `read_recent_comments`
+   implemented first (still TODO), so drafting comments is batch 2.
+
+Open question to resolve before/while building this: the output contract
+above lists a `priority` field, but `human_bot/service.py`'s `TaskIn`
+model does not have one — either add it there (if something downstream is
+meant to consume it, e.g. a future queueing layer) or drop it from this
+spec if it was aspirational and nothing reads it. Flagging here so it
+doesn't get built inconsistently on both sides.
+
 ## Notes for retraining / reloading this agent
 
 If this agent starts producing generic or repetitive content, or ignores

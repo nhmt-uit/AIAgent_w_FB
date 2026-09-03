@@ -68,6 +68,14 @@ class TaskOut(BaseModel):
     timestamp: str
 
 
+# TODO (2026-09-03): this endpoint has NO authentication — any request that
+# can reach this port can post to Facebook for real, for any registered
+# account. Fine while everything calling in is on the same machine/trusted
+# network; add an API key check (a required header, compared with
+# secrets.compare_digest against an env var — same pattern as
+# human_bot/admin.py's _require_auth) before any other system (e.g. a
+# separate data-fetching service sending post content as JSON) is allowed
+# to call this from outside that trust boundary.
 @app.post("/tasks", response_model=TaskOut)
 async def create_task(task: TaskIn) -> TaskOut:
     request = TaskRequest(**task.model_dump())

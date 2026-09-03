@@ -57,7 +57,7 @@ defined in `human_bot/actions.py` — not browser-use's `ActionResult`.
 | Action (function name) | Purpose | Notes |
 |---|---|---|
 | `post_to_own_profile(page, content, media_path?)` | Post a status update on the account's own personal profile | No target URL needed — always the account's own timeline. **Implemented** (recorded 2026-09-02). |
-| `post_to_group(page, group_url, content, media_path?)` | Publish a new post inside a specific Facebook group | Composer usually differs from the profile composer; may require an extra "post to group" confirmation and can be subject to admin approval. TODO — not yet recorded. |
+| `post_to_group(page, group_url, content, media_path?)` | Publish a new post inside a specific Facebook group | **Tier 4 (direct URL) implemented and confirmed live 2026-09-04** — no audience/privacy step (unlike `post_to_own_profile`), visibility follows the group's own settings. Pending-approval detection is UNVERIFIED (recorded against a group with approval off). **See `skills/group-targeting.md`** for the 4-tier navigation fallback chain — tiers 1-3 (pinned shortcut, joined-groups list, search) still TODO. |
 | `comment_on_friend_post(page, post_url, content)` | Comment on a friend's post (newsfeed or their profile) | TODO — not yet recorded. |
 | `comment_on_group_post(page, post_url, content)` | Comment on a post inside a group | Group post pages can render differently — verify the comment box found belongs to the right post. TODO — not yet recorded. |
 | `like_post(page, post_url)` | React to a post, friend's or group's | Lowest-risk action; useful for warming up a new account. TODO — not yet recorded. |
@@ -80,6 +80,46 @@ script's Playwright locators (`get_by_role`, `.locator()`, `.fill()`,
 `human_bot/actions.py` — this is now a direct, low-effort translation
 since both the recording and the action run on the same real Playwright
 API (no more translating into a different framework's API).
+
+## Facebook UI language — must be English
+
+**Every Facebook account human_bot drives must have its display language
+set to English** (Settings → Language and region → Facebook language, or
+the account's UI language dropdown on the login/settings page). This is a
+project-wide decision made 2026-09-03, after a real test run against a
+freshly-registered account failed at the very first step: the composer
+button read "What's on your mind" (English) instead of the Vietnamese text
+the recorded selector expected, because that account had no Vietnamese
+language preference set.
+
+Two things enforce this together — both must match, and the account
+setting is the one that actually wins if they disagree:
+
+1. `browser_pool.py` passes `locale="en-US"` to every browser context, so
+   Facebook doesn't have to guess a language from IP/device.
+2. The Facebook **account itself** must also have English set in its own
+   saved settings — an account-level language preference can override the
+   browser's locale, so step 1 alone is not reliable by itself.
+
+Why English and not Vietnamese: English is Facebook's primary language —
+new UI rollouts and copy changes land there first and the translation is
+always complete, whereas the Vietnamese translation can lag behind or be
+worded differently across rollout groups (this project's own selectors
+were originally recorded in Vietnamese against account "troy" and already
+needed a bilingual fallback once a second account came back in English —
+see `human_bot/actions.py`). Since human_type() posts whatever content
+string it's given regardless of UI language, standardizing the *interface*
+language costs nothing for the *content*, which stays Vietnamese as
+normal.
+
+Practical effect: every selector in `human_bot/actions.py` should be
+written against the **English** UI text going forward. `post_to_own_profile`
+was re-recorded with Codegen against an English-language account
+("tu_iizuki") on 2026-09-03 and its selectors are now confirmed-live, not
+guessed — see the function's docstring. The other four actions
+(`post_to_group`, `comment_on_friend_post`, `comment_on_group_post`,
+`like_post`) are still unrecorded TODOs; record those directly in English
+from the start (no need to record a Vietnamese pass first).
 
 ## Implementation notes
 
