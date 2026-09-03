@@ -243,16 +243,19 @@ Nhớ chạy lại `pip3 install -r requirements.txt` một lần (có thêm
       lặp `strict mode violation` gặp phải khi test — xem `docs/architecture.md` /
       lịch sử sửa lỗi trong hội thoại).
 - [x] Nghiên cứu hành vi gõ sai tiếng Việt, di chuyển chuột, và khoảng chờ theo ngữ cảnh
-      — xem `docs/research/human-behavior-simulation.md`. Code cho 2 phần này
-      (gõ sai tiếng Việt theo từ, di chuyển chuột kiểu Bézier) **chưa viết**, mới chỉ
-      xong phần nghiên cứu + giao diện `/admin`.
+      — xem `docs/research/human-behavior-simulation.md`.
 - [x] Xây giao diện quản trị nội bộ `/admin` (`human_bot/admin.py`) — chỉnh thông số
       gõ phím không cần sửa `.env`/khởi động lại, và đăng bài không cần gõ trong
       terminal (form trực tiếp + hàng đợi file `.txt` trong `content_queue/`). Cần chạy
       `pip3 install -r requirements.txt` lại để có `python-multipart` trước khi dùng.
-- [ ] Viết `human_mouse_move()` (di chuyển chuột kiểu Bézier) và mô hình gõ sai
-      theo từ cho tiếng Việt trong `human_bot/humanize.py`, theo đề xuất trong
-      `docs/research/human-behavior-simulation.md`.
+- [x] Viết `human_click()`/`human_mouse_move()` (di chuyển chuột kiểu Bézier trước khi
+      click) và mô hình gõ sai theo từ cho tiếng Việt (backspace-retype cả từ) trong
+      `human_bot/humanize.py`; thêm các khoảng chờ theo ngữ cảnh
+      (`pause_after_page_load`, `pause_after_composer_open`, `pause_between_ui_steps`,
+      `reading_pause`) và nối tất cả vào `post_to_own_profile` trong `actions.py`. Cả 3
+      nhóm cấu hình (gõ phím / khoảng chờ / chuột) đều chỉnh được qua `/admin/config`.
+      **Chưa test lại bằng bài đăng thật** — bài đăng giờ sẽ mất lâu hơn hẳn (nhiều
+      khoảng chờ dài hơn theo đúng yêu cầu), cần bạn chạy thử để xác nhận.
 - [ ] Lặp lại Codegen cho các hành động còn lại: `post_to_group`,
       `comment_on_friend_post`, `comment_on_group_post`, `like_post`.
 - [ ] Test `human_bot/service.py` cục bộ (`uvicorn human_bot.service:app`),
