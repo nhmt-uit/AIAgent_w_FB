@@ -48,7 +48,7 @@ class AccountConfig:
 # more than one or two accounts are in play. Kept simple here on purpose —
 # see README.md "Next steps".
 ACCOUNTS: dict[str, AccountConfig] = {
-    "troy": AccountConfig(account_id="troy", display_name="Troy"),
+    "tu_iizuki": AccountConfig(account_id="tu_iizuki", display_name="Tu (iizuki test)"),
     # "example_page": AccountConfig(account_id="example_page", display_name="Example Page"),
 }
 
