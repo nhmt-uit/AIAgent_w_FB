@@ -25,8 +25,15 @@ from dataclasses import dataclass
 
 from playwright.async_api import Page
 
-from human_bot.humanize import human_pause, human_type
-from human_bot.runtime_config import get_human_typing_config
+from human_bot.humanize import (
+    human_click,
+    human_type,
+    pause_after_composer_open,
+    pause_after_page_load,
+    pause_between_ui_steps,
+    reading_pause,
+)
+from human_bot.runtime_config import get_human_typing_config, get_mouse_config, get_pacing_config
 from human_bot.safety import detect_anomaly
 
 
@@ -60,17 +67,22 @@ async def post_to_own_profile(
     audience is ever needed, this needs a new `audience` parameter and a
     branch here — not a silent behavior change.
     """
+    pacing = get_pacing_config()
+    mouse = get_mouse_config()
     try:
         await page.goto("https://www.facebook.com/")
         await _check_anomaly_or_raise(page)
+        # Land on the page and just... look at it for a while, like a
+        # person actually would, before touching anything.
+        await pause_after_page_load(pacing)
 
         # The composer trigger button's accessible name is personalized per
         # account ("<Name> ơi, bạn đang nghĩ gì thế?") — matched with a
         # partial regex so this works for any account, not just "troy".
-        await page.get_by_role("button", name=re.compile("đang nghĩ gì thế")).click()
-        await human_pause()
-        await page.get_by_role("paragraph").click()
-        await human_pause()
+        await human_click(page, page.get_by_role("button", name=re.compile("đang nghĩ gì thế")), mouse)
+        await pause_after_composer_open(pacing)
+        await human_click(page, page.get_by_role("paragraph"), mouse)
+        await pause_between_ui_steps(pacing)
 
         # --- Set audience to "Only me" ---
         # FRAGILE: the privacy-list item below is selected by CSS position
@@ -78,17 +90,17 @@ async def post_to_own_profile(
         # name for it. If this stops matching "Only me" after a Facebook UI
         # change, see docs/skills/vision-fallback.md — re-record this one
         # step with Codegen rather than guessing a new selector.
-        await page.get_by_role("button", name=re.compile("Chỉnh sửa quyền riêng tư")).click()
-        await human_pause()
-        await page.locator(
+        await human_click(page, page.get_by_role("button", name=re.compile("Chỉnh sửa quyền riêng tư")), mouse)
+        await pause_between_ui_steps(pacing)
+        await human_click(page, page.locator(
             "label:nth-child(6) > div > .x9f619.x1n2onr6.x1ja2u2z.x78zum5.xdt5ytf.x1iyjqo2.x2lwn1j > "
             ".x9f619.x1n2onr6.x1ja2u2z.x78zum5.xdt5ytf.x2lah0s.x193iq5w.xmzvs34 > .x1i10hfl.x1qjc9v5 > "
             ".html-div > .x9f619.x1ja2u2z.x78zum5.x2lah0s.x1n2onr6.x1qughib > "
             ".x9f619.x1ja2u2z.x78zum5.x1n2onr6.x1iyjqo2.xs83m0k > .x9f619"
-        ).click()
-        await human_pause()
-        await page.get_by_role("button", name=re.compile("Đã lựa chọn xong đối tượng")).click()
-        await human_pause()
+        ), mouse)
+        await pause_between_ui_steps(pacing)
+        await human_click(page, page.get_by_role("button", name=re.compile("Đã lựa chọn xong đối tượng")), mouse)
+        await pause_between_ui_steps(pacing)
 
         # --- Type and submit the post ---
         # human_type() sends real keystrokes with human-like timing/typos
@@ -104,9 +116,9 @@ async def post_to_own_profile(
         # disambiguate. If this breaks again after a Facebook UI change,
         # re-record with Codegen — see docs/skills/vision-fallback.md.
         composer_dialog = page.get_by_role("dialog")
-        await composer_dialog.locator(
+        await human_click(page, composer_dialog.locator(
             ".x1ejq31n.x18oe1m7.x1sy0etr.xstzfhl.x9f619.xzsf02u.xmper1u"
-        ).first.click()
+        ).first, mouse)
         await human_type(page, content, config=get_human_typing_config())
 
         if media_path:
@@ -116,8 +128,10 @@ async def post_to_own_profile(
             # chooser with `media_path`).
             pass
 
-        await human_pause()
-        await page.get_by_role("button", name="Đăng").click()
+        # "Read it back" before submitting — scales with content length
+        # instead of a flat pause, see human_bot/humanize.py's reading_pause().
+        await reading_pause(content, pacing)
+        await human_click(page, page.get_by_role("button", name="Đăng"), mouse)
         await page.wait_for_timeout(2000)  # let the post submit before we move on
 
         return ActionResult(success=True, message="posted_to_own_profile")

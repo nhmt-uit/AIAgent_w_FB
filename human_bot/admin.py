@@ -33,11 +33,17 @@ from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from human_bot import content_queue
 from human_bot.agent import TaskRequest, run_task
 from human_bot.config import ACCOUNTS
-from human_bot.humanize import HumanTypingConfig
+from human_bot.humanize import HumanMouseConfig, HumanPacingConfig, HumanTypingConfig
 from human_bot.runtime_config import (
     EDITABLE_HUMAN_TYPING_FIELDS,
+    EDITABLE_PACING_FIELDS,
+    EDITABLE_MOUSE_FIELDS,
     get_human_typing_overrides,
+    get_pacing_overrides,
+    get_mouse_overrides,
     save_human_typing_overrides,
+    save_pacing_overrides,
+    save_mouse_overrides,
 )
 
 router = APIRouter(prefix="/admin", tags=["admin"])
@@ -52,8 +58,9 @@ _security = HTTPBasic(auto_error=False)
 _POSTABLE_ACTIONS = ["post_to_own_profile"]
 
 # Human-readable label + short note shown next to each field on the config
-# form — kept in sync with docs/skills/human-like-interaction.md.
-_FIELD_LABELS: dict[str, str] = {
+# form — kept in sync with docs/skills/human-like-interaction.md and
+# docs/research/human-behavior-simulation.md.
+_TYPING_LABELS: dict[str, str] = {
     "enabled": "Bật giả lập gõ phím kiểu người (enabled)",
     "wpm": "Tốc độ gõ trung bình, đơn vị WPM (words/phút, quy ước 5 ký tự = 1 từ)",
     "char_delay_stdev_ratio": "Độ lệch ngẫu nhiên giữa các phím, tỉ lệ so với trung bình (0.35 = ±35%)",
@@ -65,10 +72,59 @@ _FIELD_LABELS: dict[str, str] = {
     "typo_probability": "Xác suất gõ sai mỗi ký tự ASCII (0.03 = 3%)",
     "typo_notice_delay_min_ms": "Thời gian 'nhận ra lỗi' trước khi xoá — tối thiểu (ms)",
     "typo_notice_delay_max_ms": "Thời gian 'nhận ra lỗi' trước khi xoá — tối đa (ms)",
+    "word_typo_probability": "Xác suất gõ sai cả từ có dấu tiếng Việt rồi xoá gõ lại (0.04 = 4%)",
     "fatigue_factor_per_char": "Hệ số 'mỏi tay' — chậm dần theo mỗi ký tự đã gõ",
 }
 
+_PACING_LABELS: dict[str, str] = {
+    "enabled": "Bật các khoảng chờ theo ngữ cảnh (enabled)",
+    "page_load_pause_min_ms": "Chờ sau khi vào trang — tối thiểu (ms)",
+    "page_load_pause_max_ms": "Chờ sau khi vào trang — tối đa (ms)",
+    "composer_open_pause_min_ms": "Chờ sau khi mở ô đăng bài — tối thiểu (ms)",
+    "composer_open_pause_max_ms": "Chờ sau khi mở ô đăng bài — tối đa (ms)",
+    "ui_step_pause_min_ms": "Chờ giữa mỗi bước trong luồng chọn (VD: chọn đối tượng) — tối thiểu (ms)",
+    "ui_step_pause_max_ms": "Chờ giữa mỗi bước trong luồng chọn (VD: chọn đối tượng) — tối đa (ms)",
+    "reading_wpm": "Tốc độ đọc thầm ước tính (từ/phút) — dùng để tính thời gian đọc lại trước khi Đăng",
+    "reading_pause_min_ms": "Giới hạn thời gian đọc lại trước khi Đăng — tối thiểu (ms)",
+    "reading_pause_max_ms": "Giới hạn thời gian đọc lại trước khi Đăng — tối đa (ms)",
+    "reading_buffer_min_ms": "Khoảng đệm ngẫu nhiên cộng thêm vào thời gian đọc — tối thiểu (ms)",
+    "reading_buffer_max_ms": "Khoảng đệm ngẫu nhiên cộng thêm vào thời gian đọc — tối đa (ms)",
+}
+
+_MOUSE_LABELS: dict[str, str] = {
+    "enabled": "Bật di chuyển chuột kiểu đường cong trước khi click (enabled)",
+    "min_steps": "Số bước di chuyển chuột tối thiểu",
+    "max_steps": "Số bước di chuyển chuột tối đa",
+    "step_delay_min_ms": "Độ trễ giữa mỗi bước di chuyển chuột — tối thiểu (ms)",
+    "step_delay_max_ms": "Độ trễ giữa mỗi bước di chuyển chuột — tối đa (ms)",
+    "curve_offset_ratio": "Độ cong của đường di chuyển, tỉ lệ theo khoảng cách (0.18 = 18%)",
+    "overshoot_probability": "Xác suất di chuyển vọt quá đích rồi kéo lại (0.15 = 15%)",
+    "overshoot_ratio": "Mức vọt quá đích, tỉ lệ theo khoảng cách",
+    "min_distance_for_curve_px": "Khoảng cách tối thiểu (px) mới áp dụng đường cong — dưới mức này di chuyển thẳng",
+}
+
 _BOOL_FIELDS = {"enabled"}
+
+# Each entry: (section_key used in runtime_config.json, form-field prefix,
+# section title shown on the page, default-config class, editable field
+# list, label dict, get_overrides fn, save_overrides fn).
+_CONFIG_SECTIONS = [
+    (
+        "human_typing", "typing", "Gõ phím",
+        HumanTypingConfig, EDITABLE_HUMAN_TYPING_FIELDS, _TYPING_LABELS,
+        get_human_typing_overrides, save_human_typing_overrides,
+    ),
+    (
+        "pacing", "pacing", "Khoảng chờ theo ngữ cảnh",
+        HumanPacingConfig, EDITABLE_PACING_FIELDS, _PACING_LABELS,
+        get_pacing_overrides, save_pacing_overrides,
+    ),
+    (
+        "mouse", "mouse", "Di chuyển chuột",
+        HumanMouseConfig, EDITABLE_MOUSE_FIELDS, _MOUSE_LABELS,
+        get_mouse_overrides, save_mouse_overrides,
+    ),
+]
 
 _PAGE_STYLE = """
 <style>
@@ -116,7 +172,7 @@ def _layout(body: str) -> str:
 <body>
 <nav>
   <a href="/admin">Trang chủ</a>
-  <a href="/admin/config">Cấu hình gõ phím</a>
+  <a href="/admin/config">Cấu hình hành vi</a>
   <a href="/admin/post">Đăng bài</a>
 </nav>
 {body}
@@ -131,7 +187,7 @@ async def admin_home(_: None = Depends(_require_auth)) -> str:
 <p class="muted">Trang quản trị nội bộ. Không public trang này ra internet — nó có quyền đăng bài thật.</p>
 <h2>Tài khoản đã đăng ký</h2>
 <ul>{accounts}</ul>
-<p><a href="/admin/config">→ Chỉnh cấu hình gõ phím</a> &nbsp;|&nbsp; <a href="/admin/post">→ Đăng bài / hàng đợi nội dung</a></p>
+<p><a href="/admin/config">→ Chỉnh cấu hình hành vi (gõ phím, khoảng chờ, chuột)</a> &nbsp;|&nbsp; <a href="/admin/post">→ Đăng bài / hàng đợi nội dung</a></p>
 """)
 
 
@@ -139,35 +195,39 @@ async def admin_home(_: None = Depends(_require_auth)) -> str:
 
 @router.get("/config", response_class=HTMLResponse)
 async def config_form(saved: bool = False, _: None = Depends(_require_auth)) -> str:
-    current = get_human_typing_overrides()
-    defaults = HumanTypingConfig()
+    sections_html = []
+    for section_key, prefix, title, config_cls, editable_fields, labels, get_overrides, _save_fn in _CONFIG_SECTIONS:
+        current = get_overrides()
+        defaults = config_cls()
 
-    rows = []
-    for field_name in EDITABLE_HUMAN_TYPING_FIELDS:
-        label = _FIELD_LABELS.get(field_name, field_name)
-        default_val = getattr(defaults, field_name)
-        value = current.get(field_name, default_val)
-        if field_name in _BOOL_FIELDS:
-            checked = "checked" if value else ""
-            input_html = f'<input type="checkbox" name="{field_name}" value="true" {checked}>'
-        else:
-            input_html = (
-                f'<input type="number" step="any" name="{field_name}" '
-                f'value="{html.escape(str(value))}">'
+        rows = []
+        for field_name in editable_fields:
+            label = labels.get(field_name, field_name)
+            default_val = getattr(defaults, field_name)
+            value = current.get(field_name, default_val)
+            form_name = f"{prefix}__{field_name}"
+            if field_name in _BOOL_FIELDS:
+                checked = "checked" if value else ""
+                input_html = f'<input type="checkbox" name="{form_name}" value="true" {checked}>'
+            else:
+                input_html = (
+                    f'<input type="number" step="any" name="{form_name}" '
+                    f'value="{html.escape(str(value))}">'
+                )
+            rows.append(
+                f"<tr><td>{html.escape(label)}<br>"
+                f'<span class="muted">mặc định: {html.escape(str(default_val))} — key: {field_name}</span></td>'
+                f"<td>{input_html}</td></tr>"
             )
-        rows.append(
-            f"<tr><td>{html.escape(label)}<br>"
-            f'<span class="muted">mặc định: {html.escape(str(default_val))} — key: {field_name}</span></td>'
-            f"<td>{input_html}</td></tr>"
-        )
+        sections_html.append(f"<h2>{html.escape(title)}</h2><table>{''.join(rows)}</table>")
 
     flash = '<p class="flash">Đã lưu cấu hình. Áp dụng ngay từ lần đăng bài tiếp theo.</p>' if saved else ""
     return _layout(f"""
-<h1>Cấu hình giả lập gõ phím</h1>
+<h1>Cấu hình hành vi giống người</h1>
 <p class="muted">Ghi vào runtime_config.json (không đụng tới .env), có hiệu lực ngay, không cần khởi động lại service.</p>
 {flash}
 <form method="post" action="/admin/config">
-<table>{''.join(rows)}</table>
+{''.join(sections_html)}
 <button type="submit">Lưu cấu hình</button>
 </form>
 """)
@@ -176,23 +236,24 @@ async def config_form(saved: bool = False, _: None = Depends(_require_auth)) -> 
 @router.post("/config")
 async def config_save(request: Request, _: None = Depends(_require_auth)) -> RedirectResponse:
     form = await request.form()
-    defaults = HumanTypingConfig()
-    values: dict = {}
-    for field_name in EDITABLE_HUMAN_TYPING_FIELDS:
-        if field_name in _BOOL_FIELDS:
-            values[field_name] = field_name in form  # checkbox present => true
-            continue
-        raw = form.get(field_name)
-        if raw in (None, ""):
-            continue
-        try:
-            values[field_name] = float(raw)
-        except (TypeError, ValueError):
-            # Ignore an unparseable value rather than 500ing the whole
-            # form — the field just falls back to its previous/default
-            # value, and the operator can fix it and resubmit.
-            continue
-    save_human_typing_overrides(values)
+    for section_key, prefix, _title, _config_cls, editable_fields, _labels, _get_fn, save_fn in _CONFIG_SECTIONS:
+        values: dict = {}
+        for field_name in editable_fields:
+            form_name = f"{prefix}__{field_name}"
+            if field_name in _BOOL_FIELDS:
+                values[field_name] = form_name in form  # checkbox present => true
+                continue
+            raw = form.get(form_name)
+            if raw in (None, ""):
+                continue
+            try:
+                values[field_name] = float(raw)
+            except (TypeError, ValueError):
+                # Ignore an unparseable value rather than 500ing the whole
+                # form — the field just falls back to its previous/default
+                # value, and the operator can fix it and resubmit.
+                continue
+        save_fn(values)
     return RedirectResponse(url="/admin/config?saved=1", status_code=303)
 
 
