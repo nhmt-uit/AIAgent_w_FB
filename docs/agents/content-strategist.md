@@ -6,6 +6,24 @@ reads_before_acting: [skills/content-context-awareness.md]
 
 # Content Strategist Agent
 
+## Status (2026-09-04)
+
+Scope narrowed from the original plan below, per the project owner: only
+**job posts broadcast to multiple Facebook groups** need AI-drafted
+wording, since that is the one case where posting identical text more
+than once is a real spam signal. Implemented as
+`human_bot/content_strategist.py`'s `draft_group_post_variants()`, wired
+into `human_bot/data_sync.py`'s `sync_once()`. Posting to one's own
+profile is user-typed by hand via `/admin/post` and only happens once, so
+it is explicitly OUT of scope — not drafted by this agent at all.
+Candidate outreach replies are also a single message per candidate (no
+variation needed) and remain the plain template they always were. Comment
+actions (`comment_on_group_post`, `comment_on_friend_post`) are still
+blocked on `read_recent_comments` not being implemented in
+`human_bot/actions.py` — the rest of this file (full 5-action scope,
+`normalize_signal`, staging-into-content_queue) is the original design and
+not yet built beyond the group-broadcast slice above.
+
 ## Role
 
 Decides **what** should happen on Facebook and drafts the exact content.

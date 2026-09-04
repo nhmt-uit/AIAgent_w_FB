@@ -8,12 +8,15 @@ ScheduledTask entries (human_bot/schedule_store.py) with a randomized,
 sequential post/comment time — never a burst, never a fixed cadence, same
 principle as docs/skills/rate-limiting-pacing.md.
 
-IMPORTANT — the content drafted here (`_draft_job_post_placeholder`,
-`_draft_candidate_reply_placeholder`) is a plain template, NOT the real
-Content Strategist Agent (still TODO — see docs/agents/
-content-strategist.md). It fills real fields in so it's not garbage, but
-it does not vary wording per group beyond a small rotating set of opening
-phrases, and does not use an LLM to compose original text. Treat every
+IMPORTANT — job posts broadcast to multiple groups are drafted by
+human_bot/content_strategist.py's draft_group_post_variants(): genuinely
+different wording per group via an Anthropic call when ANTHROPIC_API_KEY
+is set in .env, silently falling back to a plain rotating-opener template
+otherwise (see that module's docstring for the full fallback design).
+Candidate outreach replies (`_draft_candidate_reply_placeholder` below)
+are still a plain template — each candidate only gets one message, so
+there is nothing to vary against (see the conversation that scoped
+content_strategist.py to just the group-broadcast case). Treat every
 scheduled item this produces as a DRAFT to review/edit in /admin/schedule
 before it fires — this is one of the reasons DataSyncConfig.auto_fire_enabled
 defaults to False (see human_bot/data_sync_config.py).
@@ -24,13 +27,15 @@ dia, va bien nhung ban ghi thuc su moi thanh ScheduledTask
 nhien, tuan tu — khong bao gio dang don, khong bao gio dang theo nhip co
 dinh, cung nguyen tac voi docs/skills/rate-limiting-pacing.md.
 
-QUAN TRONG — noi dung soan o day chi la mau (template) gian don, KHONG
-PHAI Content Strategist Agent that (con TODO). No dien du lieu that vao
-nen khong phai rac, nhung chua bien tau theo tung nhom (ngoai mot vai
-cach mo dau xoay vong), va khong dung AI de viet lai. Coi moi muc lich
-sinh ra o day la BAN NHAP can xem/sua trong /admin/schedule truoc khi no
-thuc su chay — day cung la mot ly do DataSyncConfig.auto_fire_enabled
-mac dinh la False.
+QUAN TRONG — bai dang vao nhieu nhom duoc soan boi
+human_bot/content_strategist.py's draft_group_post_variants(): that su
+khac nhau moi nhom qua Anthropic khi co ANTHROPIC_API_KEY trong .env, tu
+dong roi ve mau (template) don gian neu chua co key. Tin nhan ung vien
+(_draft_candidate_reply_placeholder ben duoi) van la mau don gian — moi
+ung vien chi nhan 1 tin, khong co gi de bien tau. Coi moi muc lich sinh ra
+o day la BAN NHAP can xem/sua trong /admin/schedule truoc khi no thuc su
+chay — day cung la mot ly do DataSyncConfig.auto_fire_enabled mac dinh la
+False.
 """
 from __future__ import annotations
 
@@ -43,7 +48,7 @@ from typing import Any
 
 import httpx
 
-from human_bot import schedule_store
+from human_bot import content_strategist, schedule_store
 from human_bot.config import AccountConfig, get_account
 from human_bot.data_sync_config import DataSyncConfig
 from human_bot.runtime_config import get_data_sync_config, get_joined_groups
@@ -210,38 +215,9 @@ def _apply_quiet_hours(dt: datetime, cfg: DataSyncConfig) -> datetime:
     return dt
 
 
-# --- Draft content (placeholder — see module docstring) ---------------------
-
-_JOB_POST_OPENERS = [
-    "[Tin tuyển dụng]",
-    "Cơ hội việc làm mới:",
-    "Thông tin tuyển dụng:",
-]
-
-
-def _draft_job_post_placeholder(job: dict, variant_seed: int = 0) -> str:
-    attrs = job.get("attributes") or {}
-    opener = _JOB_POST_OPENERS[variant_seed % len(_JOB_POST_OPENERS)]
-    title = job.get("title") or attrs.get("jobField") or "vị trí đang tuyển"
-    lines = [f"{opener} {title}"]
-    if attrs.get("company"):
-        lines.append(f"Công ty: {attrs['company']}")
-    if attrs.get("location"):
-        lines.append(f"Địa điểm: {attrs['location']}")
-    if attrs.get("visaType"):
-        lines.append(f"Visa: {attrs['visaType']}")
-    if attrs.get("jlpt"):
-        lines.append(f"Yêu cầu JLPT: {attrs['jlpt']}")
-    salary = attrs.get("salary")
-    if isinstance(salary, dict) and salary.get("min"):
-        lines.append(
-            f"Lương: {salary.get('min')}-{salary.get('max')} "
-            f"{salary.get('currency', '')}/{salary.get('period', '')}"
-        )
-    if job.get("url"):
-        lines.append(f"Chi tiết: {job['url']}")
-    return "\n".join(lines)
-
+# --- Draft content (candidate outreach — see module docstring) --------------
+# Job-post drafting (which needs per-group variation) lives in
+# human_bot/content_strategist.py's draft_group_post_variants() instead.
 
 def _draft_candidate_reply_placeholder(candidate: dict) -> str:
     attrs = candidate.get("attributes") or {}
@@ -307,21 +283,28 @@ async def sync_once(account_id: str, cfg: DataSyncConfig | None = None) -> dict[
     latest_job_ts = jobs_since
     latest_candidate_ts = candidates_since
 
-    for i, job in enumerate(jobs):
+    for job in jobs:
         jid = str(job.get("id") or "")
         job_ts = job.get("last_seen_at") or job.get("published_at")
         if job_ts and (latest_job_ts is None or job_ts > latest_job_ts):
             latest_job_ts = job_ts
         if not jid or jid in seen:
             continue
-        for group in get_joined_groups(account.account_id):
+        groups = get_joined_groups(account.account_id)
+        # One drafting call for ALL of this job's groups at once (not one
+        # per group) — content_strategist.draft_group_post_variants() needs
+        # the full group list up front to guarantee the variants it returns
+        # are actually different from each other, not just independently
+        # generated and coincidentally similar.
+        variants = await content_strategist.draft_group_post_variants(job, groups)
+        for group, content in zip(groups, variants):
             scheduled_at = _apply_quiet_hours(next_post_time, cfg)
             task = schedule_store.ScheduledTask(
                 task_id=schedule_store.new_task_id(scheduled_at.isoformat()),
                 action="post_to_group",
                 account_id=account_id,
                 scheduled_at=scheduled_at.isoformat(),
-                content=_draft_job_post_placeholder(job, variant_seed=i),
+                content=content,
                 target_url=group.url,
                 # media_path intentionally left unset here (TODO 2026-09-04):
                 # once side B's job JSON schema is confirmed to carry its own
