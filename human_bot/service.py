@@ -21,6 +21,13 @@ posting — see human_bot/admin.py) with real posting power. If this host is
 reachable from anywhere other than your own machine, set ADMIN_USERNAME and
 ADMIN_PASSWORD in .env, or put it behind a firewall/reverse proxy — do not
 expose /admin to the public internet unauthenticated.
+
+POST /tasks itself has the same real posting power and the same rule:
+if this host is reachable from anywhere but your own machine, set
+TASKS_API_KEY in .env (added 2026-09-04) — every caller (n8n, a
+data-fetching service, ...) then needs to send that same value back in an
+"X-API-Key" header. Left unset, the endpoint has no auth at all, same
+permissive default as ADMIN_USERNAME/ADMIN_PASSWORD when those are blank.
 """
 from __future__ import annotations
 
@@ -31,20 +38,73 @@ from dotenv import load_dotenv
 
 load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 
-from fastapi import FastAPI  # noqa: E402
+from fastapi import Depends, FastAPI, Header, HTTPException, status  # noqa: E402
 from pydantic import BaseModel  # noqa: E402
 
+import asyncio  # noqa: E402
+import logging  # noqa: E402
+import os  # noqa: E402
+import secrets  # noqa: E402
+
+from human_bot import data_sync  # noqa: E402
 from human_bot.admin import router as admin_router  # noqa: E402
 from human_bot.agent import TaskRequest, run_task  # noqa: E402
 from human_bot.browser_pool import close_all, warm_up  # noqa: E402
-from human_bot.config import ACCOUNTS, AccountStatus  # noqa: E402
+from human_bot.config import AccountStatus, get_all_accounts  # noqa: E402
+from human_bot.runtime_config import get_data_sync_config  # noqa: E402
+
+logger = logging.getLogger("human_bot.service")
+
+
+async def _data_sync_poll_loop() -> None:
+    """Background loop: periodically pull new jobs/candidates from side B,
+    dedupe, and schedule them (human_bot/data_sync.py). Runs inside this
+    already-24/7 process rather than as a separate cron job — see
+    docs/architecture.md section 3c. Never lets one bad cycle kill the
+    loop: side B being briefly unreachable, or one malformed record,
+    should not take down posting for the rest of the process."""
+    while True:
+        cfg = get_data_sync_config()
+        if cfg.enabled:
+            active_accounts = [a for a in get_all_accounts().values() if a.status == AccountStatus.ACTIVE]
+            for account in active_accounts:
+                try:
+                    await data_sync.sync_once(account.account_id, cfg)
+                except Exception:  # noqa: BLE001 - one account's failure must not stop the others
+                    logger.exception("data_sync.sync_once failed for account_id=%s", account.account_id)
+        await asyncio.sleep(max(cfg.poll_interval_minutes, 1.0) * 60)
+
+
+async def _data_sync_fire_loop() -> None:
+    """Background loop: check for scheduled tasks that are now due and,
+    only if DataSyncConfig.auto_fire_enabled is True, actually post them
+    (via run_task()). Left False by default — see
+    human_bot/data_sync_config.py and /admin/schedule's manual 'Đăng ngay'
+    button for the safe-by-default alternative."""
+    while True:
+        cfg = get_data_sync_config()
+        if cfg.enabled:
+            try:
+                await data_sync.fire_due_tasks(cfg)
+            except Exception:  # noqa: BLE001 - keep the loop alive across failures
+                logger.exception("data_sync.fire_due_tasks failed")
+        await asyncio.sleep(max(cfg.due_check_interval_seconds, 5.0))
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    active_accounts = [a for a in ACCOUNTS.values() if a.status == AccountStatus.ACTIVE]
+    active_accounts = [a for a in get_all_accounts().values() if a.status == AccountStatus.ACTIVE]
     await warm_up(active_accounts)
+    poll_task = asyncio.create_task(_data_sync_poll_loop())
+    fire_task = asyncio.create_task(_data_sync_fire_loop())
     yield
+    poll_task.cancel()
+    fire_task.cancel()
+    for t in (poll_task, fire_task):
+        try:
+            await t
+        except asyncio.CancelledError:
+            pass
     await close_all()
 
 
@@ -68,15 +128,28 @@ class TaskOut(BaseModel):
     timestamp: str
 
 
-# TODO (2026-09-03): this endpoint has NO authentication — any request that
-# can reach this port can post to Facebook for real, for any registered
-# account. Fine while everything calling in is on the same machine/trusted
-# network; add an API key check (a required header, compared with
-# secrets.compare_digest against an env var — same pattern as
-# human_bot/admin.py's _require_auth) before any other system (e.g. a
-# separate data-fetching service sending post content as JSON) is allowed
-# to call this from outside that trust boundary.
-@app.post("/tasks", response_model=TaskOut)
+# Done 2026-09-04 (was a TODO here since 2026-09-03): API key check via a
+# required header, same "skip auth entirely if not configured" convenience
+# as human_bot/admin.py's _require_auth (ADMIN_USERNAME/ADMIN_PASSWORD) —
+# handy for local/dev use before TASKS_API_KEY is set, but MUST be set
+# before this port is reachable from anywhere other than your own trusted
+# machine/network (n8n, a data-fetching service, etc. all need to send the
+# same key back in X-API-Key once this is on).
+def _require_tasks_auth(x_api_key: str | None = Header(default=None)) -> None:
+    expected = os.environ.get("TASKS_API_KEY", "").strip()
+    if not expected:
+        # Not configured — same permissive default as /admin when
+        # ADMIN_USERNAME/ADMIN_PASSWORD are unset. Fine for local/dev, not
+        # for anything reachable beyond your own machine.
+        return
+    if not x_api_key or not secrets.compare_digest(x_api_key, expected):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="missing or invalid X-API-Key",
+        )
+
+
+@app.post("/tasks", response_model=TaskOut, dependencies=[Depends(_require_tasks_auth)])
 async def create_task(task: TaskIn) -> TaskOut:
     request = TaskRequest(**task.model_dump())
     result = await run_task(request)
@@ -85,4 +158,4 @@ async def create_task(task: TaskIn) -> TaskOut:
 
 @app.get("/health")
 async def health() -> dict:
-    return {"status": "ok", "accounts": list(ACCOUNTS.keys())}
+    return {"status": "ok", "accounts": list(get_all_accounts().keys())}

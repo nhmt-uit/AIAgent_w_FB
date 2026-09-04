@@ -6,6 +6,7 @@ uvicorn>=0.30
 pydantic>=2.8
 python-dotenv>=1.0
 python-multipart>=0.0.9  # needed for the /admin file-upload form (human_bot/admin.py)
+httpx>=0.27  # used by human_bot/data_sync.py to call side B's data-ingestion API
 
 # Optional — only needed if/when human_bot/llm.py's fallback path is
 # actually used (an AI-assisted lookup when a recorded Facebook selector

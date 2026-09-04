@@ -14,8 +14,11 @@ Example:
 This creates accounts/<account_id>/storage_state.json. That file contains
 live login cookies — never commit it (already covered by .gitignore).
 
-After running this once, add the account to human_bot/config.py's
-ACCOUNTS dict so the rest of the system knows it exists, e.g.:
+After running this once, register the account so the rest of the system
+knows it exists: start the service (uvicorn human_bot.service:app) and
+register it at /admin/accounts with this same account_id — no code edit
+or restart needed. Alternatively, add it to human_bot/config.py's
+ACCOUNTS dict by hand if you want it committed as a permanent default:
 
     "my_page": AccountConfig(account_id="my_page", display_name="My Page"),
 """
@@ -51,7 +54,8 @@ async def main(account_id: str) -> None:
         await browser.close()
 
         print(f"\nSaved session to: {out_path}")
-        print(f"Next: register this account in human_bot/config.py, e.g.:")
+        print(f"Next: register this account at /admin/accounts (account_id={account_id!r}),")
+        print("or add it to human_bot/config.py's ACCOUNTS dict by hand, e.g.:")
         print(f'  "{account_id}": AccountConfig(account_id="{account_id}", display_name="..."),')
 
 

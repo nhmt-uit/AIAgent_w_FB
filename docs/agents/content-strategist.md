@@ -71,6 +71,23 @@ Not blocking on side B finalizing their data format. Building a thin,
 swappable adapter now so this agent has real code the moment B is ready,
 instead of everything queuing up behind a decision that isn't ours to make.
 
+0. **How raw data arrives — pull, not push.** This system polls side B's
+   `data-ingestion` API (`GET /api/content`, `/api/jobs`, `/api/candidates`
+   — see `docs/architecture.md` section 3c for the full contract, gotchas,
+   and the decided dedup/scheduling design) rather than waiting for a
+   pushed task. `normalize_signal()` below is unaffected by this — it
+   still only cares about the shape of one raw record, not how that
+   record showed up. Two concrete drafting jobs fall out of the real data:
+   composing an original post from `/api/content`/`/api/jobs` material
+   (never verbatim when `attributes.canRepublish` is `false`, always
+   crediting `attributes.attribution` when quoting, and worded differently
+   per group when the same material is broadcast to several — see
+   Guardrail 1/2 below, now with a concrete reason behind them, not just a
+   general anti-spam instinct), and composing a personalized outreach
+   comment per `/api/candidates` record (referencing that person's actual
+   `desiredJobField`/`jlpt`/`preferredRegion` — exactly what Guardrail 2
+   already demands, now with real fields to point at).
+
 1. **Input adapter.** A single function, `normalize_signal(raw: dict) ->
    ContentSignal`, is the only place that knows B's actual data shape.
    `ContentSignal` (a small local dataclass: `target_type` — "own_profile"

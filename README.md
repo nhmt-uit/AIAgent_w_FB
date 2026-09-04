@@ -53,16 +53,13 @@ Với luồng chính (đăng bài/comment bằng Playwright thuần), bạn **kh
 điền khi bạn dùng tới `/admin` ở nơi không phải máy cá nhân (`ADMIN_USERNAME`/
 `ADMIN_PASSWORD`) hoặc dùng `fallback_auto_login.py` (xem mục 8, bảng file map).
 
-**Bước 4 — Đăng ký tài khoản Facebook trong `human_bot/config.py`:**
-Mở file, thêm một dòng vào dict `ACCOUNTS`, ví dụ:
-```python
-ACCOUNTS: dict[str, AccountConfig] = {
-    "troy": AccountConfig(account_id="troy", display_name="Troy"),
-    "my_page": AccountConfig(account_id="my_page", display_name="Trang của tôi"),  # dòng mới
-}
-```
-`account_id` là tên bạn tự đặt (chữ thường, không dấu cách) — dùng lại
-đúng tên này ở bước 5 và mọi lệnh sau này.
+**Bước 4 — Đặt tên `account_id` cho tài khoản Facebook sắp thêm:**
+Chỉ cần tự chọn một cái tên (chữ thường, số, dấu gạch dưới — không dấu
+cách, không hoa), ví dụ `my_page`. Dùng đúng tên này ở bước 5 và mọi lệnh
+sau này — **không cần sửa code ở bước này nữa**, việc đăng ký tài khoản đã
+chuyển sang giao diện web `/admin/accounts` (xem cuối bước 5). Vẫn có thể
+thêm thẳng vào dict `ACCOUNTS` trong `human_bot/config.py` nếu muốn tài
+khoản đó là mặc định cố định, commit vào repo — nhưng không bắt buộc.
 
 > **Lưu ý quan trọng trước khi đăng nhập:** vào tài khoản Facebook bạn sắp
 > dùng cho bot → **Cài đặt → Ngôn ngữ (Language)** → đặt thành **English
@@ -84,6 +81,12 @@ rồi quay lại Terminal nhấn Enter. Lệnh này tạo ra
 `accounts/my_page/storage_state.json` — phiên đăng nhập được lưu lại, các
 bước sau sẽ dùng lại, không cần đăng nhập lại nữa.
 
+Sau đó, đăng ký tài khoản này để hệ thống nhận ra: khởi động service
+(lệnh ở Bước 6 bên dưới), mở `http://localhost:8000/admin/accounts`,
+điền `account_id` **khớp đúng tên vừa dùng ở lệnh trên** (`my_page`) và
+tên hiển thị, bấm "Đăng ký" — không cần sửa file code, có hiệu lực ngay,
+không cần khởi động lại service.
+
 **Bước 6 — Chạy thử một hành động thật:** chọn một trong hai cách:
 
 - Qua giao diện web `/admin` (khuyên dùng, đỡ lỗi gõ dấu ngoặc trong
@@ -91,8 +94,9 @@ bước sau sẽ dùng lại, không cần đăng nhập lại nữa.
   ```
   uvicorn human_bot.service:app --host 0.0.0.0 --port 8000
   ```
-  rồi mở `http://localhost:8000/admin` trên trình duyệt, vào mục "Đăng
-  bài", chọn tài khoản `my_page`, gõ nội dung, bấm Đăng.
+  rồi mở `http://localhost:8000/admin` trên trình duyệt — nếu chưa đăng ký
+  tài khoản ở bước 5, vào `/admin/accounts` đăng ký trước — sau đó vào mục
+  "Đăng bài", chọn tài khoản `my_page`, gõ nội dung, bấm Đăng.
 
 - Qua dòng lệnh (test nhanh, không cần chạy service):
   ```
@@ -233,7 +237,11 @@ Nhớ chạy lại `pip3 install -r requirements.txt` một lần (có thêm
 | `human_bot/service.py` | FastAPI service — cửa ngõ HTTP để n8n gọi vào | Có |
 | `human_bot/runtime_config.py` | Lưu/đọc các thông số gõ phím do trang `/admin` chỉnh, ghi ra `runtime_config.json` (không phải `.env`), áp dụng ngay không cần khởi động lại | Có |
 | `human_bot/content_queue.py` | Hàng đợi nội dung bài đăng dựa trên file `.txt` (`content_queue/pending|posted|failed/`), dùng cho trang `/admin` | Có |
-| `human_bot/admin.py` | Giao diện web quản trị nội bộ tại `/admin`: chỉnh cấu hình gõ phím, đăng bài trực tiếp hoặc từ hàng đợi — thay cho việc gõ nội dung trong lệnh terminal | Có |
+| `human_bot/data_sync_config.py` | Cấu hình bộ đồng bộ dữ liệu bên B — nhịp gọi API, cổng an toàn `auto_fire_enabled`, khoảng cách lịch đăng ngẫu nhiên, ngưỡng lọc ứng viên | Có |
+| `human_bot/schedule_store.py` | Kho lưu lịch đăng dựa trên file (`scheduled/pending|posted|failed|cancelled/`), tương tự `content_queue.py` | Có |
+| `human_bot/data_sync.py` | Poller: gọi `GET /api/jobs` + `GET /api/candidates` bên B, chống trùng theo cache ngày, lên lịch đăng ngẫu nhiên nối tiếp; chỉ thực sự đăng lên Facebook khi `auto_fire_enabled=true` | Có |
+| `human_bot/db.py` | Lịch sử mọi hành động (SQLite, `human_bot.db`) — ghi lại mỗi lần `run_task()` chạy (thành công lẫn thất bại), dùng cho `/admin/reports` | Có |
+| `human_bot/admin.py` | Giao diện web quản trị nội bộ tại `/admin`: chỉnh cấu hình gõ phím, đăng bài trực tiếp hoặc từ hàng đợi, quản lý nhóm (`/admin/groups`), lịch đăng (`/admin/schedule`), báo cáo (`/admin/reports`) — thay cho việc gõ nội dung trong lệnh terminal | Có |
 | `human_bot/llm.py` | Chọn LLM theo key có trong `.env` | **Dự phòng** — chưa được gọi ở đâu trong luồng chính |
 | `human_bot/prompt_loader.py` | Đọc file agent + skill, ghép thành prompt cho AI | **Dự phòng** — để dành cho phương án browser-use sau này |
 | `human_bot/bootstrap_login.py` | Đăng nhập **thủ công** một lần để lưu phiên đăng nhập đầu tiên | **Không** — chạy tay khi thiết lập tài khoản mới |
@@ -291,18 +299,56 @@ Nhớ chạy lại `pip3 install -r requirements.txt` một lần (có thêm
       cài đặt của nhóm. Phát hiện "chờ duyệt" (`_PENDING_APPROVAL_TEXT_SIGNALS`
       trong `actions.py`) **vẫn chưa xác minh thật** vì nhóm dùng để ghi không bật
       duyệt bài — cần test lại với một nhóm có bật duyệt khi thuận tiện.
-- [ ] `post_to_group` — ghi tiếp 3 lớp điều hướng còn lại (lối tắt đã ghim → danh
-      sách "Groups you've joined" → search), theo đúng thứ tự ưu tiên trong
-      `docs/skills/group-targeting.md`.
+- [x] **`post_to_group` — 3 lớp điều hướng còn lại đã ghi Codegen và merge xong
+      (2026-09-04)**, tài khoản `tu_iizuki`: lớp 1 (lối tắt đã ghim), lớp 2
+      ("Your groups" — nhãn thật của UI, không phải "Groups you've joined" như
+      đoán ban đầu), lớp 3 (search, cần `group_name` để tìm — lấy từ
+      `/admin/groups` qua `_resolve_group_name` trong `agent.py`). Cả 3 lớp
+      chỉ ghi tới bước mở khung đăng bài + gõ text mẫu rồi dừng (không đăng
+      thật) vì bước đăng bài giống hệt nhau ở mọi lớp, đã xác nhận 1 lần qua
+      lớp 4. Thay vì khớp theo tên nhóm hiển thị (dễ bị cắt ngắn/trùng tên),
+      `post_to_group` khớp theo id/slug nhóm lấy từ href của link
+      (`_click_group_by_id`) — kiểm tra trước khi bấm, rồi xác nhận lại URL
+      trang đích sau khi điều hướng (`_confirms_group`) — theo đúng yêu cầu
+      của owner. Cũng đã thêm bước click icon Facebook/home (ghi nhận từ cả 3
+      lần ghi) làm bước chuẩn trước khi điều hướng, áp dụng luôn cho cả
+      `post_to_own_profile`. Xem chi tiết trong `docs/skills/
+      group-targeting.md` và docstring của `post_to_group`.
 - [ ] Viết Content Strategist Agent — bản tối thiểu trước, không chờ bên B chốt
       xong định dạng dữ liệu. Xem kế hoạch chi tiết trong
       `docs/agents/content-strategist.md`, mục "Implementation plan (đợt 1)".
-- [ ] Thêm xác thực (auth) cho endpoint `POST /tasks` trong `human_bot/service.py`
-      — hiện đang mở, ai gọi tới cổng cũng đăng bài thật được, không cần token/API
-      key gì cả. Cần làm trước khi một hệ thống khác (VD: bên B lấy dữ liệu, gửi
-      JSON content sang để đăng) gọi vào từ ngoài máy/mạng nội bộ. `/admin` đã có
-      Basic Auth tùy chọn (`ADMIN_USERNAME`/`ADMIN_PASSWORD`) — `/tasks` thì chưa,
-      nên làm tương tự (API key header là đủ, không cần phức tạp).
+      Sau khi có, thay thế `_draft_job_post_placeholder`/
+      `_draft_candidate_reply_placeholder` trong `human_bot/data_sync.py`
+      bằng lệnh gọi thật tới agent này (chỗ nối đã được đánh dấu rõ trong
+      code) — đây cũng là chỗ bắt buộc phải viết nội dung khác nhau cho mỗi
+      nhóm khi broadcast, không được đăng đúng một chuỗi giống hệt vào nhiều
+      nhóm (xem `docs/skills/group-targeting.md`, mục "Safety pacing specific
+      to groups").
+- [ ] Chạy lại `pip3 install -r requirements.txt` trước khi khởi động lại
+      `service.py` — vừa thêm `httpx` (dùng để gọi API bên B trong
+      `human_bot/data_sync.py`).
+- [x] **Nâng cấp giao diện `/admin` (2026-09-04)** — vẫn Python/FastAPI
+      render HTML sẵn (không tách React), thêm Tailwind Play CDN
+      (`https://cdn.tailwindcss.com`, không cần build step/Node) cho toàn
+      bộ phần nhìn, và htmx (`https://unpkg.com/htmx.org`) cho các trang
+      có bảng/CRUD (`/admin/groups`, `/admin/schedule`, `/admin/reports`):
+      lọc theo tài khoản, thêm/sửa/xoá nhóm, cập nhật/huỷ/đăng-ngay một
+      bài trong lịch — tất cả chỉ thay phần nội dung liên quan, không tải
+      lại cả trang. Mọi form vẫn giữ `method="post" action="..."` bình
+      thường song song với `hx-post`, nên nếu htmx không tải được (JS lỗi,
+      mạng chặn CDN) thì form vẫn hoạt động theo kiểu tải lại trang như
+      trước — không có gì bị hỏng hoàn toàn. Tên class CSS cũ (`card`,
+      `field-row`, `data-table`...) được giữ nguyên và định nghĩa lại bằng
+      Tailwind `@apply`, nên hầu hết HTML sinh ra không đổi cấu trúc.
+      `/admin/config` và `/admin/post` dùng chung bộ CSS mới nhưng chưa
+      chuyển sang htmx (chưa cần thiết, vẫn tải lại trang khi submit).
+- [x] **Xác thực (auth) cho `POST /tasks` — xong (2026-09-04).** Header
+      `X-API-Key` bắt buộc khi đặt `TASKS_API_KEY` trong `.env`, so sánh bằng
+      `secrets.compare_digest` (`_require_tasks_auth` trong `human_bot/
+      service.py`) — cùng kiểu "không đặt thì không bắt buộc" như
+      `ADMIN_USERNAME`/`ADMIN_PASSWORD` của `/admin`. Chưa đặt `TASKS_API_KEY`
+      thật trong `.env` — cần làm trước khi cổng này lộ ra ngoài máy/mạng nội bộ
+      (n8n, bên B, ... đều phải gửi lại đúng key này trong header).
 
 ### Còn lại (chưa tới lượt ngay, nhưng đã ghi nhận — xem đánh giá 2026-09-03)
 
@@ -315,11 +361,78 @@ Nhớ chạy lại `pip3 install -r requirements.txt` một lần (có thêm
       và báo cho người vận hành (email/Telegram/Slack, tuỳ chọn sau) khi có dấu
       hiệu bất thường — quan trọng vì đây là lớp bảo vệ tài khoản duy nhất khi hệ
       thống chạy không có người theo dõi sát.
-- [ ] Thêm hỗ trợ đăng kèm ảnh/video (`media_path`) — hiện `post_to_own_profile`
-      (và các hành động post khác khi ghi Codegen) mới đăng được text thuần.
+- [x] **Đăng kèm ảnh/video (`media_path`) — xong (2026-09-04).**
+      - Kho ảnh `media/memes/` + `human_bot/media.py` (`pick_random_meme()` chọn
+        ngẫu nhiên), công tắc bật/tắt "Tự động đính kèm ảnh" ở `/admin/config`
+        (mặc định BẬT). Nối vào `run_task()` trong `agent.py`: nếu
+        `TaskRequest.media_path` đã có sẵn (VD: bên B tự gửi ảnh riêng cho bài đó
+        — chỗ nối cụ thể còn để TODO trong `data_sync.py` vì chưa rõ tên field ảnh
+        bên phía bên B) thì luôn ưu tiên dùng ảnh đó, chỉ random khi chưa có.
+      - Bước Playwright thật sự đính kèm file đã ghi Codegen và merge xong
+        (`_attach_media` trong `actions.py`, dùng chung cho cả `post_to_own_profile`
+        và `post_to_group`): bấm "Photo/video" rồi `set_input_files` thẳng vào
+        `<input type="file">` ẩn — Playwright không thao tác hộp thoại chọn file
+        của hệ điều hành, mà chặn ngay cú click và set file trực tiếp. Xác nhận
+        thật (live) qua composer đăng tường cá nhân; với `post_to_group` thì
+        selector giống hệt nhưng **CHƯA xác nhận thật riêng** (ghi chú UNVERIFIED
+        trong code) — nếu lần đăng nhóm kèm ảnh đầu tiên báo lỗi strict-mode,
+        cần thu hẹp phạm vi selector giống cách các chỗ khác trong `actions.py`
+        đã từng sửa.
 - [ ] Cân nhắc audience thật (không chỉ luôn "Only me") — cần thêm tham số
       `audience` và có thể thêm bước xác nhận an toàn trước khi mở rộng phạm vi
       hiển thị bài đăng, xem docstring `post_to_own_profile` trong `actions.py`.
+- [x] **Xây bộ "kéo dữ liệu từ bên B" (2026-09-04)** — `human_bot/data_sync.py`
+      gọi `GET /api/jobs` (→ bài đăng nhóm) và `GET /api/candidates` (→ reply
+      ứng viên); `GET /api/content` **không dùng** (dành cho fanpage, ngoài
+      phạm vi hệ thống này — xem `docs/architecture.md` mục 3c). Chống trùng
+      bằng cache theo ngày (`data_sync_cache/`, dựa trên `id`) + một chỉ mục
+      riêng cho `attributes.contact` (tránh nhắn trùng người dù họ đăng ở
+      nhiều nhóm). Lên lịch bằng `human_bot/schedule_store.py`
+      (`scheduled/pending|posted|failed|cancelled/`), khoảng cách ngẫu nhiên
+      nối tiếp nhau (`post_gap_*`/`comment_gap_*` trong
+      `human_bot/data_sync_config.py`, chỉnh được qua `/admin/config`). Chạy
+      nền bên trong `human_bot/service.py` (2 vòng lặp: lấy dữ liệu theo
+      `poll_interval_minutes`, và kiểm tra bài đến giờ theo
+      `due_check_interval_seconds`). **Cổng an toàn `auto_fire_enabled` mặc
+      định `false`** — bộ đồng bộ vẫn lấy/chống trùng/lên lịch bình thường,
+      nhưng sẽ không tự đăng lên Facebook cho tới khi bật cổng này; trong lúc
+      đó, đăng thủ công từng bài qua nút "🚀 Đăng ngay" ở `/admin/schedule`.
+      Nội dung bài đăng nhóm/reply hiện dùng **template placeholder** (nối
+      chuỗi đơn giản, có đánh dấu rõ trong code) — **chưa phải** Content
+      Strategist Agent thật, xem mục tiếp theo.
+      **Cần làm trước khi dùng thật:** vào `/admin/groups` để nhập danh sách
+      URL nhóm cho từng tài khoản (không cần sửa code — xem mục tiếp theo), và
+      đặt `DATA_INGESTION_BASE_URL`/`DATA_INGESTION_API_TOKEN` (của **bên B**,
+      dịch vụ `data-ingestion`) trong `.env`.
+- [x] **Quản lý nhóm đã tham gia qua `/admin/groups`** thay vì sửa
+      `human_bot/config.py` — mỗi nhóm lưu **cả tên lẫn URL**
+      (`human_bot/config.py`'s `GroupRef`), không lưu URL trơ để còn biết đó
+      là nhóm nào. Giao diện dạng bảng, có bộ lọc chọn tài khoản (mỗi lần chỉ
+      xem/sửa nhóm của đúng tài khoản đó), cột Tên nhóm / URL nhóm, nút Sửa
+      (form riêng, không sửa trực tiếp trong bảng) và Xoá (có xác nhận) cho
+      từng dòng, cộng form "Thêm nhóm mới" ở cuối trang. Toàn bộ vẫn là
+      Python/FastAPI thuần (HTML render sẵn từ server) — không cần React.
+      Lưu vào `runtime_config.json` (đè lên danh sách mặc định trong code),
+      có hiệu lực ngay. `human_bot/data_sync.py` đọc qua
+      `get_joined_groups(account_id)` (`runtime_config.py`) chứ không đọc
+      thẳng `account.joined_groups` nữa.
+- [x] **Thêm mục quản lý lịch đăng vào `/admin`** — `/admin/schedule`: xem
+      danh sách bài đang chờ (nội dung, nhóm, giờ đăng, nguồn dữ liệu), sửa
+      nội dung/giờ đăng, huỷ, hoặc đăng ngay thủ công (bỏ qua
+      `auto_fire_enabled`).
+- [x] **Lịch sử hành động + báo cáo (2026-09-04)** — `human_bot/db.py`
+      (SQLite, `human_bot.db`, dùng thẳng `sqlite3` có sẵn trong Python,
+      **không cần cài thêm package nào**). Mọi lần `run_task()` chạy (đăng
+      thủ công, từ hàng đợi, "Đăng ngay", tự động từ bộ đồng bộ bên B, hay
+      gọi thẳng `POST /tasks`) đều được ghi lại — kể cả khi thất bại (tài
+      khoản tạm dừng, action không hỗ trợ, bị rate limit) — vì tất cả đều đi
+      qua đúng một hàm `run_task()` nên chỉ cần ghi log ở một chỗ.
+      `/admin/reports`: bài đăng thành công theo tuần theo tài khoản, theo
+      nhóm, tỉ lệ thành công/thất bại theo hành động, và nhật ký 50 hoạt
+      động gần nhất — lọc được theo tài khoản.
+- [ ] Cân nhắc chọn nhóm theo chủ đề (bài IT → nhóm IT, bài Tokutei → nhóm
+      Tokutei...) thay vì luôn broadcast vào mọi nhóm đã tham gia — đang suy
+      nghĩ thêm, xem `docs/architecture.md` mục 3c.
 - [ ] Dựng workflow n8n gọi vào service này (nối toàn bộ các phần lại thành một
       luồng chạy tự động theo lịch hoặc theo trigger từ bên B).
 - [ ] Về lâu dài — nếu định chạy nhiều tài khoản song song trên nhiều máy,

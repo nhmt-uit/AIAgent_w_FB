@@ -22,10 +22,13 @@ dinh do.
 """
 import dataclasses
 import json
+import os
 from pathlib import Path
 from typing import Any
 
 from human_bot.humanize import HumanMouseConfig, HumanPacingConfig, HumanTypingConfig
+from human_bot.data_sync_config import DataSyncConfig
+from human_bot.media import MediaConfig
 
 RUNTIME_CONFIG_PATH = Path(__file__).resolve().parent.parent / "runtime_config.json"
 
@@ -75,6 +78,26 @@ EDITABLE_MOUSE_FIELDS: list[str] = [
     "overshoot_probability",
     "overshoot_ratio",
     "min_distance_for_curve_px",
+]
+
+# base_url is deliberately excluded — that's a deployment-level setting
+# (which data-ingestion instance to talk to), not something to flip
+# casually from a web form. Change it via .env (DATA_INGESTION_BASE_URL)
+# if it ever needs to change.
+EDITABLE_DATA_SYNC_FIELDS: list[str] = [
+    "enabled",
+    "auto_fire_enabled",
+    "poll_interval_minutes",
+    "due_check_interval_seconds",
+    "post_gap_min_minutes",
+    "post_gap_max_minutes",
+    "comment_gap_min_minutes",
+    "comment_gap_max_minutes",
+    "quiet_hour_start_local",
+    "quiet_hour_end_local",
+    "candidate_min_confidence",
+    "candidate_max_age_days",
+    "cache_retention_days",
 ]
 
 
@@ -160,3 +183,143 @@ def get_mouse_config() -> HumanMouseConfig:
 
 def save_mouse_overrides(values: dict[str, Any]) -> None:
     _save_overrides("mouse", EDITABLE_MOUSE_FIELDS, values)
+
+
+# --- Data sync (side-B poller) ---------------------------------------------
+
+def get_data_sync_overrides() -> dict[str, Any]:
+    return _get_overrides("data_sync", EDITABLE_DATA_SYNC_FIELDS)
+
+
+def get_data_sync_config() -> DataSyncConfig:
+    """The config actually used by human_bot/data_sync.py: .env/code
+    defaults (including base_url, which is NOT admin-editable) with any
+    admin-saved JSON overrides for the editable fields layered on top."""
+    return _get_config(DataSyncConfig, "data_sync", EDITABLE_DATA_SYNC_FIELDS)
+
+
+def save_data_sync_overrides(values: dict[str, Any]) -> None:
+    _save_overrides("data_sync", EDITABLE_DATA_SYNC_FIELDS, values)
+
+
+# --- Media (attach-random-meme toggle, human_bot/media.py) ------------------
+
+EDITABLE_MEDIA_FIELDS: list[str] = [
+    "attach_random_meme_default",
+]
+
+
+def get_media_overrides() -> dict[str, Any]:
+    return _get_overrides("media", EDITABLE_MEDIA_FIELDS)
+
+
+def get_media_config() -> MediaConfig:
+    """The config actually used by human_bot/agent.py's run_task() to
+    decide whether to auto-attach a random meme."""
+    return _get_config(MediaConfig, "media", EDITABLE_MEDIA_FIELDS)
+
+
+def save_media_overrides(values: dict[str, Any]) -> None:
+    _save_overrides("media", EDITABLE_MEDIA_FIELDS, values)
+
+
+# --- Joined groups (per-account, admin-editable) ----------------------------
+#
+# AccountConfig.joined_groups (human_bot/config.py) is a code default —
+# fine for one or two accounts set up by hand, but every group join/leave
+# would otherwise need a code change + restart. This mirrors that default
+# in runtime_config.json instead, under a per-account key, editable from
+# /admin/groups without touching code. A runtime entry for an account_id
+# fully replaces that account's code-default list (not merged) — the admin
+# page always shows/edits the *effective* list, so there's one source of
+# truth on screen at a time. Each group is stored as {"name": ..., "url":
+# ...} — name+url together, not the URL alone, so a human looking at the
+# admin page or this JSON file can tell which group is which without
+# opening every link.
+
+_JOINED_GROUPS_KEY = "joined_groups"
+
+
+def get_joined_groups(account_id: str) -> list["GroupRef"]:
+    """Effective list of joined groups for this account: a
+    runtime_config.json override if one has ever been saved for this
+    account_id, else the code default from human_bot/config.py's
+    AccountConfig."""
+    from human_bot.config import GroupRef, get_account
+
+    data = _read_all()
+    overrides = data.get(_JOINED_GROUPS_KEY, {})
+    if account_id in overrides and isinstance(overrides[account_id], list):
+        result = []
+        for item in overrides[account_id]:
+            if isinstance(item, dict) and str(item.get("url", "")).strip():
+                result.append(GroupRef(name=str(item.get("name", "")).strip(), url=str(item["url"]).strip()))
+        return result
+    try:
+        return list(get_account(account_id).joined_groups)
+    except ValueError:
+        return []
+
+
+def save_joined_groups(account_id: str, groups: list["GroupRef"]) -> None:
+    data = _read_all()
+    overrides = data.get(_JOINED_GROUPS_KEY, {})
+    if not isinstance(overrides, dict):
+        overrides = {}
+    overrides[account_id] = [
+        {"name": g.name.strip(), "url": g.url.strip()} for g in groups if g.url.strip()
+    ]
+    data[_JOINED_GROUPS_KEY] = overrides
+    RUNTIME_CONFIG_PATH.write_text(
+        json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8"
+    )
+
+
+# --- Registered accounts (admin-added, no code edit needed) ----------------
+#
+# human_bot/config.py's ACCOUNTS dict is still the code-level default (fine
+# for a permanent, committed account). This mirrors the joined_groups
+# pattern above so a NEW account — after running bootstrap_login.py to
+# create its storage_state.json — can be registered from /admin/accounts
+# instead of hand-editing config.py and restarting the service. Stored as
+# a list (not a dict) to preserve registration order. human_bot/config.py's
+# get_all_accounts() merges this with ACCOUNTS; a runtime-registered
+# account only gets the code defaults for rate_limits/joined_groups (tune
+# those afterwards at /admin/config / /admin/groups) — registering an
+# account_id that already exists in ACCOUNTS is a no-op here (code wins),
+# and /admin/accounts blocks that case up front.
+
+_ACCOUNTS_KEY = "accounts"
+
+
+def get_registered_accounts() -> list[dict[str, str]]:
+    data = _read_all()
+    raw = data.get(_ACCOUNTS_KEY, [])
+    if not isinstance(raw, list):
+        return []
+    result = []
+    for item in raw:
+        if isinstance(item, dict) and str(item.get("account_id", "")).strip():
+            account_id = str(item["account_id"]).strip()
+            display_name = str(item.get("display_name", "")).strip() or account_id
+            result.append({"account_id": account_id, "display_name": display_name})
+    return result
+
+
+def save_registered_account(account_id: str, display_name: str) -> None:
+    accounts = [a for a in get_registered_accounts() if a["account_id"] != account_id]
+    accounts.append({"account_id": account_id, "display_name": display_name.strip() or account_id})
+    data = _read_all()
+    data[_ACCOUNTS_KEY] = accounts
+    RUNTIME_CONFIG_PATH.write_text(
+        json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8"
+    )
+
+
+def delete_registered_account(account_id: str) -> None:
+    data = _read_all()
+    data[_ACCOUNTS_KEY] = [a for a in get_registered_accounts() if a["account_id"] != account_id]
+    RUNTIME_CONFIG_PATH.write_text(
+        json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8"
+    )
+
