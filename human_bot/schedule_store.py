@@ -18,9 +18,10 @@ ky muc nao truoc khi no thuc su chay.
 from __future__ import annotations
 
 import json
+import os
 import uuid
 from dataclasses import asdict, dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 SCHEDULE_ROOT = Path(__file__).resolve().parent.parent / "scheduled"
@@ -159,3 +160,33 @@ def mark_failed(task_id: str, reason: str) -> None:
     dest = _move_to(task_id, FAILED_DIR)
     if dest is not None:
         dest.with_suffix(".result.txt").write_text(reason, encoding="utf-8")
+
+
+def cleanup_old(retention_days: int | None = None) -> dict[str, int]:
+    """Permanently delete files from posted/, failed/, cancelled/ older
+    than `retention_days` (default: SCHEDULE_RETENTION_DAYS in .env, or
+    30) — these are terminal states nothing reads back from at runtime
+    (reporting already lives in human_bot.db's action_log, see
+    human_bot/db.py, and survives this untouched), so kept on disk only
+    as an inspectable audit trail. Bounded here on purpose, mirroring
+    DataSyncConfig.cache_retention_days's reasoning — otherwise these
+    directories grow forever as the schedule gets busier over time (see
+    the conversation that raised this: dense schedules should not mean
+    "hard to work with" or ever-growing folders). PENDING_DIR is
+    deliberately untouched — a task waiting to fire is never cleanup
+    material regardless of age. Returns a per-directory count of files
+    removed, for logging/visibility."""
+    if retention_days is None:
+        retention_days = int(os.environ.get("SCHEDULE_RETENTION_DAYS", "30") or "30")
+    ensure_dirs()
+    cutoff = datetime.now(timezone.utc) - timedelta(days=retention_days)
+    removed = {"posted": 0, "failed": 0, "cancelled": 0}
+    for label, directory in (("posted", POSTED_DIR), ("failed", FAILED_DIR), ("cancelled", CANCELLED_DIR)):
+        for path in directory.glob("*"):
+            if not path.is_file():
+                continue
+            mtime = datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc)
+            if mtime < cutoff:
+                path.unlink()
+                removed[label] += 1
+    return removed

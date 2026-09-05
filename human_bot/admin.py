@@ -39,8 +39,10 @@ duoc ve.
 """
 import html
 import os
+import random
 import re
 import secrets
+from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile, status
 from fastapi.responses import HTMLResponse, RedirectResponse
@@ -49,6 +51,7 @@ from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from human_bot import content_queue, db, schedule_store
 from human_bot.agent import TaskRequest, run_task
 from human_bot.config import GroupRef, get_all_accounts
+from human_bot.data_sync import apply_quiet_hours
 from human_bot.data_sync_config import DataSyncConfig
 from human_bot.media import MediaConfig
 from human_bot.humanize import HumanMouseConfig, HumanPacingConfig, HumanTypingConfig
@@ -58,6 +61,7 @@ from human_bot.runtime_config import (
     EDITABLE_MOUSE_FIELDS,
     EDITABLE_DATA_SYNC_FIELDS,
     EDITABLE_MEDIA_FIELDS,
+    get_data_sync_config,
     get_human_typing_overrides,
     get_pacing_overrides,
     get_mouse_overrides,
@@ -79,12 +83,35 @@ router = APIRouter(prefix="/admin", tags=["admin"])
 _security = HTTPBasic(auto_error=False)
 
 _POSTABLE_ACTIONS = ["post_to_own_profile"]
-# Separate from _POSTABLE_ACTIONS (used by content_queue items, which have
-# no per-item target-group field in the UI — that queue was designed for
-# plain own-profile text posts). The "Đăng trực tiếp" manual form gets its
-# own action list plus a target-group selector, added 2026-09-04 once
-# post_to_group's full 4-tier chain was merged into actions.py.
-_MANUAL_POST_ACTIONS = ["post_to_own_profile", "post_to_group"]
+
+# Human-readable Vietnamese labels for internal snake_case keys shown
+# anywhere in the admin UI (dropdowns, tables) — the raw key (e.g.
+# "post_to_group") is still what gets submitted/stored, this only changes
+# what a person reads on screen. Includes actions not implemented in
+# human_bot/actions.py yet so the label is ready the moment they are.
+_ACTION_LABELS: dict[str, str] = {
+    "post_to_own_profile": "Đăng lên tường cá nhân",
+    "post_to_group": "Đăng vào nhóm",
+    "comment_on_friend_post": "Comment bài bạn bè",
+    "comment_on_group_post": "Comment bài trong nhóm",
+    "like_post": "Thích bài viết",
+    "read_recent_comments": "Đọc comment gần đây",
+}
+
+_SOURCE_KIND_LABELS: dict[str, str] = {
+    "job": "Tin tuyển dụng",
+    "candidate": "Ứng viên",
+}
+
+
+def _account_label(account_id: str, accounts: dict | None = None) -> str:
+    """"<Tên hiển thị> (<account_id>)" for a known account, or the bare
+    id if it's somehow not registered — never crashes a page render over
+    a dangling account_id in old data."""
+    accounts = accounts if accounts is not None else get_all_accounts()
+    account = accounts.get(account_id)
+    return f"{account.display_name} ({account_id})" if account else account_id
+
 
 _TYPING_LABELS: dict[str, str] = {
     "enabled": "Bật giả lập gõ phím kiểu người",
@@ -226,10 +253,10 @@ _PAGE_STYLE = """
   .field-stack .field-label { @apply text-sm text-gray-800 font-medium flex-none min-w-0; }
   .field-stack .field-input { @apply w-full; }
 
-  input[type=text], input[type=number], textarea, select {
+  input[type=text], input[type=number], input[type=datetime-local], textarea, select {
     @apply w-full box-border px-2.5 py-2 text-sm border border-gray-200 rounded-lg bg-white text-gray-900 font-sans;
   }
-  input[type=text]:focus, input[type=number]:focus, textarea:focus, select:focus {
+  input[type=text]:focus, input[type=number]:focus, input[type=datetime-local]:focus, textarea:focus, select:focus {
     @apply outline-none border-indigo-600 ring-4 ring-indigo-50;
   }
   input[type=checkbox] { @apply w-[18px] h-[18px] accent-indigo-600 cursor-pointer; }
@@ -372,9 +399,6 @@ _PAGE_STYLE = """
   }
 
   document.addEventListener("click", closeAllCSelects);
-  document.addEventListener("DOMContentLoaded", function () {
-    document.querySelectorAll("[data-cselect]").forEach(initCSelect);
-  });
 
   // Modal: Escape closes whichever .modal-backdrop is currently open
   // (opening/closing the backdrop itself is plain DOM — see
@@ -385,56 +409,193 @@ _PAGE_STYLE = """
     var backdrop = document.querySelector(".modal-backdrop");
     if (backdrop) backdrop.remove();
   });
+
+  // Repeatable content blocks for /admin/post's "Đăng vào nhóm" form
+  // (human_bot/admin.py's post_form/post_schedule_groups): each block is
+  // a content_<i>/groups_<i> field pair — see post_schedule_groups()'s
+  // comment for why the server scans for whatever indices are present
+  // instead of assuming 0..N. Cloning the first block (always literally
+  // index "0" in the server-rendered markup) and bumping its field names
+  // to a fresh, never-reused index is enough; removing a block never
+  // needs to renumber anything else.
+  function initRepeatableBlocks(container) {
+    var addBtn = container.querySelector("[data-add-block]");
+    var list = container.querySelector("[data-block-list]");
+    var template = list ? list.querySelector("[data-block]") : null;
+    if (!addBtn || !list || !template) return;
+    var nextIndex = 1;
+
+    // With only 1 block left, its "Xoá khối này" button is HIDDEN rather
+    // than left clickable-but-silently-doing-nothing — a form can't be
+    // emptied down to zero blocks, but a button that just ignores clicks
+    // with no feedback reads as broken, not as "not allowed".
+    function updateRemoveVisibility() {
+      var blocks = list.querySelectorAll("[data-block]");
+      var onlyOne = blocks.length <= 1;
+      blocks.forEach(function (block) {
+        var btn = block.querySelector("[data-remove-block]");
+        if (btn) btn.style.display = onlyOne ? "none" : "";
+      });
+    }
+
+    function wireRemove(block) {
+      var removeBtn = block.querySelector("[data-remove-block]");
+      if (!removeBtn) return;
+      removeBtn.addEventListener("click", function () {
+        block.remove();
+        updateRemoveVisibility();
+      });
+    }
+
+    addBtn.addEventListener("click", function () {
+      var index = nextIndex++;
+      var clone = template.cloneNode(true);
+      clone.querySelectorAll("[name]").forEach(function (el) {
+        el.name = el.name.replace(/_0$/, "_" + index);
+        if (el.tagName === "TEXTAREA") el.value = "";
+        if (el.type === "checkbox") el.checked = false;
+      });
+      wireRemove(clone);
+      list.appendChild(clone);
+      updateRemoveVisibility();
+    });
+
+    wireRemove(template);
+    updateRemoveVisibility();
+  }
+
+  // Datetime picker for any "when to post" field (/admin/post's compose
+  // forms, /admin/schedule's edit form): the visible <input
+  // type="datetime-local"> is never itself submitted — it only drives a
+  // hidden UTC-ISO field (the one with a real `name`) that the backend
+  // actually reads. This conversion MUST happen in the browser: only the
+  // browser knows the viewer's local timezone, so doing it server-side
+  // would silently assume UTC and shift every pick by the real offset.
+  function initScheduleField(wrap) {
+    var localInput = wrap.querySelector("[data-schedule-local]");
+    var utcInput = wrap.querySelector("[data-schedule-utc]");
+    if (!localInput || !utcInput) return;
+
+    function pad(n) { return String(n).padStart(2, "0"); }
+    function toLocalInputValue(date) {
+      return date.getFullYear() + "-" + pad(date.getMonth() + 1) + "-" + pad(date.getDate())
+        + "T" + pad(date.getHours()) + ":" + pad(date.getMinutes());
+    }
+
+    // Pre-fill the visible picker from whatever UTC value the page
+    // already carries (editing an existing scheduled task).
+    if (utcInput.value && !localInput.value) {
+      var initial = new Date(utcInput.value);
+      if (!isNaN(initial.getTime())) localInput.value = toLocalInputValue(initial);
+    }
+
+    localInput.addEventListener("input", function () {
+      if (!localInput.value) { utcInput.value = ""; return; }
+      var d = new Date(localInput.value);
+      if (!isNaN(d.getTime())) utcInput.value = d.toISOString();
+    });
+
+    // Click anywhere in the field (not just its small calendar icon) to
+    // open the native picker — showPicker() is Chrome/Edge-only as of
+    // this writing, so this is a bonus on top of the icon, not a
+    // replacement: browsers without it just keep working the old way.
+    if (typeof localInput.showPicker === "function") {
+      localInput.addEventListener("click", function () {
+        try { localInput.showPicker(); } catch (e) { /* not user-activated, or already open */ }
+      });
+    }
+
+    // Quick-pick buttons (see _datetime_picker_html) — set the picker
+    // and fire the same "input" handling path as if the person had
+    // typed it themselves, so the hidden UTC field stays in sync.
+    wrap.querySelectorAll("[data-schedule-preset]").forEach(function (btn) {
+      btn.addEventListener("click", function () {
+        var base = new Date();
+        var preset = btn.getAttribute("data-schedule-preset");
+        if (preset === "+1h") base = new Date(base.getTime() + 60 * 60 * 1000);
+        if (preset === "+1d") base = new Date(base.getTime() + 24 * 60 * 60 * 1000);
+        localInput.value = toLocalInputValue(base);
+        localInput.dispatchEvent(new Event("input"));
+      });
+    });
+  }
+
+  function initDynamicScope(root) {
+    root.querySelectorAll("[data-cselect]").forEach(initCSelect);
+    root.querySelectorAll("[data-repeatable-blocks]").forEach(initRepeatableBlocks);
+    root.querySelectorAll("[data-schedule-field]").forEach(initScheduleField);
+  }
+
+  document.addEventListener("DOMContentLoaded", function () { initDynamicScope(document); });
+  // /admin/schedule's edit/fire-now/cancel actions htmx-swap a fresh
+  // #schedule-content in — DOMContentLoaded never fires again for that,
+  // so re-run the same init on whatever htmx just swapped in.
+  document.body.addEventListener("htmx:afterSwap", function (e) { initDynamicScope(e.detail.target); });
 })();
 </script>
 """
 
 
-def _custom_select(name: str, options: list[str], selected: str | None = None) -> str:
+def _custom_select(
+    name: str, options: list[str], selected: str | None = None, labels: dict[str, str] | None = None
+) -> str:
     """Render a styled dropdown (trigger button + panel opening below it)
     backed by a real <select name="..."> so existing form handlers and
-    field names keep working unchanged."""
+    field names keep working unchanged. `labels` maps a raw option value
+    (e.g. "post_to_group", an account_id) to what a person should read
+    instead (e.g. "Đăng vào nhóm", "Trang của tôi (my_page)") — the
+    dropdown still submits/stores the raw value, only the displayed text
+    changes. The custom-dropdown JS (initCSelect below) reads its panel
+    text straight from each native <option>'s textContent, so labelling
+    happens entirely here — no JS change needed."""
     if selected is None:
         selected = options[0] if options else ""
+    labels = labels or {}
     native_opts = "".join(
-        f'<option value="{html.escape(opt)}"{" selected" if opt == selected else ""}>{html.escape(opt)}</option>'
+        f'<option value="{html.escape(opt)}"{" selected" if opt == selected else ""}>{html.escape(labels.get(opt, opt))}</option>'
         for opt in options
     )
     return f"""<div class="cselect" data-cselect>
   <select name="{html.escape(name)}" class="cselect-native">{native_opts}</select>
-  <button type="button" class="cselect-trigger"><span class="cselect-trigger-label">{html.escape(selected)}</span><span class="chevron">▾</span></button>
+  <button type="button" class="cselect-trigger"><span class="cselect-trigger-label">{html.escape(labels.get(selected, selected))}</span><span class="chevron">▾</span></button>
   <div class="cselect-panel"></div>
 </div>"""
 
 
-def _manual_post_group_select_html(selected_url: str = "") -> str:
-    """Plain <select name="target_url"> listing every saved group across
-    every account (from /admin/groups' saved list), for the "Đăng trực
-    tiếp" form's post_to_group option. Not built with _custom_select()
-    since that helper only supports value == display label, and here the
-    displayed label ("<account> — <group name>") needs to differ from the
-    submitted value (the group's URL) — same raw-<select> approach
-    /admin/groups' account filter already uses. Only relevant when the
-    accompanying "Hành động" field is set to post_to_group; ignored by the
-    post_to_own_profile handler path (see post_manual() below), so it's
-    safe to always render regardless of which action is selected — no
-    JS toggle needed on this still-full-reload page (see the module
-    docstring's note on which /admin pages did NOT move to htmx)."""
-    options = ['<option value="">— (không cần cho đăng tường cá nhân) —</option>']
-    for account_id, account in get_all_accounts().items():
-        for g in get_joined_groups(account_id):
-            label = f"{account.display_name} — {g.name or g.url}"
-            is_selected = " selected" if g.url == selected_url else ""
-            options.append(
-                f'<option value="{html.escape(g.url)}"{is_selected}>{html.escape(label)}</option>'
-            )
-    # Plain <select> (not wrapped in the .cselect custom-dropdown
-    # component) — the base `select { ... }` Tailwind rule already styles
-    # any bare <select> consistently with the rest of the form, no extra
-    # class needed. Using .cselect-native's own class here would do
-    # nothing outside a .cselect wrapper (that hidden rule is scoped to
-    # ".cselect select.cselect-native"), so it's correctly left off.
-    return f'<select name="target_url">{"".join(options)}</select>'
+def _datetime_picker_html(name: str, current_value: str = "", required: bool = False, blank_hint: bool = True) -> str:
+    """A real <input type="datetime-local"> for any "when to post" field —
+    /admin/post's compose forms and /admin/schedule's edit form. The
+    visible picker is NEVER itself submitted; it only drives a hidden
+    `name`-named field (the initScheduleField JS, in this module's page
+    script) that always carries a UTC ISO 8601 string, which is what
+    _parse_scheduled_at()/schedule_store actually read. This conversion
+    is deliberately done in the browser, not here — only the browser
+    knows the viewer's local timezone, so converting server-side would
+    silently assume UTC and shift every pick by the real offset.
+
+    The picker interprets whatever is typed using the OPERATOR's own
+    device timezone (standard <input type="datetime-local"> behavior) —
+    correct automatically for someone in Japan picking a Japan-time slot;
+    no separate timezone-conversion display (dropped per project owner
+    feedback — the raw picker is enough).
+
+    Clicking anywhere in the field opens the native picker (not just its
+    small calendar icon) via the input's own `.showPicker()` — wired up
+    in initScheduleField, guarded for browsers that don't have it yet."""
+    hint = ' <span class="muted" style="font-size:12px;">(để trống = ngay bây giờ)</span>' if blank_hint else ""
+    presets = (
+        '<button type="button" class="btn-secondary btn-small" data-schedule-preset="now">Ngay bây giờ</button>'
+        '<button type="button" class="btn-secondary btn-small" data-schedule-preset="+1h">+1 giờ</button>'
+        '<button type="button" class="btn-secondary btn-small" data-schedule-preset="+1d">Ngày mai, giờ này</button>'
+    )
+    return (
+        f'<div data-schedule-field style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">'
+        f'<input type="datetime-local"{" required" if required else ""} data-schedule-local>'
+        f'<input type="hidden" name="{html.escape(name)}" data-schedule-utc value="{html.escape(current_value)}">'
+        f"{presets}"
+        f"{hint}"
+        f"</div>"
+    )
 
 
 def _is_htmx(request: Request) -> bool:
@@ -690,11 +851,112 @@ async def accounts_delete(request: Request, _: None = Depends(_require_auth)) ->
     return RedirectResponse(url="/admin/accounts?saved=1", status_code=303)
 
 
+def _parse_scheduled_at(raw: str) -> datetime | None:
+    """Empty string means "as soon as possible" — `datetime.now(UTC)`, so
+    the resulting ScheduledTask is immediately due and can be fired right
+    away from /admin/schedule's "🚀 Đăng ngay" button, same as any other
+    task. Anything non-empty must be a valid ISO 8601 timestamp; returns
+    None on a bad string so the caller can reject the form instead of
+    silently scheduling for the wrong time.
+
+    Clamped forward to "now" if it parses to a moment already in the
+    past — a picked time can go stale between when it was chosen in the
+    browser (e.g. the "Ngay bây giờ" preset snapshots the click-time
+    instant) and when the form actually gets submitted. Without this, a
+    slow submit on post_schedule_groups() could land every group's
+    computed time in the past AT ONCE, and they'd all fire back-to-back
+    the moment something checks for due tasks — exactly the "never a
+    burst" pacing principle (docs/skills/rate-limiting-pacing.md) this
+    project is built around. This never rejects a past pick as an error;
+    it just means "as soon as possible", same as leaving the field blank."""
+    raw = raw.strip()
+    now = datetime.now(timezone.utc)
+    if not raw:
+        return now
+    try:
+        dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    dt = dt.astimezone(timezone.utc)
+    return dt if dt > now else now
+
+
 @router.get("/post", response_class=HTMLResponse)
-async def post_form(posted: str | None = None, error: str | None = None, _: None = Depends(_require_auth)) -> str:
-    account_ids = list(get_all_accounts())
-    flash = f'<p class="flash">✅ {html.escape(posted)}</p>' if posted else ""
+async def post_form(
+    account_id: str | None = None,
+    scheduled: int | None = None,
+    error: str | None = None,
+    _: None = Depends(_require_auth),
+) -> str:
+    accounts = get_all_accounts()
+    account_ids = list(accounts)
+    if not account_ids:
+        return _layout(
+            '<h1>Đăng bài</h1><div class="empty-state">Chưa có tài khoản nào — '
+            'đăng ký ở <a href="/admin/accounts">/admin/accounts</a> trước.</div>',
+            active="post",
+        )
+    if account_id not in accounts:
+        account_id = account_ids[0]
+    account_labels = {aid: _account_label(aid, accounts) for aid in account_ids}
+
+    flash = '<p class="flash">✅ Đã lên lịch — xem/sửa/đăng ngay ở /admin/schedule.</p>' if scheduled else ""
     err = f'<p class="error">⚠️ {html.escape(error)}</p>' if error else ""
+
+    # Choosing the account fully reloads this page (plain GET form, no
+    # JS) rather than trying to keep an account-scoped group checkbox
+    # list in sync via JS/htmx — same "still-full-reload page" simplicity
+    # already used elsewhere on this page (see the queue/upload cards
+    # below), just applied to the account picker too.
+    account_picker = f"""
+<form method="get" action="/admin/post" class="account-filter">
+  <label for="post-account-select">Soạn cho tài khoản</label>
+  <select name="account_id" id="post-account-select" onchange="this.form.submit()">
+    {"".join(f'<option value="{html.escape(aid)}"{" selected" if aid == account_id else ""}>{html.escape(account_labels[aid])}</option>' for aid in account_ids)}
+  </select>
+</form>"""
+
+    groups = get_joined_groups(account_id)
+    if groups:
+        group_checkboxes = "".join(
+            f'''<label style="display:flex; align-items:center; gap:6px; font-size:13px; background:#f9fafb; border:1px solid #e5e7eb; border-radius:8px; padding:6px 10px;">
+  <input type="checkbox" name="groups_0" value="{html.escape(g.url)}"> {html.escape(g.name or g.url)}
+</label>'''
+            for g in groups
+        )
+        group_post_card = f"""
+<div class="card">
+  <h2>👥 Đăng vào nhóm — {html.escape(account_labels[account_id])}</h2>
+  <p class="page-desc">Có thể tạo nhiều khối nội dung khác nhau, mỗi khối đăng vào một tập nhóm riêng — ví dụ nội dung A cho 3 nhóm đầu, nội dung B cho nhóm còn lại. Hệ thống tự rải giờ đăng giữa TẤT CẢ các bài (kể cả giữa các khối khác nhau) theo khoảng cách đang cấu hình ở "Cấu hình hành vi" → "Đồng bộ dữ liệu bên B" — không đăng dồn một lúc dù chọn nhiều nhóm.</p>
+  <form method="post" action="/admin/post/schedule-groups">
+    <input type="hidden" name="account_id" value="{html.escape(account_id)}">
+    <div data-repeatable-blocks>
+      <div data-block-list>
+        <div class="content-block" data-block style="border:1px solid #e5e7eb; border-radius:12px; padding:14px; margin-bottom:10px;">
+          <textarea name="content_0" placeholder="Nội dung cho các nhóm được chọn bên dưới..." required></textarea>
+          <div class="field-key" style="margin:8px 0 6px;">Đăng vào nhóm:</div>
+          <div style="display:flex; flex-wrap:wrap; gap:8px;">{group_checkboxes}</div>
+          <button type="button" class="btn-secondary btn-small" data-remove-block style="margin-top:10px;">Xoá khối này</button>
+        </div>
+      </div>
+      <button type="button" class="btn-secondary btn-small" data-add-block>+ Thêm nội dung khác</button>
+    </div>
+    <div class="field-stack" style="margin-top:14px;">
+      <div class="field-label">Bắt đầu đăng lúc</div>
+      <div class="field-input">{_datetime_picker_html("start_at")}</div>
+    </div>
+    <div class="form-actions"><button type="submit">Lên lịch tất cả</button></div>
+  </form>
+</div>"""
+    else:
+        group_post_card = f"""
+<div class="card">
+  <h2>👥 Đăng vào nhóm — {html.escape(account_labels[account_id])}</h2>
+  <div class="empty-state">Tài khoản này chưa có nhóm nào — thêm ở <a href="/admin/groups?account_id={html.escape(account_id)}">/admin/groups</a> trước.</div>
+</div>"""
+
     queue_items = content_queue.list_pending()
     if queue_items:
         queue_html = "".join(f"""
@@ -703,8 +965,8 @@ async def post_form(posted: str | None = None, error: str | None = None, _: None
   <div class="queue-preview">{html.escape(item['preview'])}</div>
   <form method="post" action="/admin/post/queue">
     <input type="hidden" name="filename" value="{html.escape(item['filename'])}">
-    {_custom_select("account_id", account_ids)}
-    {_custom_select("action", _POSTABLE_ACTIONS)}
+    {_custom_select("account_id", account_ids, labels=account_labels)}
+    {_custom_select("action", _POSTABLE_ACTIONS, labels=_ACTION_LABELS)}
     <button type="submit" class="btn-small">Đăng mục này</button>
   </form>
 </div>""" for item in queue_items)
@@ -712,20 +974,24 @@ async def post_form(posted: str | None = None, error: str | None = None, _: None
         queue_html = '<div class="empty-state">Hàng đợi trống. Thả file .txt vào content_queue/pending/, hoặc tải lên bên dưới.</div>'
     return _layout(f"""
 <h1>Đăng bài</h1>
+<p class="page-desc">Soạn nội dung và chọn thời điểm đăng — bài nào cũng qua lịch (<a href="/admin/schedule">/admin/schedule</a>) trước khi thật sự chạy, kể cả muốn đăng ngay (để trống giờ đăng, rồi bấm "🚀 Đăng ngay" bên đó).</p>
 {flash}{err}
+{account_picker}
 
 <div class="card">
-  <h2>✍️ Đăng trực tiếp</h2>
-  <form method="post" action="/admin/post/manual">
-  <div class="field-grid">
-    <div class="field-stack"><div class="field-label">Tài khoản</div><div class="field-input">{_custom_select("account_id", account_ids)}</div></div>
-    <div class="field-stack"><div class="field-label">Hành động</div><div class="field-input">{_custom_select("action", _MANUAL_POST_ACTIONS)}</div></div>
-    <div class="field-stack"><div class="field-label">Nhóm mục tiêu (chỉ dùng khi Hành động = post_to_group)</div><div class="field-input">{_manual_post_group_select_html()}</div></div>
-  </div>
-  <div style="margin-top:14px"><textarea name="content" placeholder="Nội dung bài đăng..." required></textarea></div>
-  <div class="form-actions"><button type="submit">Đăng ngay</button></div>
+  <h2>👤 Đăng lên tường cá nhân — {html.escape(account_labels[account_id])}</h2>
+  <form method="post" action="/admin/post/schedule-profile">
+    <input type="hidden" name="account_id" value="{html.escape(account_id)}">
+    <textarea name="content" placeholder="Nội dung bài đăng..." required></textarea>
+    <div class="field-stack" style="margin-top:14px;">
+      <div class="field-label">Đăng lúc</div>
+      <div class="field-input">{_datetime_picker_html("scheduled_at")}</div>
+    </div>
+    <div class="form-actions"><button type="submit">Lên lịch</button></div>
   </form>
 </div>
+
+{group_post_card}
 
 <div class="section-divider">Hàng đợi nội dung (content_queue/pending/)</div>
 {queue_html}
@@ -740,23 +1006,81 @@ async def post_form(posted: str | None = None, error: str | None = None, _: None
 """, active="post")
 
 
-@router.post("/post/manual")
-async def post_manual(request: Request, _: None = Depends(_require_auth)) -> RedirectResponse:
+@router.post("/post/schedule-profile")
+async def post_schedule_profile(request: Request, _: None = Depends(_require_auth)) -> RedirectResponse:
     form = await request.form()
-    account_id = str(form.get("account_id", ""))
-    action = str(form.get("action", ""))
-    content = str(form.get("content", ""))
-    target_url = str(form.get("target_url", "")).strip() or None
-    if not content.strip():
-        return RedirectResponse(url="/admin/post?error=Nội+dung+trống", status_code=303)
-    if action == "post_to_group" and not target_url:
-        return RedirectResponse(url="/admin/post?error=Chưa+chọn+nhóm+mục+tiêu", status_code=303)
-    result = await run_task(TaskRequest(
-        action=action, account_id=account_id, content=content, target_url=target_url, source="manual",
-    ))
-    if result.success:
-        return RedirectResponse(url=f"/admin/post?posted=Đã đăng thành công: {result.message}", status_code=303)
-    return RedirectResponse(url=f"/admin/post?error={result.message}", status_code=303)
+    account_id = str(form.get("account_id", "")).strip()
+    content = str(form.get("content", "")).strip()
+    if not content:
+        return RedirectResponse(url=f"/admin/post?account_id={account_id}&error=Nội+dung+trống", status_code=303)
+    scheduled_at = _parse_scheduled_at(str(form.get("scheduled_at", "")))
+    if scheduled_at is None:
+        return RedirectResponse(url=f"/admin/post?account_id={account_id}&error=Giờ+đăng+không+hợp+lệ", status_code=303)
+    task = schedule_store.ScheduledTask(
+        task_id=schedule_store.new_task_id(scheduled_at.isoformat()),
+        action="post_to_own_profile",
+        account_id=account_id,
+        scheduled_at=scheduled_at.isoformat(),
+        content=content,
+        reasoning="manual: composed at /admin/post",
+    )
+    schedule_store.add(task)
+    return RedirectResponse(url=f"/admin/post?account_id={account_id}&scheduled=1", status_code=303)
+
+
+@router.post("/post/schedule-groups")
+async def post_schedule_groups(request: Request, _: None = Depends(_require_auth)) -> RedirectResponse:
+    form = await request.form()
+    account_id = str(form.get("account_id", "")).strip()
+
+    # Content blocks were submitted as content_<i> / groups_<i> pairs — see
+    # post_form()'s data-repeatable-blocks template and its cloning JS
+    # (initRepeatableBlocks). Scanning for whatever indices are actually
+    # present (rather than assuming 0..N contiguous) means removing a
+    # block in the browser can never desync from what the server expects.
+    indices = sorted(
+        {key.split("_", 1)[1] for key in form.keys() if key.startswith("content_")},
+        key=lambda s: int(s) if s.isdigit() else 0,
+    )
+    blocks: list[tuple[str, list[str]]] = []
+    for idx in indices:
+        content = str(form.get(f"content_{idx}", "")).strip()
+        group_urls = [str(u) for u in form.getlist(f"groups_{idx}") if str(u).strip()]
+        if content and group_urls:
+            blocks.append((content, group_urls))
+
+    if not blocks:
+        return RedirectResponse(
+            url=f"/admin/post?account_id={account_id}&error=Cần ít nhất 1 khối nội dung có chọn nhóm",
+            status_code=303,
+        )
+
+    start_at = _parse_scheduled_at(str(form.get("start_at", "")))
+    if start_at is None:
+        return RedirectResponse(url=f"/admin/post?account_id={account_id}&error=Giờ+bắt+đầu+không+hợp+lệ", status_code=303)
+
+    cfg = get_data_sync_config()
+    next_time = start_at
+    scheduled_count = 0
+    for content, group_urls in blocks:
+        for group_url in group_urls:
+            scheduled_at = apply_quiet_hours(next_time, cfg)
+            task = schedule_store.ScheduledTask(
+                task_id=schedule_store.new_task_id(scheduled_at.isoformat()),
+                action="post_to_group",
+                account_id=account_id,
+                scheduled_at=scheduled_at.isoformat(),
+                content=content,
+                target_url=group_url,
+                reasoning="manual: composed at /admin/post",
+            )
+            schedule_store.add(task)
+            scheduled_count += 1
+            next_time = next_time + timedelta(
+                minutes=random.uniform(cfg.post_gap_min_minutes, cfg.post_gap_max_minutes)
+            )
+
+    return RedirectResponse(url=f"/admin/post?account_id={account_id}&scheduled={scheduled_count}", status_code=303)
 
 
 @router.post("/post/queue")
@@ -798,27 +1122,81 @@ def _fmt_dt(iso: str) -> str:
         return iso
 
 
-def _schedule_content_html(saved: bool = False, error: str | None = None) -> str:
-    tasks = schedule_store.list_pending()
+_SCHEDULE_PAGE_SIZE = 20
+
+
+def _schedule_page_link(account_id: str | None, target_page: int, label: str, enabled: bool) -> str:
+    if not enabled:
+        return f'<span class="btn-secondary btn-small" style="opacity:.45; pointer-events:none;">{label}</span>'
+    from urllib.parse import urlencode
+    qs = urlencode({k: v for k, v in {"account_id": account_id, "page": target_page}.items() if v})
+    return (
+        f'<a class="btn-secondary btn-small" href="/admin/schedule?{qs}" '
+        f'hx-get="/admin/schedule?{qs}" hx-target="#schedule-content" hx-swap="outerHTML" hx-push-url="true">{label}</a>'
+    )
+
+
+def _schedule_content_html(
+    account_id: str | None = None, page: int = 1, saved: bool = False, error: str | None = None
+) -> str:
+    accounts = get_all_accounts()
+    if account_id and account_id not in accounts:
+        account_id = None  # unknown/stale filter falls back to "all", never a hard error
+    all_tasks = schedule_store.list_pending()
+    tasks = [t for t in all_tasks if not account_id or t.account_id == account_id]
+
+    total = len(tasks)
+    total_pages = max(1, -(-total // _SCHEDULE_PAGE_SIZE))  # ceil division
+    page = min(max(page, 1), total_pages)
+    start = (page - 1) * _SCHEDULE_PAGE_SIZE
+    page_tasks = tasks[start:start + _SCHEDULE_PAGE_SIZE]
+
     flash = '<p class="flash">✅ Đã cập nhật.</p>' if saved else ""
     err = f'<p class="error">⚠️ {html.escape(error)}</p>' if error else ""
-    if tasks:
+
+    # Filtering by account is what keeps this page workable once the
+    # schedule gets busy (many accounts/groups) — switching accounts
+    # always jumps back to page 1 (this <select> never sends a `page`
+    # param), so a filter change never lands on a now-out-of-range page.
+    account_options = '<option value="">— Tất cả tài khoản —</option>' + "".join(
+        f'<option value="{html.escape(aid)}"{" selected" if aid == account_id else ""}>{html.escape(a.display_name)} ({html.escape(aid)})</option>'
+        for aid, a in accounts.items()
+    )
+    filter_html = f"""
+<div class="account-filter">
+  <label for="schedule-account-select">Tài khoản</label>
+  <select name="account_id" id="schedule-account-select"
+          hx-get="/admin/schedule" hx-target="#schedule-content" hx-swap="outerHTML"
+          hx-trigger="change" hx-push-url="true">{account_options}</select>
+  <span class="badge">{total} bài đang chờ</span>
+</div>"""
+
+    if page_tasks:
         items_html = []
-        for t in tasks:
+        for t in page_tasks:
             content_preview = html.escape((t.content or "")[:400])
             target = html.escape(t.target_url or "—")
-            source = f"{html.escape(t.source_kind or '?')} · {html.escape(t.source_id or '?')}" if t.source_kind else "thủ công"
+            source_kind_label = html.escape(_SOURCE_KIND_LABELS.get(t.source_kind or "", t.source_kind or "?"))
+            source = f"{source_kind_label} · {html.escape(t.source_id or '?')}" if t.source_kind else "thủ công"
+            # Every mutating form below carries the current filter/page
+            # back so update/fire-now/cancel re-render the SAME view
+            # instead of silently resetting to "all accounts, page 1".
+            filter_fields = (
+                f'<input type="hidden" name="account_id" value="{html.escape(account_id or "")}">'
+                f'<input type="hidden" name="page" value="{page}">'
+            )
             items_html.append(f"""
 <div class="queue-item">
-  <div class="queue-filename">{html.escape(t.action)} · {html.escape(t.account_id)} · {_fmt_dt(t.scheduled_at)}</div>
+  <div class="queue-filename">{html.escape(_ACTION_LABELS.get(t.action, t.action))} · {html.escape(_account_label(t.account_id, accounts))} · {_fmt_dt(t.scheduled_at)}</div>
   <div class="queue-preview">{content_preview}</div>
   <div class="field-key">Đích: {target} · Nguồn: {source} · id: {html.escape(t.task_id)}</div>
   <form method="post" action="/admin/schedule/update"
         hx-post="/admin/schedule/update" hx-target="#schedule-content" hx-swap="outerHTML"
         style="margin-top:8px; display:flex; gap:8px; align-items:flex-start; flex-wrap:wrap;">
     <input type="hidden" name="task_id" value="{html.escape(t.task_id)}">
+    {filter_fields}
     <textarea name="content" style="flex:1; min-width:240px; min-height:60px;">{content_preview}</textarea>
-    <input type="text" name="scheduled_at" value="{html.escape(t.scheduled_at)}" style="width:220px;" title="ISO 8601 UTC, vd 2026-09-05T03:00:00Z">
+    {_datetime_picker_html("scheduled_at", current_value=t.scheduled_at, required=True, blank_hint=False)}
     <button type="submit" class="btn-small">Lưu</button>
   </form>
   <div style="margin-top:8px; display:flex; gap:8px;">
@@ -826,40 +1204,80 @@ def _schedule_content_html(saved: bool = False, error: str | None = None) -> str
           hx-post="/admin/schedule/fire-now" hx-target="#schedule-content" hx-swap="outerHTML"
           hx-confirm="Đăng bài này lên Facebook ngay bây giờ?">
       <input type="hidden" name="task_id" value="{html.escape(t.task_id)}">
+      {filter_fields}
       <button type="submit" class="btn-small">🚀 Đăng ngay</button>
     </form>
     <form method="post" action="/admin/schedule/cancel"
           hx-post="/admin/schedule/cancel" hx-target="#schedule-content" hx-swap="outerHTML"
           hx-confirm="Huỷ lịch đăng này?">
       <input type="hidden" name="task_id" value="{html.escape(t.task_id)}">
+      {filter_fields}
       <button type="submit" class="btn-secondary btn-small">Huỷ</button>
     </form>
   </div>
 </div>""")
         list_html = "".join(items_html)
+    elif total == 0:
+        list_html = '<div class="empty-state">Chưa có bài nào đang chờ lịch. Bộ đồng bộ bên B sẽ tự điền vào đây khi có dữ liệu mới, hoặc soạn thủ công ở /admin/post.</div>'
     else:
-        list_html = '<div class="empty-state">Chưa có bài nào đang chờ lịch. Bộ đồng bộ bên B sẽ tự điền vào đây khi có dữ liệu mới.</div>'
+        list_html = '<div class="empty-state">Không có bài nào ở trang này.</div>'
+
+    pagination_html = ""
+    if total_pages > 1:
+        pagination_html = f"""
+<div style="display:flex; justify-content:space-between; align-items:center; margin-top:14px;">
+  {_schedule_page_link(account_id, page - 1, "← Trang trước", page > 1)}
+  <span class="muted">Trang {page}/{total_pages}</span>
+  {_schedule_page_link(account_id, page + 1, "Trang sau →", page < total_pages)}
+</div>"""
+
     return f"""<div id="schedule-content">
+{filter_html}
 {flash}{err}
 {list_html}
+{pagination_html}
 </div>"""
 
 
 @router.get("/schedule", response_class=HTMLResponse)
-async def schedule_list(request: Request, saved: bool = False, error: str | None = None, _: None = Depends(_require_auth)) -> str:
-    content = _schedule_content_html(saved, error)
+async def schedule_list(
+    request: Request,
+    account_id: str | None = None,
+    page: int = 1,
+    saved: bool = False,
+    error: str | None = None,
+    _: None = Depends(_require_auth),
+) -> str:
+    content = _schedule_content_html(account_id=account_id, page=page, saved=saved, error=error)
     if _is_htmx(request):
         return content
     return _layout(f"""
 <h1>Lịch đăng</h1>
-<p class="page-desc">Các bài do bộ đồng bộ dữ liệu bên B (human_bot/data_sync.py) lấy về và lên lịch. Khi "Tự động đăng khi đến giờ" đang TẮT (mặc định), các bài này chỉ được đăng khi bạn bấm "Đăng ngay" thủ công.</p>
+<p class="page-desc">Mọi bài chờ đăng — tự động từ bộ đồng bộ bên B (human_bot/data_sync.py) hoặc soạn thủ công ở /admin/post — đều nằm ở đây trước khi thật sự chạy. Khi "Tự động đăng khi đến giờ" đang TẮT (mặc định), các bài này chỉ được đăng khi bạn bấm "Đăng ngay" thủ công.</p>
 {content}
 """, active="schedule")
+
+
+def _schedule_redirect(account_id: str | None, page: int, **params) -> RedirectResponse:
+    from urllib.parse import urlencode
+    query = {"account_id": account_id, "page": page, **params}
+    query = {k: v for k, v in query.items() if v not in (None, "", 0)}
+    return RedirectResponse(url=f"/admin/schedule?{urlencode(query)}", status_code=303)
+
+
+def _schedule_form_filter(form) -> tuple[str | None, int]:
+    account_id = str(form.get("account_id", "")).strip() or None
+    try:
+        page = int(str(form.get("page", "1")))
+    except ValueError:
+        page = 1
+    return account_id, page
 
 
 @router.post("/schedule/update")
 async def schedule_update(request: Request, _: None = Depends(_require_auth)):
     form = await request.form()
+    account_id, page = _schedule_form_filter(form)
     task_id = str(form.get("task_id", ""))
     content = str(form.get("content", ""))
     scheduled_at = str(form.get("scheduled_at", ""))
@@ -867,21 +1285,22 @@ async def schedule_update(request: Request, _: None = Depends(_require_auth)):
     if updated is None:
         err = "Không tìm thấy mục này (có thể đã được đăng hoặc huỷ)"
         if _is_htmx(request):
-            return HTMLResponse(_schedule_content_html(error=err))
-        return RedirectResponse(url=f"/admin/schedule?error={err}", status_code=303)
+            return HTMLResponse(_schedule_content_html(account_id=account_id, page=page, error=err))
+        return _schedule_redirect(account_id, page, error=err)
     if _is_htmx(request):
-        return HTMLResponse(_schedule_content_html(saved=True))
-    return RedirectResponse(url="/admin/schedule?saved=1", status_code=303)
+        return HTMLResponse(_schedule_content_html(account_id=account_id, page=page, saved=True))
+    return _schedule_redirect(account_id, page, saved=1)
 
 
 @router.post("/schedule/cancel")
 async def schedule_cancel(request: Request, _: None = Depends(_require_auth)):
     form = await request.form()
+    account_id, page = _schedule_form_filter(form)
     task_id = str(form.get("task_id", ""))
     schedule_store.cancel(task_id)
     if _is_htmx(request):
-        return HTMLResponse(_schedule_content_html(saved=True))
-    return RedirectResponse(url="/admin/schedule?saved=1", status_code=303)
+        return HTMLResponse(_schedule_content_html(account_id=account_id, page=page, saved=True))
+    return _schedule_redirect(account_id, page, saved=1)
 
 
 @router.post("/schedule/fire-now")
@@ -890,13 +1309,14 @@ async def schedule_fire_now(request: Request, _: None = Depends(_require_auth)):
     button is the manual override for when that safety gate is (correctly)
     left off. See docs/architecture.md section 3c."""
     form = await request.form()
+    account_id, page = _schedule_form_filter(form)
     task_id = str(form.get("task_id", ""))
     task = schedule_store.get(task_id)
     if task is None:
         err = "Không tìm thấy mục này"
         if _is_htmx(request):
-            return HTMLResponse(_schedule_content_html(error=err))
-        return RedirectResponse(url=f"/admin/schedule?error={err}", status_code=303)
+            return HTMLResponse(_schedule_content_html(account_id=account_id, page=page, error=err))
+        return _schedule_redirect(account_id, page, error=err)
     result = await run_task(TaskRequest(
         action=task.action,
         account_id=task.account_id,
@@ -911,12 +1331,12 @@ async def schedule_fire_now(request: Request, _: None = Depends(_require_auth)):
     if result.success:
         schedule_store.mark_posted(task_id, result.message)
         if _is_htmx(request):
-            return HTMLResponse(_schedule_content_html(saved=True))
-        return RedirectResponse(url="/admin/schedule?saved=1", status_code=303)
+            return HTMLResponse(_schedule_content_html(account_id=account_id, page=page, saved=True))
+        return _schedule_redirect(account_id, page, saved=1)
     schedule_store.mark_failed(task_id, result.message)
     if _is_htmx(request):
-        return HTMLResponse(_schedule_content_html(error=f"Đăng thất bại: {result.message}"))
-    return RedirectResponse(url=f"/admin/schedule?error=Đăng+thất+bại:+{result.message}", status_code=303)
+        return HTMLResponse(_schedule_content_html(account_id=account_id, page=page, error=f"Đăng thất bại: {result.message}"))
+    return _schedule_redirect(account_id, page, error=f"Đăng thất bại: {result.message}")
 
 
 # --- Joined group URLs (per-account, used by the data-sync poller) ---------
@@ -1169,23 +1589,91 @@ _SOURCE_LABELS: dict[str, str] = {
 }
 
 
-def _reports_content_html(account_id: str | None) -> str:
+def _expandable_text(text: str | None, limit: int = 80) -> str:
+    """Show `text` truncated to `limit` chars, with a native <details>
+    disclosure (no JS needed) to expand and read the full thing — for
+    /admin/reports' "Ghi chú" column, where a Playwright error message can
+    run well past a single line (see the conversation that raised this:
+    truncating to 80 chars with no way to see the rest loses real debug
+    info). Only wraps in <details> when actually truncated; a short
+    message renders as plain text, no disclosure triangle for nothing."""
+    text = text or ""
+    if not text:
+        return '<span class="muted">—</span>'
+    if len(text) <= limit:
+        return html.escape(text)
+    short = html.escape(text[:limit])
+    full = html.escape(text)
+    return (
+        f'<details><summary style="cursor:pointer; display:inline;">{short}…</summary>'
+        f'<div style="white-space:pre-wrap; margin-top:4px; max-width:480px;">{full}</div></details>'
+    )
+
+
+_REPORTS_DAYS_LABELS: dict[str, str] = {
+    "": "Tất cả thời gian",
+    "7": "7 ngày qua",
+    "30": "30 ngày qua",
+    "90": "90 ngày qua",
+}
+_REPORTS_RECENT_PAGE_SIZE = 15
+
+
+def _reports_since(days: str | None) -> str | None:
+    """`days` (from the "Khoảng thời gian" filter, e.g. "30") to an ISO
+    UTC cutoff `created_at >= this` — None/"" means no cutoff (all time)."""
+    if not days:
+        return None
+    try:
+        n = int(days)
+    except ValueError:
+        return None
+    from datetime import datetime, timedelta, timezone
+    return (datetime.now(timezone.utc) - timedelta(days=n)).isoformat()
+
+
+def _reports_content_html(account_id: str | None = None, days: str | None = None, page: int = 1) -> str:
+    accounts = get_all_accounts()
+    since = _reports_since(days)
+
     account_options = '<option value="">— Tất cả tài khoản —</option>' + "".join(
         f'<option value="{html.escape(aid)}"{" selected" if aid == account_id else ""}>{html.escape(a.display_name)} ({html.escape(aid)})</option>'
-        for aid, a in get_all_accounts().items()
+        for aid, a in accounts.items()
+    )
+    days_options = "".join(
+        f'<option value="{html.escape(key)}"{" selected" if (days or "") == key else ""}>{html.escape(label)}</option>'
+        for key, label in _REPORTS_DAYS_LABELS.items()
     )
     filter_html = f"""
 <div class="account-filter">
   <label for="reports-account-select">Tài khoản</label>
   <select name="account_id" id="reports-account-select"
           hx-get="/admin/reports" hx-target="#reports-content" hx-swap="outerHTML"
-          hx-trigger="change" hx-push-url="true">{account_options}</select>
+          hx-trigger="change" hx-include="#reports-days-select" hx-push-url="true">{account_options}</select>
+  <label for="reports-days-select">Khoảng thời gian</label>
+  <select name="days" id="reports-days-select"
+          hx-get="/admin/reports" hx-target="#reports-content" hx-swap="outerHTML"
+          hx-trigger="change" hx-include="#reports-account-select" hx-push-url="true">{days_options}</select>
 </div>"""
 
-    weekly_rows = db.weekly_post_counts(account_id=account_id)
+    # --- KPI summary — glance-and-go health check before the detail tables ---
+    stats = db.summary_stats(account_id=account_id, since=since)
+    rate_display = f"{stats['success_rate']}%" if stats["success_rate"] is not None else "—"
+    summary_html = f"""
+<div class="card">
+  <div style="display:flex; gap:24px; flex-wrap:wrap;">
+    <div><div class="muted" style="font-size:12px;">Tổng số hành động</div><div style="font-size:22px; font-weight:700;">{stats['total']}</div></div>
+    <div><div class="muted" style="font-size:12px;">Thành công</div><div style="font-size:22px; font-weight:700; color:#059669;">{stats['succeeded']}</div></div>
+    <div><div class="muted" style="font-size:12px;">Thất bại</div><div style="font-size:22px; font-weight:700; color:#dc2626;">{stats['failed']}</div></div>
+    <div><div class="muted" style="font-size:12px;">Tỉ lệ thành công</div><div style="font-size:22px; font-weight:700;">{rate_display}</div></div>
+    <div><div class="muted" style="font-size:12px;">Tài khoản có hoạt động</div><div style="font-size:22px; font-weight:700;">{stats['active_accounts']}</div></div>
+  </div>
+</div>"""
+
+    weekly_rows = db.weekly_post_counts(account_id=account_id, since=since)
     if weekly_rows:
         weekly_html = "".join(
-            f"<tr><td>{html.escape(r['week'])}</td><td>{html.escape(r['account_id'])}</td><td>{r['total']}</td></tr>"
+            f"<tr><td>{html.escape(r['week'])}</td><td>{html.escape(_account_label(r['account_id'], accounts))}</td><td>{r['total']}</td></tr>"
             for r in weekly_rows
         )
         weekly_table = f"""
@@ -1196,11 +1684,11 @@ def _reports_content_html(account_id: str | None) -> str:
     else:
         weekly_table = '<div class="empty-state">Chưa có bài đăng thành công nào được ghi nhận.</div>'
 
-    group_rows = db.group_post_counts(account_id=account_id)
+    group_rows = db.group_post_counts(account_id=account_id, since=since)
     if group_rows:
         group_html = "".join(
             f"""<tr>
-  <td>{html.escape(r['account_id'])}</td>
+  <td>{html.escape(_account_label(r['account_id'], accounts))}</td>
   <td>{html.escape(r['target_group_name']) if r['target_group_name'] else '<span class="muted">(chưa rõ tên)</span>'}</td>
   <td class="row-url"><a href="{html.escape(r['target_url'] or '')}" target="_blank" rel="noopener">{html.escape(r['target_url'] or '')}</a></td>
   <td>{r['total']}</td>
@@ -1214,11 +1702,11 @@ def _reports_content_html(account_id: str | None) -> str:
     else:
         group_table = '<div class="empty-state">Chưa có bài đăng nhóm nào được ghi nhận.</div>'
 
-    action_rows = db.action_type_counts(account_id=account_id)
+    action_rows = db.action_type_counts(account_id=account_id, since=since)
     if action_rows:
         action_html = "".join(
             f"""<tr>
-  <td>{html.escape(r['action'])}</td>
+  <td>{html.escape(_ACTION_LABELS.get(r['action'], r['action']))}</td>
   <td>{'✅ Thành công' if r['success'] else '⚠️ Thất bại'}</td>
   <td>{r['total']}</td>
 </tr>""" for r in action_rows
@@ -1231,29 +1719,62 @@ def _reports_content_html(account_id: str | None) -> str:
     else:
         action_table = '<div class="empty-state">Chưa có dữ liệu.</div>'
 
-    recent_rows = db.recent_activity(limit=50, account_id=account_id)
+    # --- Recent activity: paginated + height-capped, so this block (by far
+    # the longest one) never dominates the page regardless of how much
+    # history exists — see the conversation that raised "4 khối khá dài,
+    # nhất là Hoạt động gần đây".
+    recent_total = db.recent_activity_count(account_id=account_id, since=since)
+    recent_total_pages = max(1, -(-recent_total // _REPORTS_RECENT_PAGE_SIZE))
+    page = min(max(page, 1), recent_total_pages)
+    recent_rows = db.recent_activity(
+        limit=_REPORTS_RECENT_PAGE_SIZE,
+        offset=(page - 1) * _REPORTS_RECENT_PAGE_SIZE,
+        account_id=account_id,
+        since=since,
+    )
     if recent_rows:
         recent_html = "".join(
             f"""<tr>
   <td>{html.escape(r['created_at'])}</td>
-  <td>{html.escape(r['account_id'])}</td>
-  <td>{html.escape(r['action'])}</td>
+  <td>{html.escape(_account_label(r['account_id'], accounts))}</td>
+  <td>{html.escape(_ACTION_LABELS.get(r['action'], r['action']))}</td>
   <td class="row-url">{html.escape((r['target_group_name'] or r['target_url'] or '—'))}</td>
   <td>{'✅' if r['success'] else '⚠️'}</td>
   <td>{html.escape(_SOURCE_LABELS.get(r['source'], r['source']))}</td>
-  <td class="muted">{html.escape((r['message'] or '')[:80])}</td>
+  <td class="muted">{_expandable_text(r['message'])}</td>
 </tr>""" for r in recent_rows
         )
         recent_table = f"""
-<div class="table-scroll"><table class="data-table">
+<div class="table-scroll" style="max-height:420px; overflow-y:auto;"><table class="data-table">
   <thead><tr><th>Thời gian (UTC)</th><th>Tài khoản</th><th>Hành động</th><th>Đích</th><th>KQ</th><th>Nguồn</th><th>Ghi chú</th></tr></thead>
   <tbody>{recent_html}</tbody>
 </table></div>"""
     else:
         recent_table = '<div class="empty-state">Chưa có hoạt động nào được ghi nhận.</div>'
 
+    recent_pagination_html = ""
+    if recent_total_pages > 1:
+        from urllib.parse import urlencode
+
+        def _recent_page_link(target_page: int, label: str, enabled: bool) -> str:
+            if not enabled:
+                return f'<span class="btn-secondary btn-small" style="opacity:.45; pointer-events:none;">{label}</span>'
+            qs = urlencode({k: v for k, v in {"account_id": account_id, "days": days, "page": target_page}.items() if v})
+            return (
+                f'<a class="btn-secondary btn-small" href="/admin/reports?{qs}" '
+                f'hx-get="/admin/reports?{qs}" hx-target="#reports-content" hx-swap="outerHTML" hx-push-url="true">{label}</a>'
+            )
+
+        recent_pagination_html = f"""
+<div style="display:flex; justify-content:space-between; align-items:center; margin-top:10px;">
+  {_recent_page_link(page - 1, "← Trang trước", page > 1)}
+  <span class="muted">Trang {page}/{recent_total_pages} · {recent_total} mục</span>
+  {_recent_page_link(page + 1, "Trang sau →", page < recent_total_pages)}
+</div>"""
+
     return f"""<div id="reports-content">
 {filter_html}
+{summary_html}
 
 <div class="card">
   <h2>📅 Bài đăng thành công theo tuần</h2>
@@ -1271,15 +1792,22 @@ def _reports_content_html(account_id: str | None) -> str:
 </div>
 
 <div class="card">
-  <h2>🕒 Hoạt động gần đây (50 mục mới nhất)</h2>
+  <h2>🕒 Hoạt động gần đây</h2>
   {recent_table}
+  {recent_pagination_html}
 </div>
 </div>"""
 
 
 @router.get("/reports", response_class=HTMLResponse)
-async def reports_page(request: Request, account_id: str | None = None, _: None = Depends(_require_auth)) -> str:
-    content = _reports_content_html(account_id)
+async def reports_page(
+    request: Request,
+    account_id: str | None = None,
+    days: str | None = None,
+    page: int = 1,
+    _: None = Depends(_require_auth),
+) -> str:
+    content = _reports_content_html(account_id=account_id, days=days, page=page)
     if _is_htmx(request):
         return content
     return _layout(f"""

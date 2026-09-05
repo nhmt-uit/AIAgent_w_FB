@@ -132,17 +132,35 @@ def list_accounts_with_activity() -> list[str]:
         conn.close()
 
 
-def weekly_post_counts(account_id: str | None = None, limit_weeks: int = 12) -> list[sqlite3.Row]:
+def _base_where(account_id: str | None, since: str | None) -> tuple[str, list]:
+    """Shared WHERE-clause builder for the account/date-range filters every
+    report query below takes — `since` is an ISO 8601 UTC cutoff (rows with
+    created_at >= since), None means "all time". Kept as one function so
+    the two filters compose the same way (and in the same param order)
+    everywhere, instead of each query hand-rolling its own AND chain."""
+    clauses: list[str] = []
+    params: list = []
+    if account_id:
+        clauses.append("account_id = ?")
+        params.append(account_id)
+    if since:
+        clauses.append("created_at >= ?")
+        params.append(since)
+    where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+    return where, params
+
+
+def weekly_post_counts(
+    account_id: str | None = None, since: str | None = None, limit_weeks: int = 12
+) -> list[sqlite3.Row]:
     """One row per (account, ISO week) with how many posts (own-profile +
     group) succeeded that week — the "tài khoản nào đăng bao nhiêu bài mỗi
     tuần" report."""
     conn = _connect()
     try:
-        params: list = []
-        where = "WHERE success = 1 AND action IN ('post_to_own_profile', 'post_to_group')"
-        if account_id:
-            where += " AND account_id = ?"
-            params.append(account_id)
+        where, params = _base_where(account_id, since)
+        extra = "success = 1 AND action IN ('post_to_own_profile', 'post_to_group')"
+        where = f"{where} AND {extra}" if where else f"WHERE {extra}"
         cur = conn.execute(
             f"""
             SELECT account_id, strftime('%Y-W%W', created_at) AS week, COUNT(*) AS total
@@ -159,16 +177,14 @@ def weekly_post_counts(account_id: str | None = None, limit_weeks: int = 12) -> 
         conn.close()
 
 
-def group_post_counts(account_id: str | None = None) -> list[sqlite3.Row]:
+def group_post_counts(account_id: str | None = None, since: str | None = None) -> list[sqlite3.Row]:
     """One row per group with how many posts succeeded there — the "đăng
     nhóm nào nhiều nhất" report."""
     conn = _connect()
     try:
-        params: list = []
-        where = "WHERE success = 1 AND action = 'post_to_group'"
-        if account_id:
-            where += " AND account_id = ?"
-            params.append(account_id)
+        where, params = _base_where(account_id, since)
+        extra = "success = 1 AND action = 'post_to_group'"
+        where = f"{where} AND {extra}" if where else f"WHERE {extra}"
         cur = conn.execute(
             f"""
             SELECT account_id, target_group_name, target_url, COUNT(*) AS total
@@ -184,17 +200,13 @@ def group_post_counts(account_id: str | None = None) -> list[sqlite3.Row]:
         conn.close()
 
 
-def action_type_counts(account_id: str | None = None) -> list[sqlite3.Row]:
+def action_type_counts(account_id: str | None = None, since: str | None = None) -> list[sqlite3.Row]:
     """Success/failure breakdown per action type — a quick health check
     (e.g. a spike in failed post_to_group could mean a broken selector or
     an account restriction, see docs/agents/safety-monitor.md)."""
     conn = _connect()
     try:
-        params: list = []
-        where = ""
-        if account_id:
-            where = "WHERE account_id = ?"
-            params.append(account_id)
+        where, params = _base_where(account_id, since)
         cur = conn.execute(
             f"""
             SELECT action, success, COUNT(*) AS total
@@ -210,16 +222,65 @@ def action_type_counts(account_id: str | None = None) -> list[sqlite3.Row]:
         conn.close()
 
 
-def recent_activity(limit: int = 50, account_id: str | None = None) -> list[sqlite3.Row]:
+def summary_stats(account_id: str | None = None, since: str | None = None) -> dict:
+    """One-row KPI overview for the top of /admin/reports: total
+    successful/failed actions in the filtered window, the resulting
+    success rate, and how many distinct accounts had any activity at all
+    — a glance-and-go answer to "is everything roughly healthy" before
+    reading the detailed tables below."""
     conn = _connect()
     try:
-        if account_id:
-            cur = conn.execute(
-                "SELECT * FROM action_log WHERE account_id = ? ORDER BY id DESC LIMIT ?",
-                (account_id, limit),
-            )
-        else:
-            cur = conn.execute("SELECT * FROM action_log ORDER BY id DESC LIMIT ?", (limit,))
+        where, params = _base_where(account_id, since)
+        cur = conn.execute(
+            f"""
+            SELECT
+                COUNT(*) AS total,
+                SUM(success) AS succeeded,
+                COUNT(DISTINCT account_id) AS active_accounts
+            FROM action_log
+            {where}
+            """,
+            params,
+        )
+        row = cur.fetchone()
+        total = row["total"] or 0
+        succeeded = row["succeeded"] or 0
+        failed = total - succeeded
+        success_rate = round(succeeded / total * 100, 1) if total else None
+        return {
+            "total": total,
+            "succeeded": succeeded,
+            "failed": failed,
+            "success_rate": success_rate,
+            "active_accounts": row["active_accounts"] or 0,
+        }
+    finally:
+        conn.close()
+
+
+def recent_activity(
+    limit: int = 50, offset: int = 0, account_id: str | None = None, since: str | None = None
+) -> list[sqlite3.Row]:
+    conn = _connect()
+    try:
+        where, params = _base_where(account_id, since)
+        cur = conn.execute(
+            f"SELECT * FROM action_log {where} ORDER BY id DESC LIMIT ? OFFSET ?",
+            (*params, limit, offset),
+        )
         return cur.fetchall()
+    finally:
+        conn.close()
+
+
+def recent_activity_count(account_id: str | None = None, since: str | None = None) -> int:
+    """Total matching rows for `recent_activity`'s filters, so
+    /admin/reports can render "Trang X/Y" instead of guessing whether
+    there's more to page through."""
+    conn = _connect()
+    try:
+        where, params = _base_where(account_id, since)
+        cur = conn.execute(f"SELECT COUNT(*) AS total FROM action_log {where}", params)
+        return cur.fetchone()["total"] or 0
     finally:
         conn.close()

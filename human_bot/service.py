@@ -46,12 +46,14 @@ import logging  # noqa: E402
 import os  # noqa: E402
 import secrets  # noqa: E402
 
-from human_bot import data_sync  # noqa: E402
+from human_bot import data_sync, schedule_store  # noqa: E402
 from human_bot.admin import router as admin_router  # noqa: E402
 from human_bot.agent import TaskRequest, run_task  # noqa: E402
 from human_bot.browser_pool import close_all, warm_up  # noqa: E402
 from human_bot.config import AccountStatus, get_all_accounts  # noqa: E402
 from human_bot.runtime_config import get_data_sync_config  # noqa: E402
+
+SCHEDULE_CLEANUP_INTERVAL_SECONDS = 24 * 60 * 60
 
 logger = logging.getLogger("human_bot.service")
 
@@ -91,16 +93,34 @@ async def _data_sync_fire_loop() -> None:
         await asyncio.sleep(max(cfg.due_check_interval_seconds, 5.0))
 
 
+async def _schedule_cleanup_loop() -> None:
+    """Background loop: prune old posted/failed/cancelled scheduled-task
+    files (human_bot/schedule_store.py's cleanup_old()) so `scheduled/`
+    doesn't grow without bound as the schedule gets busier over time.
+    Runs once at startup, then once a day — this is disk housekeeping,
+    not something that needs a tight interval. Reporting history lives in
+    human_bot.db regardless (human_bot/db.py), so this never loses
+    anything /admin/reports can show."""
+    while True:
+        try:
+            schedule_store.cleanup_old()
+        except Exception:  # noqa: BLE001 - a cleanup failure must not take down posting
+            logger.exception("schedule_store.cleanup_old failed")
+        await asyncio.sleep(SCHEDULE_CLEANUP_INTERVAL_SECONDS)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     active_accounts = [a for a in get_all_accounts().values() if a.status == AccountStatus.ACTIVE]
     await warm_up(active_accounts)
     poll_task = asyncio.create_task(_data_sync_poll_loop())
     fire_task = asyncio.create_task(_data_sync_fire_loop())
+    cleanup_task = asyncio.create_task(_schedule_cleanup_loop())
     yield
     poll_task.cancel()
     fire_task.cancel()
-    for t in (poll_task, fire_task):
+    cleanup_task.cancel()
+    for t in (poll_task, fire_task, cleanup_task):
         try:
             await t
         except asyncio.CancelledError:

@@ -201,12 +201,14 @@ def _is_too_old(published_at: str | None, max_age_days: float) -> bool:
 
 # --- Scheduling --------------------------------------------------------------
 
-def _apply_quiet_hours(dt: datetime, cfg: DataSyncConfig) -> datetime:
+def apply_quiet_hours(dt: datetime, cfg: DataSyncConfig) -> datetime:
     """Push a time that falls in the configured quiet window forward to
     the window's end, same UTC-as-local simplification the rest of this
     project currently makes (no per-account timezone config yet — see
     docs/skills/rate-limiting-pacing.md, this is a known limitation, not
-    an oversight)."""
+    an oversight). Public (not `_`-prefixed) because human_bot/admin.py's
+    manual "compose & schedule" flow (/admin/post) reuses it too — any
+    scheduled task, auto or manual, gets the same quiet-hours treatment."""
     if cfg.quiet_hour_start_local <= dt.hour < cfg.quiet_hour_end_local:
         dt = dt.replace(
             hour=int(cfg.quiet_hour_end_local), minute=random.randint(0, 30),
@@ -298,7 +300,7 @@ async def sync_once(account_id: str, cfg: DataSyncConfig | None = None) -> dict[
         # generated and coincidentally similar.
         variants = await content_strategist.draft_group_post_variants(job, groups)
         for group, content in zip(groups, variants):
-            scheduled_at = _apply_quiet_hours(next_post_time, cfg)
+            scheduled_at = apply_quiet_hours(next_post_time, cfg)
             task = schedule_store.ScheduledTask(
                 task_id=schedule_store.new_task_id(scheduled_at.isoformat()),
                 action="post_to_group",
@@ -350,7 +352,7 @@ async def sync_once(account_id: str, cfg: DataSyncConfig | None = None) -> dict[
             continue
 
         action = "comment_on_group_post" if "/groups/" in url else "comment_on_friend_post"
-        scheduled_at = _apply_quiet_hours(next_comment_time, cfg)
+        scheduled_at = apply_quiet_hours(next_comment_time, cfg)
         task = schedule_store.ScheduledTask(
             task_id=schedule_store.new_task_id(scheduled_at.isoformat()),
             action=action,
