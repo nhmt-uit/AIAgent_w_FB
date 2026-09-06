@@ -19,8 +19,8 @@ from human_bot import actions, db, media
 from human_bot.actions import ActionResult, _group_id_from_url
 from human_bot.browser_pool import get_session
 from human_bot.config import AccountStatus, get_account
-from human_bot.runtime_config import get_joined_groups, get_media_config
-from human_bot.safety import RateLimiter
+from human_bot.runtime_config import get_joined_groups, get_media_config, set_account_paused
+from human_bot.safety import AnomalyDetected, RateLimiter
 from playwright.async_api import Page
 
 # Actions whose actions.py function even accepts a media_path — comment/
@@ -199,6 +199,18 @@ async def run_task(request: TaskRequest) -> TaskResult:
         result = await action_fn(session.page, request)
         success = result.success
         message = result.message
+    except AnomalyDetected as e:
+        # This is what makes docs/skills/anomaly-detection.md's "never
+        # retry past this point" actually true, instead of just aborting
+        # this one attempt and letting the account get tried again next
+        # time as if nothing happened. Persisted via runtime_config.json
+        # so it survives a service restart too — stays paused until a
+        # human reviews and resumes it at /admin/accounts.
+        message = str(e)
+        try:
+            set_account_paused(request.account_id, True)
+        except Exception:  # noqa: BLE001 — the task must still return a result even if this write fails
+            pass
     except Exception as e:  # noqa: BLE001 — surfaced to caller as a failed TaskResult
         message = f"error:{e}"
     finally:

@@ -50,7 +50,7 @@ from fastapi.security import HTTPBasic, HTTPBasicCredentials
 
 from human_bot import content_queue, db, schedule_store
 from human_bot.agent import TaskRequest, run_task
-from human_bot.config import GroupRef, get_all_accounts
+from human_bot.config import AccountStatus, GroupRef, get_all_accounts
 from human_bot.data_sync import apply_quiet_hours
 from human_bot.data_sync_config import DataSyncConfig
 from human_bot.media import MediaConfig
@@ -77,6 +77,8 @@ from human_bot.runtime_config import (
     save_joined_groups,
     save_registered_account,
     delete_registered_account,
+    set_account_paused,
+    set_account_removed,
 )
 
 router = APIRouter(prefix="/admin", tags=["admin"])
@@ -359,6 +361,8 @@ _PAGE_STYLE = """
   }
 
   function initCSelect(wrap) {
+    if (wrap.dataset.cselectInit) return;
+    wrap.dataset.cselectInit = "1";
     var select = wrap.querySelector("select.cselect-native");
     var trigger = wrap.querySelector(".cselect-trigger");
     var label = trigger.querySelector(".cselect-trigger-label");
@@ -419,6 +423,8 @@ _PAGE_STYLE = """
   // to a fresh, never-reused index is enough; removing a block never
   // needs to renumber anything else.
   function initRepeatableBlocks(container) {
+    if (container.dataset.repeatableInit) return;
+    container.dataset.repeatableInit = "1";
     var addBtn = container.querySelector("[data-add-block]");
     var list = container.querySelector("[data-block-list]");
     var template = list ? list.querySelector("[data-block]") : null;
@@ -472,6 +478,8 @@ _PAGE_STYLE = """
   // browser knows the viewer's local timezone, so doing it server-side
   // would silently assume UTC and shift every pick by the real offset.
   function initScheduleField(wrap) {
+    if (wrap.dataset.scheduleInit) return;
+    wrap.dataset.scheduleInit = "1";
     var localInput = wrap.querySelector("[data-schedule-local]");
     var utcInput = wrap.querySelector("[data-schedule-utc]");
     if (!localInput || !utcInput) return;
@@ -520,17 +528,61 @@ _PAGE_STYLE = """
     });
   }
 
+  // /admin/post's account picker is a plain full-reload <form> (see
+  // post_form()'s account_picker in human_bot/admin.py) — switching
+  // account would otherwise silently wipe whatever was already typed
+  // into the "Đăng lên tường cá nhân" card. Before that GET fires, copy
+  // its current content + picked time into hidden fields on the SAME
+  // form, so post_form() can read them back (profile_content /
+  // profile_scheduled_at) and re-fill the card after the reload.
+  function initPreservePostForm(form) {
+    if (form.dataset.preserveInit) return;
+    form.dataset.preserveInit = "1";
+    var select = form.querySelector("select[name=account_id]");
+    if (!select) return;
+    select.addEventListener("change", function () {
+      var contentEl = document.querySelector("[data-preserve-profile-content]");
+      var scheduleWrap = document.querySelector("[data-preserve-profile-schedule]");
+      var scheduleUtcEl = scheduleWrap ? scheduleWrap.querySelector("[data-schedule-utc]") : null;
+      setHidden(form, "profile_content", contentEl ? contentEl.value : "");
+      setHidden(form, "profile_scheduled_at", scheduleUtcEl ? scheduleUtcEl.value : "");
+      form.submit();
+    });
+  }
+
+  function setHidden(form, name, value) {
+    var el = form.querySelector('input[type=hidden][name="' + name + '"]');
+    if (!el) {
+      el = document.createElement("input");
+      el.type = "hidden";
+      el.name = name;
+      form.appendChild(el);
+    }
+    el.value = value;
+  }
+
   function initDynamicScope(root) {
     root.querySelectorAll("[data-cselect]").forEach(initCSelect);
     root.querySelectorAll("[data-repeatable-blocks]").forEach(initRepeatableBlocks);
     root.querySelectorAll("[data-schedule-field]").forEach(initScheduleField);
+    root.querySelectorAll("[data-preserve-post-form]").forEach(initPreservePostForm);
   }
 
   document.addEventListener("DOMContentLoaded", function () { initDynamicScope(document); });
-  // /admin/schedule's edit/fire-now/cancel actions htmx-swap a fresh
-  // #schedule-content in — DOMContentLoaded never fires again for that,
-  // so re-run the same init on whatever htmx just swapped in.
-  document.body.addEventListener("htmx:afterSwap", function (e) { initDynamicScope(e.detail.target); });
+  // /admin/schedule's account filter / update / fire-now / cancel all
+  // htmx-swap a fresh #schedule-content in (outerHTML swap) —
+  // DOMContentLoaded never fires again for that. Re-scanning the WHOLE
+  // document (not just e.detail.target) is deliberate: for an outerHTML
+  // swap, htmx's own event.detail.target can still reference the
+  // now-detached old element rather than the new one it was replaced
+  // with, so scoping to it silently skipped the freshly-inserted
+  // datetime pickers — they never got their visible <input
+  // type="datetime-local"> synced from the hidden UTC value, which
+  // looked exactly like "the picker reset" after switching accounts
+  // (the conversation that found this). Each init function above guards
+  // against re-initializing an already-initialized element, so
+  // rescanning the whole page on every swap is safe, not wasteful.
+  document.body.addEventListener("htmx:afterSwap", function () { initDynamicScope(document); });
 })();
 </script>
 """
@@ -766,8 +818,38 @@ def _account_id_error(account_id: str, existing: dict) -> str | None:
     return None
 
 
-@router.get("/accounts", response_class=HTMLResponse)
-async def accounts_page(saved: bool = False, error: str | None = None, _: None = Depends(_require_auth)) -> str:
+def _account_modal_html(account_id: str = "", display_name: str = "", error: str | None = None) -> str:
+    """Renders the whole #modal-root swap for the "Đăng ký tài khoản mới"
+    form — same pattern as _group_modal_html(): opened via GET (button
+    below), redisplayed with a validation error on a bad POST without
+    losing what was typed, and a successful POST returns something else
+    entirely (_accounts_content_html's oob update) which is what actually
+    closes it."""
+    err_html = f'<p class="error">⚠️ {html.escape(error)}</p>' if error else ""
+    return f"""
+<div class="modal-backdrop" onclick="if(event.target===this) this.remove()">
+  <div class="modal-box">
+    <div class="modal-header">
+      <h2>➕ Đăng ký tài khoản mới</h2>
+      <button type="button" class="modal-close" onclick="this.closest('.modal-backdrop').remove()">✕</button>
+    </div>
+    <p class="page-desc">Chỉ đăng ký sau khi đã chạy <code>python3 human_bot/bootstrap_login.py &lt;account_id&gt;</code> trên máy này để lưu phiên đăng nhập.</p>
+    {err_html}
+    <form method="post" action="/admin/accounts/add" hx-post="/admin/accounts/add" hx-target="#modal-root" hx-swap="innerHTML">
+      <div class="field-grid">
+        <div class="field-stack"><div class="field-label">account_id (khớp với tên đã dùng ở bootstrap_login.py)</div><div class="field-input"><input type="text" name="account_id" value="{html.escape(account_id)}" placeholder="vd: my_page" required pattern="[a-z0-9_]+"></div></div>
+        <div class="field-stack"><div class="field-label">Tên hiển thị</div><div class="field-input"><input type="text" name="display_name" value="{html.escape(display_name)}" placeholder="vd: Trang của tôi"></div></div>
+      </div>
+      <div class="form-actions">
+        <button type="button" class="btn-secondary" style="margin-right:8px;" onclick="this.closest('.modal-backdrop').remove()">Huỷ</button>
+        <button type="submit">Đăng ký</button>
+      </div>
+    </form>
+  </div>
+</div>"""
+
+
+def _accounts_content_html(saved: bool = False, error: str | None = None, oob: bool = False) -> str:
     accounts = get_all_accounts()
     registered_ids = {a["account_id"] for a in get_registered_accounts()}
     flash = '<p class="flash">✅ Đã lưu.</p>' if saved else ""
@@ -781,73 +863,161 @@ async def accounts_page(saved: bool = False, error: str | None = None, _: None =
             if has_session
             else '<span class="badge" style="background:#fef2f2;color:#dc2626;">chưa có storage_state.json</span>'
         )
+        is_paused = a.status == AccountStatus.PAUSED
+        status_badge = (
+            '<span class="badge" style="background:#fef2f2;color:#dc2626;">⏸ Tạm dừng</span>'
+            if is_paused
+            else '<span class="badge" style="background:#ecfdf5;color:#059669;">● Hoạt động</span>'
+        )
+        # Pausing is a runtime override that applies to ANY account
+        # (code-level or registered here) — see human_bot/config.py's
+        # get_all_accounts() and human_bot/runtime_config.py's
+        # set_account_paused(). Also set automatically the moment
+        # human_bot/safety.py's AnomalyDetected fires on a real post — see
+        # human_bot/agent.py's run_task().
+        status_action = (
+            f"""<form method="post" action="/admin/accounts/resume" style="display:inline;">
+  <input type="hidden" name="account_id" value="{html.escape(aid)}">
+  <button type="submit" class="btn-small">▶ Kích hoạt lại</button>
+</form>"""
+            if is_paused
+            else f"""<form method="post" action="/admin/accounts/pause" style="display:inline;"
+        onsubmit="return confirm('Tạm dừng tài khoản {html.escape(aid)}? human_bot sẽ không đăng/comment/like gì cho tài khoản này cho tới khi bạn kích hoạt lại.');">
+  <input type="hidden" name="account_id" value="{html.escape(aid)}">
+  <button type="submit" class="btn-small btn-secondary">⏸ Tạm dừng</button>
+</form>"""
+        )
         is_runtime = aid in registered_ids
         source = "/admin/accounts" if is_runtime else "human_bot/config.py"
-        delete_btn = (
-            f"""<form method="post" action="/admin/accounts/delete" onsubmit="return confirm('Xoá tài khoản {html.escape(aid)} khỏi danh sách? File storage_state.json sẽ không bị xoá.');">
+        # "Xoá" works on EVERY account now, code-level ones included (see
+        # human_bot/runtime_config.py's set_account_removed) — a
+        # code-level entry can't actually be deleted from a running
+        # process, but this hides it from every list/lookup the same way,
+        # undoable by registering the same account_id again here.
+        delete_confirm = (
+            f"Xoá tài khoản {html.escape(aid)} khỏi danh sách? Sẽ huỷ mọi bài đang chờ lịch của tài khoản này "
+            "và xoá danh sách nhóm đã lưu. File storage_state.json (phiên đăng nhập) sẽ KHÔNG bị xoá."
+            if is_runtime
+            else f"Ẩn tài khoản {html.escape(aid)} (khai báo trong human_bot/config.py) khỏi human_bot? "
+            "Sẽ huỷ mọi bài đang chờ lịch và xoá danh sách nhóm đã lưu. Muốn dùng lại: đăng ký lại đúng "
+            "account_id này ở đây. File storage_state.json sẽ KHÔNG bị xoá."
+        )
+        delete_btn = f"""<form method="post" action="/admin/accounts/delete" style="display:inline;"
+        onsubmit="return confirm('{delete_confirm}');">
   <input type="hidden" name="account_id" value="{html.escape(aid)}">
   <button type="submit" class="btn-secondary btn-small">Xoá</button>
 </form>"""
-            if is_runtime
-            else '<span class="muted">—</span>'
-        )
         rows.append(f"""
 <tr>
   <td>{html.escape(a.display_name)}<div class="row-url">{html.escape(aid)}</div></td>
+  <td>{status_badge}</td>
   <td>{session_badge}</td>
   <td class="row-url">{html.escape(source)}</td>
-  <td class="col-actions">{delete_btn}</td>
+  <td class="col-actions">{status_action} {delete_btn}</td>
 </tr>""")
 
     table = f"""
 <div class="table-scroll">
   <table class="data-table">
-    <thead><tr><th>Tài khoản</th><th>Phiên đăng nhập</th><th>Nguồn</th><th></th></tr></thead>
-    <tbody>{"".join(rows) or '<tr><td colspan="4" class="empty-state">Chưa có tài khoản nào</td></tr>'}</tbody>
+    <thead><tr><th>Tài khoản</th><th>Trạng thái</th><th>Phiên đăng nhập</th><th>Nguồn</th><th></th></tr></thead>
+    <tbody>{"".join(rows) or '<tr><td colspan="5" class="empty-state">Chưa có tài khoản nào</td></tr>'}</tbody>
   </table>
 </div>"""
 
-    return _layout(f"""
-<h1>Tài khoản</h1>
-<p class="page-desc">Đăng ký tài khoản mới ở đây sau khi đã chạy <code>python3 human_bot/bootstrap_login.py &lt;account_id&gt;</code> trên máy này — không cần sửa human_bot/config.py hay khởi động lại service. Tài khoản đăng ký ở đây dùng rate limit / nhóm mặc định, chỉnh thêm ở /admin/config và /admin/groups nếu cần.</p>
+    oob_attr = ' hx-swap-oob="true"' if oob else ""
+    return f"""<div id="accounts-content"{oob_attr}>
 {flash}{err}
 
 <div class="card">
-  <h2>➕ Đăng ký tài khoản mới</h2>
-  <form method="post" action="/admin/accounts/add">
-  <div class="field-grid">
-    <div class="field-stack"><div class="field-label">account_id (khớp với tên đã dùng ở bootstrap_login.py)</div><div class="field-input"><input type="text" name="account_id" placeholder="vd: my_page" required pattern="[a-z0-9_]+"></div></div>
-    <div class="field-stack"><div class="field-label">Tên hiển thị</div><div class="field-input"><input type="text" name="display_name" placeholder="vd: Trang của tôi"></div></div>
-  </div>
-  <div class="form-actions"><button type="submit">Đăng ký</button></div>
-  </form>
-</div>
-
-<div class="card">
-  <h2>👤 Tài khoản hiện có <span class="badge">{len(accounts)}</span></h2>
+  <h2>👤 Tài khoản hiện có <span class="badge">{len(accounts)}</span>
+    <button type="button" class="btn-small" style="margin-left:auto;"
+            hx-get="/admin/accounts/add-modal" hx-target="#modal-root" hx-swap="innerHTML">➕ Đăng ký tài khoản mới</button>
+  </h2>
   {table}
 </div>
+</div>"""
+
+
+@router.get("/accounts", response_class=HTMLResponse)
+async def accounts_page(request: Request, saved: bool = False, error: str | None = None, _: None = Depends(_require_auth)) -> str:
+    content = _accounts_content_html(saved, error)
+    if _is_htmx(request):
+        return content
+    return _layout(f"""
+<h1>Tài khoản</h1>
+<p class="page-desc">Đăng ký tài khoản mới sau khi đã chạy <code>python3 human_bot/bootstrap_login.py &lt;account_id&gt;</code> trên máy này để lưu phiên đăng nhập — không cần sửa human_bot/config.py hay khởi động lại service. Tài khoản đăng ký ở đây dùng rate limit / nhóm mặc định, chỉnh thêm ở /admin/config và /admin/groups nếu cần.</p>
+{content}
 """, active="accounts")
 
 
+@router.get("/accounts/add-modal", response_class=HTMLResponse)
+async def accounts_add_modal(_: None = Depends(_require_auth)) -> str:
+    return _account_modal_html()
+
+
 @router.post("/accounts/add")
-async def accounts_add(request: Request, _: None = Depends(_require_auth)) -> RedirectResponse:
+async def accounts_add(request: Request, _: None = Depends(_require_auth)):
     form = await request.form()
     account_id = str(form.get("account_id", "")).strip().lower()
     display_name = str(form.get("display_name", "")).strip()
     error = _account_id_error(account_id, get_all_accounts())
     if error:
+        if _is_htmx(request):
+            return HTMLResponse(_account_modal_html(account_id=account_id, display_name=display_name, error=error))
         from urllib.parse import urlencode
         return RedirectResponse(url=f"/admin/accounts?{urlencode({'error': error})}", status_code=303)
     save_registered_account(account_id, display_name or account_id)
+    set_account_removed(account_id, False)  # undo a previous "Xoá", if any
+    if _is_htmx(request):
+        # No primary content for #modal-root (the form's own hx-target) —
+        # htmx empties it, closing the modal — plus an out-of-band refresh
+        # of #accounts-content so the new account shows up immediately.
+        return HTMLResponse(_accounts_content_html(saved=True, oob=True))
+    return RedirectResponse(url="/admin/accounts?saved=1", status_code=303)
+
+
+@router.post("/accounts/pause")
+async def accounts_pause(request: Request, _: None = Depends(_require_auth)) -> RedirectResponse:
+    form = await request.form()
+    account_id = str(form.get("account_id", "")).strip()
+    set_account_paused(account_id, True)
+    return RedirectResponse(url="/admin/accounts?saved=1", status_code=303)
+
+
+@router.post("/accounts/resume")
+async def accounts_resume(request: Request, _: None = Depends(_require_auth)) -> RedirectResponse:
+    form = await request.form()
+    account_id = str(form.get("account_id", "")).strip()
+    set_account_paused(account_id, False)
     return RedirectResponse(url="/admin/accounts?saved=1", status_code=303)
 
 
 @router.post("/accounts/delete")
 async def accounts_delete(request: Request, _: None = Depends(_require_auth)) -> RedirectResponse:
+    """Removes the account from human_bot entirely, whatever its origin:
+    delete_registered_account() drops it from /admin/accounts' registry
+    (no-op if it's a code-level ACCOUNTS entry instead), and
+    set_account_removed() hides it from get_all_accounts() either way —
+    that second part is what makes "Xoá" actually work on a code-level
+    account too (see human_bot/runtime_config.py's docstring for the undo
+    path: register the same account_id again here). Also cleans up
+    everything else that would otherwise dangle and reference a
+    now-unknown account_id: pending schedule tasks (would error the next
+    time something tries to fire them — get_account() raises for an
+    unknown id) and the saved joined-groups list. Deliberately does NOT
+    touch accounts/<id>/storage_state.json (the real Facebook login
+    session) — same "never silently delete real login data" reasoning as
+    everywhere else in this project; delete that file by hand if it's
+    truly no longer needed."""
     form = await request.form()
     account_id = str(form.get("account_id", "")).strip()
     delete_registered_account(account_id)
+    set_account_removed(account_id, True)
+    set_account_paused(account_id, False)  # drop any stale pause override too
+    save_joined_groups(account_id, [])
+    for task in schedule_store.list_pending():
+        if task.account_id == account_id:
+            schedule_store.cancel(task.task_id)
     return RedirectResponse(url="/admin/accounts?saved=1", status_code=303)
 
 
@@ -888,6 +1058,8 @@ async def post_form(
     account_id: str | None = None,
     scheduled: int | None = None,
     error: str | None = None,
+    profile_content: str | None = None,
+    profile_scheduled_at: str | None = None,
     _: None = Depends(_require_auth),
 ) -> str:
     accounts = get_all_accounts()
@@ -905,15 +1077,23 @@ async def post_form(
     flash = '<p class="flash">✅ Đã lên lịch — xem/sửa/đăng ngay ở /admin/schedule.</p>' if scheduled else ""
     err = f'<p class="error">⚠️ {html.escape(error)}</p>' if error else ""
 
-    # Choosing the account fully reloads this page (plain GET form, no
-    # JS) rather than trying to keep an account-scoped group checkbox
-    # list in sync via JS/htmx — same "still-full-reload page" simplicity
-    # already used elsewhere on this page (see the queue/upload cards
-    # below), just applied to the account picker too.
+    # Choosing the account fully reloads this page (plain GET form) rather
+    # than trying to keep an account-scoped group checkbox list in sync
+    # via JS/htmx — same "still-full-reload page" simplicity already used
+    # elsewhere on this page. To stop that reload from silently wiping
+    # whatever was already typed into the "Đăng lên tường cá nhân" card
+    # (reported in the conversation that raised this — content + the
+    # picked time both reset), preservePostFormOnAccountSwitch (this
+    # module's page script) copies that card's current content/time into
+    # hidden fields on THIS form before it submits, and post_form() below
+    # reads them back (profile_content/profile_scheduled_at) to re-fill
+    # the card after the reload. Scoped to the profile card only — the
+    # "Đăng vào nhóm" card's content blocks are dynamically added by JS
+    # and not worth the extra complexity to preserve the same way.
     account_picker = f"""
-<form method="get" action="/admin/post" class="account-filter">
+<form method="get" action="/admin/post" class="account-filter" id="post-account-form" data-preserve-post-form>
   <label for="post-account-select">Soạn cho tài khoản</label>
-  <select name="account_id" id="post-account-select" onchange="this.form.submit()">
+  <select name="account_id" id="post-account-select">
     {"".join(f'<option value="{html.escape(aid)}"{" selected" if aid == account_id else ""}>{html.escape(account_labels[aid])}</option>' for aid in account_ids)}
   </select>
 </form>"""
@@ -982,10 +1162,10 @@ async def post_form(
   <h2>👤 Đăng lên tường cá nhân — {html.escape(account_labels[account_id])}</h2>
   <form method="post" action="/admin/post/schedule-profile">
     <input type="hidden" name="account_id" value="{html.escape(account_id)}">
-    <textarea name="content" placeholder="Nội dung bài đăng..." required></textarea>
+    <textarea name="content" placeholder="Nội dung bài đăng..." required data-preserve-profile-content>{html.escape(profile_content or "")}</textarea>
     <div class="field-stack" style="margin-top:14px;">
       <div class="field-label">Đăng lúc</div>
-      <div class="field-input">{_datetime_picker_html("scheduled_at")}</div>
+      <div class="field-input" data-preserve-profile-schedule>{_datetime_picker_html("scheduled_at", current_value=profile_scheduled_at or "")}</div>
     </div>
     <div class="form-actions"><button type="submit">Lên lịch</button></div>
   </form>
@@ -1127,6 +1307,27 @@ def _fmt_dt(iso: str | None) -> str:
         return iso
 
 
+def _fmt_jst(iso: str | None) -> str:
+    """Same instant as `iso`, in Japan Standard Time (JST, UTC+9) —
+    HH:MM DD-MM-YYYY, no UTC shown alongside. Used by /admin/schedule's
+    per-task line: this project's audience/groups are Japan-focused (see
+    docs/architecture.md), so JST is the timezone that actually matters
+    when reading "when does this post go out" — not UTC, and (per the
+    conversation that requested this, replacing an earlier UTC+Vietnam
+    version) not Vietnam time either. Fixed +9h offset, not zoneinfo:
+    Japan has had no DST since 1951, so this is exact, not an
+    approximation."""
+    if not iso:
+        return "—"
+    try:
+        from datetime import datetime, timedelta
+        dt = datetime.fromisoformat(iso.replace("Z", "+00:00"))
+        jst_dt = dt + timedelta(hours=9)
+        return jst_dt.strftime("%H:%M %d-%m-%Y")
+    except (ValueError, AttributeError):
+        return iso
+
+
 _SCHEDULE_PAGE_SIZE = 20
 
 
@@ -1180,9 +1381,6 @@ def _schedule_content_html(
         items_html = []
         for t in page_tasks:
             content_preview = html.escape((t.content or "")[:400])
-            target = html.escape(t.target_url or "—")
-            source_kind_label = html.escape(_SOURCE_KIND_LABELS.get(t.source_kind or "", t.source_kind or "?"))
-            source = f"{source_kind_label} · {html.escape(t.source_id or '?')}" if t.source_kind else "thủ công"
             # Every mutating form below carries the current filter/page
             # back so update/fire-now/cancel re-render the SAME view
             # instead of silently resetting to "all accounts, page 1".
@@ -1192,9 +1390,9 @@ def _schedule_content_html(
             )
             items_html.append(f"""
 <div class="queue-item">
-  <div class="queue-filename">{html.escape(_ACTION_LABELS.get(t.action, t.action))} · {html.escape(_account_label(t.account_id, accounts))} · {_fmt_dt(t.scheduled_at)}</div>
-  <div class="queue-preview">{content_preview}</div>
-  <div class="field-key">Đích: {target} · Nguồn: {source} · id: {html.escape(t.task_id)}</div>
+  <div class="queue-filename">{html.escape(_ACTION_LABELS.get(t.action, t.action))} · {html.escape(_account_label(t.account_id, accounts))}</div>
+  <div class="queue-filename">({_fmt_jst(t.scheduled_at)} giờ Nhật Bản)</div>
+  <div class="field-key">id: {html.escape(t.task_id)}</div>
   <form method="post" action="/admin/schedule/update"
         hx-post="/admin/schedule/update" hx-target="#schedule-content" hx-swap="outerHTML"
         style="margin-top:8px; display:flex; gap:8px; align-items:flex-start; flex-wrap:wrap;">

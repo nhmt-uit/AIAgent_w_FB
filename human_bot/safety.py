@@ -27,6 +27,25 @@ ANOMALY_TEXT_SIGNALS = [
 ]
 
 
+class AnomalyDetected(RuntimeError):
+    """Raised by human_bot/actions.py's _check_anomaly_or_raise() when a
+    page shows one of ANOMALY_TEXT_SIGNALS mid-action. A distinct
+    exception type (not a bare RuntimeError) so human_bot/agent.py's
+    run_task() can catch this specifically and persist
+    AccountStatus.PAUSED for the account (via
+    human_bot/runtime_config.py's set_account_paused) — this is what
+    actually makes docs/skills/anomaly-detection.md's "never retry past
+    this point" true: before this, detection only aborted the one
+    in-flight action and the account would be tried again normally next
+    time, with nothing stopping it from hitting the same wall repeatedly.
+    A paused account stays paused until a human resumes it at
+    /admin/accounts."""
+
+    def __init__(self, signal: str):
+        self.signal = signal
+        super().__init__(f"anomaly_detected:{signal}")
+
+
 def detect_anomaly(page_text: str, current_url: str = "") -> str | None:
     """Return the matched signal string, or None if nothing suspicious found."""
     haystack = page_text.lower()

@@ -34,7 +34,7 @@ from human_bot.humanize import (
     reading_pause,
 )
 from human_bot.runtime_config import get_human_typing_config, get_mouse_config, get_pacing_config
-from human_bot.safety import detect_anomaly
+from human_bot.safety import AnomalyDetected, detect_anomaly
 
 
 @dataclass
@@ -47,9 +47,11 @@ async def _check_anomaly_or_raise(page: Page) -> None:
     text = await page.inner_text("body")
     signal = detect_anomaly(text or "", page.url or "")
     if signal:
-        # Caller is responsible for turning this into a failed ActionResult;
-        # see docs/skills/anomaly-detection.md — never retry past this point.
-        raise RuntimeError(f"anomaly_detected:{signal}")
+        # Caller is responsible for turning this into a failed ActionResult
+        # AND pausing the account — see human_bot/agent.py's run_task(),
+        # which catches AnomalyDetected specifically to do that. Never
+        # retry past this point (docs/skills/anomaly-detection.md).
+        raise AnomalyDetected(signal)
 
 
 # --- Posting -----------------------------------------------------------

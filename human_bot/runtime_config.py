@@ -323,3 +323,80 @@ def delete_registered_account(account_id: str) -> None:
         json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8"
     )
 
+
+# --- Account pause state (safety, applies to ANY account) -------------------
+#
+# Overrides AccountConfig.status regardless of whether the account came
+# from human_bot/config.py's ACCOUNTS dict or was registered at
+# /admin/accounts — same reasoning as joined_groups above: pausing is a
+# runtime safety action ("stop the bot on this account right now"), not
+# something that should ever require a code edit + restart. Set
+# automatically by human_bot/agent.py's run_task() when
+# human_bot/safety.py's AnomalyDetected fires (a page showed a Facebook
+# restriction/checkpoint signal), and clearable by a human at
+# /admin/accounts once they've confirmed the account is actually fine.
+
+_ACCOUNT_STATUS_KEY = "account_status"
+
+
+def get_paused_account_ids() -> set[str]:
+    data = _read_all()
+    raw = data.get(_ACCOUNT_STATUS_KEY, {})
+    if not isinstance(raw, dict):
+        return set()
+    return {aid for aid, status in raw.items() if status == "paused"}
+
+
+def set_account_paused(account_id: str, paused: bool) -> None:
+    data = _read_all()
+    raw = data.get(_ACCOUNT_STATUS_KEY, {})
+    if not isinstance(raw, dict):
+        raw = {}
+    if paused:
+        raw[account_id] = "paused"
+    else:
+        raw.pop(account_id, None)
+    data[_ACCOUNT_STATUS_KEY] = raw
+    RUNTIME_CONFIG_PATH.write_text(
+        json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8"
+    )
+
+
+# --- Account removal (applies to ANY account, including code-level ones) ---
+#
+# A runtime-registered account can just be dropped from _ACCOUNTS_KEY
+# (delete_registered_account, above) — but a code-level ACCOUNTS entry in
+# human_bot/config.py can't actually be removed from a running process,
+# and the project owner asked for "Xoá" to work on EVERY account, not
+# only ones added through /admin/accounts. This list is the same kind of
+# override as account_status above: get_all_accounts() drops any id
+# found here from its result entirely, regardless of where the
+# AccountConfig itself came from. Undo path for a code-level account:
+# just register it again at /admin/accounts with the same account_id —
+# it'll come back with the same effective defaults (rate limits and
+# joined_groups already living in their own overrides, unaffected by
+# this).
+
+_REMOVED_ACCOUNTS_KEY = "removed_accounts"
+
+
+def get_removed_account_ids() -> set[str]:
+    data = _read_all()
+    raw = data.get(_REMOVED_ACCOUNTS_KEY, [])
+    if not isinstance(raw, list):
+        return set()
+    return {str(aid) for aid in raw if str(aid).strip()}
+
+
+def set_account_removed(account_id: str, removed: bool) -> None:
+    ids = get_removed_account_ids()
+    if removed:
+        ids.add(account_id)
+    else:
+        ids.discard(account_id)
+    data = _read_all()
+    data[_REMOVED_ACCOUNTS_KEY] = sorted(ids)
+    RUNTIME_CONFIG_PATH.write_text(
+        json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8"
+    )
+

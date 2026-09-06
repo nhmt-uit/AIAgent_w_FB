@@ -6,7 +6,7 @@ for the reasoning behind these defaults.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import Enum
 from pathlib import Path
 
@@ -79,8 +79,17 @@ def get_all_accounts() -> dict[str, AccountConfig]:
     """ACCOUNTS (code defaults) plus any account registered from
     /admin/accounts — the merged set every caller should use instead of
     ACCOUNTS directly, so a newly registered account shows up without a
-    code change or restart. Code-level entries win on id collision."""
-    from human_bot.runtime_config import get_registered_accounts
+    code change or restart. Code-level entries win on id collision.
+
+    Also layers runtime_config.json's paused-account overrides on top —
+    applies to EVERY account regardless of origin, since pausing is a
+    safety action (see human_bot/safety.py's AnomalyDetected /
+    human_bot/runtime_config.py's set_account_paused), not something that
+    should require a code edit. Same for removed accounts: /admin/accounts'
+    "Xoá" works on a code-level ACCOUNTS entry too (via set_account_removed)
+    even though the Python constant itself can't be deleted at runtime —
+    it just never shows up here again until re-registered."""
+    from human_bot.runtime_config import get_paused_account_ids, get_registered_accounts, get_removed_account_ids
 
     result = dict(ACCOUNTS)
     for entry in get_registered_accounts():
@@ -88,6 +97,12 @@ def get_all_accounts() -> dict[str, AccountConfig]:
             result[entry["account_id"]] = AccountConfig(
                 account_id=entry["account_id"], display_name=entry["display_name"]
             )
+    for aid in get_removed_account_ids():
+        result.pop(aid, None)
+    paused_ids = get_paused_account_ids()
+    for aid in paused_ids:
+        if aid in result and result[aid].status != AccountStatus.PAUSED:
+            result[aid] = replace(result[aid], status=AccountStatus.PAUSED)
     return result
 
 
