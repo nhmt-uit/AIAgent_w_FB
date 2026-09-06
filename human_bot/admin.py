@@ -221,14 +221,14 @@ _PAGE_STYLE = """
 }
 @layer components {
   .topbar { @apply bg-white border-b border-gray-200 sticky top-0 z-10 px-4 sm:px-6; }
-  .topbar-inner { @apply max-w-5xl mx-auto flex items-center gap-4 sm:gap-7 h-14 flex-wrap; }
+  .topbar-inner { @apply max-w-6xl mx-auto flex items-center gap-4 sm:gap-7 h-14 flex-wrap; }
   .brand { @apply font-bold text-base tracking-tight flex items-center gap-2; }
   .brand-dot { @apply w-2.5 h-2.5 rounded-full bg-indigo-600 inline-block; }
   nav.topnav { @apply flex gap-1 flex-wrap; }
   nav.topnav a { @apply text-gray-500 text-sm font-medium px-3 py-1.5 rounded-md hover:bg-indigo-50 hover:text-indigo-600 hover:no-underline transition-colors; }
   nav.topnav a.active { @apply bg-indigo-50 text-indigo-600; }
 
-  main { @apply max-w-5xl mx-auto px-4 sm:px-6 py-8 pb-16; }
+  main { @apply max-w-6xl mx-auto px-4 sm:px-6 py-8 pb-16; }
 
   h1 { @apply text-2xl font-semibold tracking-tight mb-1.5 text-gray-900; }
   h2 { @apply text-base font-semibold mb-3.5 flex items-center gap-2 text-gray-900; }
@@ -1111,13 +1111,18 @@ async def post_upload(file: UploadFile, _: None = Depends(_require_auth)) -> Red
 
 # --- Schedule (side-B data-sync poller output) ------------------------------
 
-def _fmt_dt(iso: str) -> str:
-    """Best-effort human-friendly display of an ISO 8601 UTC timestamp;
-    falls back to the raw string if it doesn't parse cleanly."""
+def _fmt_dt(iso: str | None) -> str:
+    """Human-friendly display of an ISO 8601 UTC timestamp — HH:MM:SS
+    DD-MM-YYYY, used everywhere a raw created_at/scheduled_at would
+    otherwise leak into the UI as-is (e.g. "2026-09-04T08:37:54.787563
+    +00:00"). Falls back to the raw string if it doesn't parse cleanly
+    rather than hiding a value the caller might still need to debug."""
+    if not iso:
+        return "—"
     try:
         from datetime import datetime
         dt = datetime.fromisoformat(iso.replace("Z", "+00:00"))
-        return dt.strftime("%Y-%m-%d %H:%M UTC")
+        return dt.strftime("%H:%M:%S %d-%m-%Y") + " UTC"
     except (ValueError, AttributeError):
         return iso
 
@@ -1735,7 +1740,7 @@ def _reports_content_html(account_id: str | None = None, days: str | None = None
     if recent_rows:
         recent_html = "".join(
             f"""<tr>
-  <td>{html.escape(r['created_at'])}</td>
+  <td>{_fmt_dt(r['created_at'])}</td>
   <td>{html.escape(_account_label(r['account_id'], accounts))}</td>
   <td>{html.escape(_ACTION_LABELS.get(r['action'], r['action']))}</td>
   <td class="row-url">{html.escape((r['target_group_name'] or r['target_url'] or '—'))}</td>
