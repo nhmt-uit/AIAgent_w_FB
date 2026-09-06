@@ -300,6 +300,12 @@ _PAGE_STYLE = """
 
   .section-divider { @apply mt-8 mb-[18px] text-xs uppercase tracking-wide text-gray-500 font-bold; }
 
+  .tab-bar { @apply flex gap-1.5 border-b border-gray-200 mb-5 flex-wrap; }
+  .tab-btn { @apply bg-transparent border-0 border-b-2 border-transparent px-3.5 py-2.5 text-sm font-semibold text-gray-500 cursor-pointer -mb-px; }
+  .tab-btn:hover { @apply text-gray-900; }
+  .tab-btn.active { @apply text-indigo-600 border-indigo-600; }
+  .tab-panel[hidden] { @apply hidden; }
+
   /* Custom select — styled trigger + dropdown panel that opens below it,
      backed by a real <select> (kept in the DOM, visually hidden) so form
      submission and the existing name="..." fields need no changes. */
@@ -453,6 +459,19 @@ _PAGE_STYLE = """
       });
     }
 
+    // "Chọn tất cả" toggles every group checkbox WITHIN this one block —
+    // scoped per block (not global) since each content block targets its
+    // own independent set of groups.
+    function wireSelectAll(block) {
+      var btn = block.querySelector("[data-select-all-groups]");
+      if (!btn) return;
+      btn.addEventListener("click", function () {
+        var boxes = block.querySelectorAll('input[type="checkbox"]');
+        var allChecked = Array.prototype.every.call(boxes, function (b) { return b.checked; });
+        boxes.forEach(function (b) { b.checked = !allChecked; });
+      });
+    }
+
     addBtn.addEventListener("click", function () {
       var index = nextIndex++;
       var clone = template.cloneNode(true);
@@ -462,11 +481,13 @@ _PAGE_STYLE = """
         if (el.type === "checkbox") el.checked = false;
       });
       wireRemove(clone);
+      wireSelectAll(clone);
       list.appendChild(clone);
       updateRemoveVisibility();
     });
 
     wireRemove(template);
+    wireSelectAll(template);
     updateRemoveVisibility();
   }
 
@@ -544,9 +565,33 @@ _PAGE_STYLE = """
       var contentEl = document.querySelector("[data-preserve-profile-content]");
       var scheduleWrap = document.querySelector("[data-preserve-profile-schedule]");
       var scheduleUtcEl = scheduleWrap ? scheduleWrap.querySelector("[data-schedule-utc]") : null;
+      var activeTab = document.querySelector("[data-tabs] .tab-btn.active");
       setHidden(form, "profile_content", contentEl ? contentEl.value : "");
       setHidden(form, "profile_scheduled_at", scheduleUtcEl ? scheduleUtcEl.value : "");
+      setHidden(form, "tab", activeTab ? activeTab.getAttribute("data-tab-target") : "");
       form.submit();
+    });
+  }
+
+  // Plain tab switcher for /admin/post's Tường cá nhân / Đăng vào nhóm /
+  // Hàng đợi sections — added because the page got long enough that
+  // having all 3 always visible at once was more scrolling than
+  // scanning. No routing/state beyond which panel is showing; the
+  // initial active tab is decided server-side (post_form()'s `tab` query
+  // param — set on a validation-error redirect so the right panel is
+  // already open when the page comes back).
+  function initTabs(container) {
+    if (container.dataset.tabsInit) return;
+    container.dataset.tabsInit = "1";
+    var buttons = container.querySelectorAll(".tab-btn");
+    buttons.forEach(function (btn) {
+      btn.addEventListener("click", function () {
+        var target = btn.getAttribute("data-tab-target");
+        buttons.forEach(function (b) { b.classList.toggle("active", b === btn); });
+        container.querySelectorAll(".tab-panel").forEach(function (panel) {
+          panel.hidden = panel.id !== target;
+        });
+      });
     });
   }
 
@@ -566,6 +611,7 @@ _PAGE_STYLE = """
     root.querySelectorAll("[data-repeatable-blocks]").forEach(initRepeatableBlocks);
     root.querySelectorAll("[data-schedule-field]").forEach(initScheduleField);
     root.querySelectorAll("[data-preserve-post-form]").forEach(initPreservePostForm);
+    root.querySelectorAll("[data-tabs]").forEach(initTabs);
   }
 
   document.addEventListener("DOMContentLoaded", function () { initDynamicScope(document); });
@@ -1057,9 +1103,11 @@ def _parse_scheduled_at(raw: str) -> datetime | None:
 async def post_form(
     account_id: str | None = None,
     scheduled: int | None = None,
+    posted: str | None = None,
     error: str | None = None,
     profile_content: str | None = None,
     profile_scheduled_at: str | None = None,
+    tab: str | None = None,
     _: None = Depends(_require_auth),
 ) -> str:
     accounts = get_all_accounts()
@@ -1074,7 +1122,12 @@ async def post_form(
         account_id = account_ids[0]
     account_labels = {aid: _account_label(aid, accounts) for aid in account_ids}
 
-    flash = '<p class="flash">✅ Đã lên lịch — xem/sửa/đăng ngay ở /admin/schedule.</p>' if scheduled else ""
+    if scheduled:
+        flash = '<p class="flash">✅ Đã lên lịch — xem/sửa/đăng ngay ở /admin/schedule.</p>'
+    elif posted:
+        flash = f'<p class="flash">✅ {html.escape(posted)}</p>'
+    else:
+        flash = ""
     err = f'<p class="error">⚠️ {html.escape(error)}</p>' if error else ""
 
     # Choosing the account fully reloads this page (plain GET form) rather
@@ -1116,7 +1169,10 @@ async def post_form(
       <div data-block-list>
         <div class="content-block" data-block style="border:1px solid #e5e7eb; border-radius:12px; padding:14px; margin-bottom:10px;">
           <textarea name="content_0" placeholder="Nội dung cho các nhóm được chọn bên dưới..." required></textarea>
-          <div class="field-key" style="margin:8px 0 6px;">Đăng vào nhóm:</div>
+          <div class="field-key" style="margin:8px 0 6px; display:flex; align-items:center; justify-content:space-between;">
+            <span>Đăng vào nhóm:</span>
+            <button type="button" class="btn-secondary btn-small" data-select-all-groups>Chọn tất cả</button>
+          </div>
           <div style="display:flex; flex-wrap:wrap; gap:8px;">{group_checkboxes}</div>
           <button type="button" class="btn-secondary btn-small" data-remove-block style="margin-top:10px;">Xoá khối này</button>
         </div>
@@ -1152,36 +1208,61 @@ async def post_form(
 </div>""" for item in queue_items)
     else:
         queue_html = '<div class="empty-state">Hàng đợi trống. Thả file .txt vào content_queue/pending/, hoặc tải lên bên dưới.</div>'
+
+    active_tab = tab if tab in ("profile", "group", "queue") else "profile"
+
+    def tab_btn(key: str, label: str) -> str:
+        cls = "tab-btn active" if key == active_tab else "tab-btn"
+        return f'<button type="button" class="{cls}" data-tab-target="tab-{key}">{label}</button>'
+
+    def panel_attrs(key: str) -> str:
+        return "" if key == active_tab else " hidden"
+
     return _layout(f"""
 <h1>Đăng bài</h1>
 <p class="page-desc">Soạn nội dung và chọn thời điểm đăng — bài nào cũng qua lịch (<a href="/admin/schedule">/admin/schedule</a>) trước khi thật sự chạy, kể cả muốn đăng ngay (để trống giờ đăng, rồi bấm "🚀 Đăng ngay" bên đó).</p>
 {flash}{err}
 {account_picker}
 
-<div class="card">
-  <h2>👤 Đăng lên tường cá nhân — {html.escape(account_labels[account_id])}</h2>
-  <form method="post" action="/admin/post/schedule-profile">
-    <input type="hidden" name="account_id" value="{html.escape(account_id)}">
-    <textarea name="content" placeholder="Nội dung bài đăng..." required data-preserve-profile-content>{html.escape(profile_content or "")}</textarea>
-    <div class="field-stack" style="margin-top:14px;">
-      <div class="field-label">Đăng lúc</div>
-      <div class="field-input" data-preserve-profile-schedule>{_datetime_picker_html("scheduled_at", current_value=profile_scheduled_at or "")}</div>
+<div data-tabs>
+  <div class="tab-bar">
+    {tab_btn("profile", "👤 Tường cá nhân")}
+    {tab_btn("group", "👥 Đăng vào nhóm")}
+    {tab_btn("queue", "📥 Hàng đợi nội dung")}
+  </div>
+
+  <div class="tab-panel" id="tab-profile"{panel_attrs("profile")}>
+    <div class="card">
+      <h2>👤 Đăng lên tường cá nhân — {html.escape(account_labels[account_id])}</h2>
+      <form method="post" action="/admin/post/schedule-profile">
+        <input type="hidden" name="account_id" value="{html.escape(account_id)}">
+        <textarea name="content" placeholder="Nội dung bài đăng..." required data-preserve-profile-content>{html.escape(profile_content or "")}</textarea>
+        <div class="field-stack" style="margin-top:14px;">
+          <div class="field-label">Đăng lúc</div>
+          <div class="field-input" data-preserve-profile-schedule>{_datetime_picker_html("scheduled_at", current_value=profile_scheduled_at or "")}</div>
+        </div>
+        <div class="form-actions"><button type="submit">Lên lịch</button></div>
+      </form>
     </div>
-    <div class="form-actions"><button type="submit">Lên lịch</button></div>
-  </form>
-</div>
+  </div>
 
-{group_post_card}
+  <div class="tab-panel" id="tab-group"{panel_attrs("group")}>
+    {group_post_card}
+  </div>
 
-<div class="section-divider">Hàng đợi nội dung (content_queue/pending/)</div>
-{queue_html}
-
-<div class="card">
-  <h2>⬆️ Tải lên file .txt mới vào hàng đợi</h2>
-  <form method="post" action="/admin/post/upload" enctype="multipart/form-data" style="display:flex; gap:10px; align-items:center;">
-    <input type="file" name="file" accept=".txt" required style="width:auto; flex:1;">
-    <button type="submit" class="btn-secondary">Thêm vào hàng đợi</button>
-  </form>
+  <div class="tab-panel" id="tab-queue"{panel_attrs("queue")}>
+    <div class="card">
+      <h2>📥 Hàng đợi nội dung (content_queue/pending/)</h2>
+      {queue_html}
+    </div>
+    <div class="card">
+      <h2>⬆️ Tải lên file .txt mới vào hàng đợi</h2>
+      <form method="post" action="/admin/post/upload" enctype="multipart/form-data" style="display:flex; gap:10px; align-items:center;">
+        <input type="file" name="file" accept=".txt" required style="width:auto; flex:1;">
+        <button type="submit" class="btn-secondary">Thêm vào hàng đợi</button>
+      </form>
+    </div>
+  </div>
 </div>
 """, active="post")
 
@@ -1192,10 +1273,10 @@ async def post_schedule_profile(request: Request, _: None = Depends(_require_aut
     account_id = str(form.get("account_id", "")).strip()
     content = str(form.get("content", "")).strip()
     if not content:
-        return RedirectResponse(url=f"/admin/post?account_id={account_id}&error=Nội+dung+trống", status_code=303)
+        return RedirectResponse(url=f"/admin/post?account_id={account_id}&tab=profile&error=Nội+dung+trống", status_code=303)
     scheduled_at = _parse_scheduled_at(str(form.get("scheduled_at", "")))
     if scheduled_at is None:
-        return RedirectResponse(url=f"/admin/post?account_id={account_id}&error=Giờ+đăng+không+hợp+lệ", status_code=303)
+        return RedirectResponse(url=f"/admin/post?account_id={account_id}&tab=profile&error=Giờ+đăng+không+hợp+lệ", status_code=303)
     task = schedule_store.ScheduledTask(
         task_id=schedule_store.new_task_id(scheduled_at.isoformat()),
         action="post_to_own_profile",
@@ -1205,7 +1286,7 @@ async def post_schedule_profile(request: Request, _: None = Depends(_require_aut
         reasoning="manual: composed at /admin/post",
     )
     schedule_store.add(task)
-    return RedirectResponse(url=f"/admin/post?account_id={account_id}&scheduled=1", status_code=303)
+    return RedirectResponse(url=f"/admin/post?account_id={account_id}&tab=profile&scheduled=1", status_code=303)
 
 
 @router.post("/post/schedule-groups")
@@ -1231,13 +1312,13 @@ async def post_schedule_groups(request: Request, _: None = Depends(_require_auth
 
     if not blocks:
         return RedirectResponse(
-            url=f"/admin/post?account_id={account_id}&error=Cần ít nhất 1 khối nội dung có chọn nhóm",
+            url=f"/admin/post?account_id={account_id}&tab=group&error=Cần ít nhất 1 khối nội dung có chọn nhóm",
             status_code=303,
         )
 
     start_at = _parse_scheduled_at(str(form.get("start_at", "")))
     if start_at is None:
-        return RedirectResponse(url=f"/admin/post?account_id={account_id}&error=Giờ+bắt+đầu+không+hợp+lệ", status_code=303)
+        return RedirectResponse(url=f"/admin/post?account_id={account_id}&tab=group&error=Giờ+bắt+đầu+không+hợp+lệ", status_code=303)
 
     cfg = get_data_sync_config()
     next_time = start_at
@@ -1260,7 +1341,7 @@ async def post_schedule_groups(request: Request, _: None = Depends(_require_auth
                 minutes=random.uniform(cfg.post_gap_min_minutes, cfg.post_gap_max_minutes)
             )
 
-    return RedirectResponse(url=f"/admin/post?account_id={account_id}&scheduled={scheduled_count}", status_code=303)
+    return RedirectResponse(url=f"/admin/post?account_id={account_id}&tab=group&scheduled={scheduled_count}", status_code=303)
 
 
 @router.post("/post/queue")
@@ -1272,13 +1353,13 @@ async def post_from_queue(request: Request, _: None = Depends(_require_auth)) ->
     try:
         content = content_queue.read_pending(filename)
     except FileNotFoundError:
-        return RedirectResponse(url="/admin/post?error=File+không+còn+trong+hàng+đợi", status_code=303)
+        return RedirectResponse(url="/admin/post?tab=queue&error=File+không+còn+trong+hàng+đợi", status_code=303)
     result = await run_task(TaskRequest(action=action, account_id=account_id, content=content, source="queue"))
     if result.success:
         content_queue.mark_posted(filename)
-        return RedirectResponse(url=f"/admin/post?posted=Đã đăng {filename}: {result.message}", status_code=303)
+        return RedirectResponse(url=f"/admin/post?tab=queue&posted=Đã đăng {filename}: {result.message}", status_code=303)
     content_queue.mark_failed(filename, result.message)
-    return RedirectResponse(url=f"/admin/post?error=Đăng {filename} thất bại: {result.message}", status_code=303)
+    return RedirectResponse(url=f"/admin/post?tab=queue&error=Đăng {filename} thất bại: {result.message}", status_code=303)
 
 
 @router.post("/post/upload")
@@ -1286,7 +1367,7 @@ async def post_upload(file: UploadFile, _: None = Depends(_require_auth)) -> Red
     raw = await file.read()
     text = raw.decode("utf-8", errors="replace")
     saved_name = content_queue.add_pending(file.filename or "post.txt", text)
-    return RedirectResponse(url=f"/admin/post?posted=Đã thêm vào hàng đợi: {saved_name}", status_code=303)
+    return RedirectResponse(url=f"/admin/post?tab=queue&posted=Đã thêm vào hàng đợi: {saved_name}", status_code=303)
 
 
 # --- Schedule (side-B data-sync poller output) ------------------------------
