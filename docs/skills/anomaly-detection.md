@@ -25,7 +25,19 @@ Text-based (case-insensitive substring match against extracted page text):
 - "unusual activity"
 - "you're temporarily blocked"
 - "please verify"
+- "certain actions have been restricted"
 - "checkpoint" (in URL path, e.g. `facebook.com/checkpoint/`)
+
+**Confirmed live 2026-09-07** (real incident, account `tu_iizuki`, during a
+manual Codegen recording session — see README.md's dated incident note for
+the full story): Facebook's exact modal read *"Open Facebook on your
+mobile device to confirm your identity — Certain actions have been
+restricted due to unusual activity."* Already matched by BOTH "confirm
+your identity" and "unusual activity" above — this is the first time any
+signal in this list has been confirmed against a real screenshot rather
+than assumed wording. "certain actions have been restricted" added as a
+third, independent match on the same real text, so a future wording
+change that drops one of the other two still gets caught.
 
 Structural:
 - A captcha iframe/element present on the page.

@@ -611,6 +611,31 @@ Nhớ chạy lại `pip3 install -r requirements.txt` một lần (có thêm
       `read_recent_comments` vẫn là hàm rỗng (`# TODO`, chỉ `goto()` rồi báo
       thành công giả) — xem mục "Ghi Codegen cho 3 hành động còn lại" ở trên,
       gộp chung vào đây vì cùng nhóm "chưa làm thật".
+- [x] **Sự cố thật: tài khoản `tu_iizuki` bị Facebook checkpoint
+      "confirm your identity" (2026-09-07)** — xảy ra lúc đang ghi
+      Codegen thủ công (comment vào 2 bài nhóm liên tiếp trong thời gian
+      ngắn, cộng dồn với hoạt động tự động của bot cùng ngày). Mức độ:
+      trung bình — chỉ chặn một số hành động (đăng/comment), không khoá
+      hẳn tài khoản; xác minh qua app Facebook trên điện thoại là xong,
+      không cần giấy tờ tuỳ thân. Đã xử lý: xác minh xong, tạm dừng tài
+      khoản qua `/admin/accounts` trong lúc "hạ nhiệt" trước khi dùng lại.
+      **2 phát hiện quan trọng từ sự cố này:**
+      1. Cả 2 cụm chữ thật trên màn hình checkpoint ("confirm your
+         identity", "unusual activity") **đã có sẵn** trong
+         `ANOMALY_TEXT_SIGNALS` (`safety.py`) — xác nhận lần đầu bằng
+         ảnh chụp màn hình thật, không còn là suy đoán (xem
+         `docs/skills/anomaly-detection.md`). Thêm cụm thứ 3 "certain
+         actions have been restricted" cho chắc.
+      2. **Lỗ hổng thật sự phát hiện được**: `AnomalyDetected` (auto-pause
+         tài khoản) **chỉ hoạt động khi chạy qua pipeline tự động**
+         (`run_task()`) — lúc thao tác tay qua Playwright Codegen (như
+         sự cố này), hệ thống **không hề biết** tài khoản vừa bị cảnh
+         báo, không tự tạm dừng gì cả. Nếu ngay sau đó bot tự động chạy
+         tiếp trên đúng tài khoản đang bị để ý, rủi ro rất cao. Chưa có
+         giải pháp — cân nhắc: cảnh báo rõ trong tài liệu (đã làm, xem
+         `docs/skills/session-persistence.md`/quy trình Codegen) rằng
+         **luôn tạm dừng tài khoản trong `/admin/accounts` trước khi ghi
+         Codegen**, không dựa vào hệ thống tự phát hiện lúc thao tác tay.
 - [ ] **Chưa có biện pháp chống fingerprint/chống phát hiện ở tầng mạng.** Mới
       chỉ có giả lập hành vi (di chuột kiểu Bézier, gõ phím có tốc độ/lỗi,
       khoảng chờ ngẫu nhiên, rate limit) trong `humanize.py`/`safety.py` —

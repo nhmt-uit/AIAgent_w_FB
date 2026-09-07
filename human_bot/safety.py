@@ -23,6 +23,7 @@ ANOMALY_TEXT_SIGNALS = [
     "unusual activity",
     "you're temporarily blocked",
     "please verify",
+    "certain actions have been restricted",
     "checkpoint",
 ]
 

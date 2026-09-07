@@ -81,6 +81,19 @@ script's Playwright locators (`get_by_role`, `.locator()`, `.fill()`,
 since both the recording and the action run on the same real Playwright
 API (no more translating into a different framework's API).
 
+**⚠️ Pause the account in `/admin/accounts` before recording — real
+incident, 2026-09-07.** `human_bot/safety.py`'s `AnomalyDetected`
+auto-pause (`docs/skills/anomaly-detection.md`) only fires when a task
+runs through the automated pipeline (`agent.py`'s `run_task()`) — a
+manual Codegen session never goes through it, so if Facebook flags the
+account mid-recording (it did: account `tu_iizuki`, a "confirm your
+identity" checkpoint, triggered by repeated group-comment attempts in a
+short window while recording), the system has no idea and won't stop
+anything automated from also hitting that same now-flagged account
+afterward. Pausing by hand first removes that gap — resume once the
+account is verified and has had time to "cool down" (a few hours to a
+day), not immediately after resolving the checkpoint.
+
 ## Facebook UI language — must be English
 
 **Every Facebook account human_bot drives must have its display language
