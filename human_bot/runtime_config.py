@@ -244,16 +244,41 @@ def get_joined_groups(account_id: str) -> list["GroupRef"]:
     """Effective list of joined groups for this account: a
     runtime_config.json override if one has ever been saved for this
     account_id, else the code default from human_bot/config.py's
-    AccountConfig."""
-    from human_bot.config import GroupRef, get_account
+    AccountConfig.
+
+    Any saved entry missing an `id` (data written before GroupRef gained
+    that field) gets one generated on the spot (GroupRef's own
+    default_factory) AND immediately persisted back — a fresh random id
+    on every read, never saved, would mean /admin/groups' edit/delete
+    modal (opened with one id baked in) never matches by the time the
+    form is submitted."""
+    from human_bot.config import GroupRef, get_account, new_group_id
 
     data = _read_all()
     overrides = data.get(_JOINED_GROUPS_KEY, {})
     if account_id in overrides and isinstance(overrides[account_id], list):
         result = []
+        used_ids: set[str] = set()
+        needs_migration = False
         for item in overrides[account_id]:
             if isinstance(item, dict) and str(item.get("url", "")).strip():
-                result.append(GroupRef(name=str(item.get("name", "")).strip(), url=str(item["url"]).strip()))
+                gid = str(item.get("id", "")).strip()
+                if not gid:
+                    # new_group_id(), not GroupRef's own bare
+                    # default_factory — checked against every id already
+                    # used in this account's list (including ones just
+                    # generated earlier in this same migration pass), not
+                    # just probabilistically unique.
+                    gid = new_group_id(used_ids)
+                    needs_migration = True
+                used_ids.add(gid)
+                result.append(GroupRef(
+                    id=gid,
+                    name=str(item.get("name", "")).strip(),
+                    url=str(item["url"]).strip(),
+                ))
+        if needs_migration:
+            save_joined_groups(account_id, result)
         return result
     try:
         return list(get_account(account_id).joined_groups)
@@ -267,7 +292,7 @@ def save_joined_groups(account_id: str, groups: list["GroupRef"]) -> None:
     if not isinstance(overrides, dict):
         overrides = {}
     overrides[account_id] = [
-        {"name": g.name.strip(), "url": g.url.strip()} for g in groups if g.url.strip()
+        {"id": g.id, "name": g.name.strip(), "url": g.url.strip()} for g in groups if g.url.strip()
     ]
     data[_JOINED_GROUPS_KEY] = overrides
     RUNTIME_CONFIG_PATH.write_text(

@@ -50,7 +50,7 @@ from fastapi.security import HTTPBasic, HTTPBasicCredentials
 
 from human_bot import content_queue, db, schedule_store
 from human_bot.agent import TaskRequest, run_task
-from human_bot.config import AccountStatus, GroupRef, RateLimits, get_all_accounts
+from human_bot.config import AccountStatus, GroupRef, RateLimits, get_all_accounts, new_group_id
 from human_bot.data_sync import apply_quiet_hours
 from human_bot.data_sync_config import DataSyncConfig
 from human_bot.media import MediaConfig
@@ -1827,7 +1827,7 @@ def _groups_content_html(
 
     if groups:
         rows = []
-        for i, g in enumerate(groups):
+        for g in groups:
             name_display = html.escape(g.name) if g.name else '<span class="muted">(chưa đặt tên)</span>'
             url_display = html.escape(g.url)
             rows.append(f"""
@@ -1836,13 +1836,13 @@ def _groups_content_html(
   <td class="row-url"><a href="{url_display}" target="_blank" rel="noopener">{url_display}</a></td>
   <td class="col-actions">
     <button type="button" class="btn-small btn-secondary"
-            hx-get="/admin/groups/edit-modal?account_id={html.escape(account_id)}&index={i}"
+            hx-get="/admin/groups/edit-modal?account_id={html.escape(account_id)}&group_id={html.escape(g.id)}"
             hx-target="#modal-root" hx-swap="innerHTML">Sửa</button>
     <form method="post" action="/admin/groups/delete"
           hx-post="/admin/groups/delete" hx-target="#groups-content" hx-swap="outerHTML"
           hx-confirm="Xoá nhóm này khỏi danh sách?">
       <input type="hidden" name="account_id" value="{html.escape(account_id)}">
-      <input type="hidden" name="index" value="{i}">
+      <input type="hidden" name="group_id" value="{html.escape(g.id)}">
       <button type="submit" class="btn-small btn-secondary">Xoá</button>
     </form>
   </td>
@@ -1871,7 +1871,7 @@ def _groups_content_html(
 def _group_modal_html(
     mode: str,  # "add" | "edit"
     account_id: str,
-    index: int | None = None,
+    group_id: str | None = None,
     name: str = "",
     url: str = "",
     error: str | None = None,
@@ -1882,12 +1882,17 @@ def _group_modal_html(
     POST handlers below). A successful POST returns something else
     entirely (an out-of-band #groups-content update with no primary
     content), which is what actually closes the modal — see
-    _groups_content_html()'s `oob` param."""
+    _groups_content_html()'s `oob` param.
+
+    Identifies the group being edited by its stable GroupRef.id, not by
+    position in the list — a list index baked into this form at render
+    time could point at the wrong group by the time it's submitted, if
+    the list changed in between (another tab, a concurrent edit)."""
     is_edit = mode == "edit"
     title = "✏️ Sửa nhóm" if is_edit else "➕ Thêm nhóm mới"
     action_url = "/admin/groups/update" if is_edit else "/admin/groups/add"
     submit_label = "Lưu thay đổi" if is_edit else "Thêm vào danh sách"
-    index_field = f'<input type="hidden" name="index" value="{index}">' if is_edit and index is not None else ""
+    id_field = f'<input type="hidden" name="group_id" value="{html.escape(group_id)}">' if is_edit and group_id else ""
     err_html = f'<p class="error">⚠️ {html.escape(error)}</p>' if error else ""
     return f"""
 <div class="modal-backdrop" onclick="if(event.target===this) this.remove()">
@@ -1899,7 +1904,7 @@ def _group_modal_html(
     {err_html}
     <form method="post" action="{action_url}" hx-post="{action_url}" hx-target="#modal-root" hx-swap="innerHTML">
       <input type="hidden" name="account_id" value="{html.escape(account_id)}">
-      {index_field}
+      {id_field}
       <div class="field-grid">
         <div class="field-stack"><div class="field-label">Tên nhóm</div><div class="field-input"><input type="text" name="name" value="{html.escape(name)}" placeholder="Nhóm IT Nhật Bản"></div></div>
         <div class="field-stack"><div class="field-label">URL nhóm</div><div class="field-input"><input type="text" name="url" value="{html.escape(url)}" placeholder="https://www.facebook.com/groups/123456789012345" required></div></div>
@@ -1940,13 +1945,16 @@ async def groups_add_modal(account_id: str | None = None, _: None = Depends(_req
     return _group_modal_html("add", account_id)
 
 
+def _find_group(groups: list[GroupRef], group_id: str) -> GroupRef | None:
+    return next((g for g in groups if g.id == group_id), None)
+
+
 @router.get("/groups/edit-modal", response_class=HTMLResponse)
-async def groups_edit_modal(account_id: str, index: int, _: None = Depends(_require_auth)) -> str:
-    groups = get_joined_groups(account_id)
-    if not (0 <= index < len(groups)):
-        return _group_modal_html("edit", account_id, index=index, error="Mục không còn tồn tại — có thể đã bị xoá.")
-    g = groups[index]
-    return _group_modal_html("edit", account_id, index=index, name=g.name, url=g.url)
+async def groups_edit_modal(account_id: str, group_id: str, _: None = Depends(_require_auth)) -> str:
+    g = _find_group(get_joined_groups(account_id), group_id)
+    if g is None:
+        return _group_modal_html("edit", account_id, group_id=group_id, error="Mục không còn tồn tại — có thể đã bị xoá.")
+    return _group_modal_html("edit", account_id, group_id=group_id, name=g.name, url=g.url)
 
 
 @router.post("/groups/add")
@@ -1960,7 +1968,8 @@ async def groups_add(request: Request, _: None = Depends(_require_auth)):
             return HTMLResponse(_group_modal_html("add", account_id, name=name, url=url, error="URL nhóm không được để trống"))
         return _groups_redirect(account_id, error="URL nhóm không được để trống")
     groups = get_joined_groups(account_id)
-    groups.append(GroupRef(name=name, url=url))
+    new_id = new_group_id({g.id for g in groups})
+    groups.append(GroupRef(id=new_id, name=name, url=url))
     save_joined_groups(account_id, groups)
     if _is_htmx(request):
         # No primary content for #modal-root (the form's own hx-target) —
@@ -1974,9 +1983,8 @@ async def groups_add(request: Request, _: None = Depends(_require_auth)):
 async def groups_update(request: Request, _: None = Depends(_require_auth)):
     form = await request.form()
     account_id = str(form.get("account_id", ""))
-    try:
-        index = int(str(form.get("index", "")))
-    except ValueError:
+    group_id = str(form.get("group_id", "")).strip()
+    if not group_id:
         if _is_htmx(request):
             return HTMLResponse(_groups_content_html(account_id, error="Mục không hợp lệ", oob=True))
         return _groups_redirect(account_id, error="Mục không hợp lệ")
@@ -1984,14 +1992,18 @@ async def groups_update(request: Request, _: None = Depends(_require_auth)):
     url = str(form.get("url", "")).strip()
     if not url:
         if _is_htmx(request):
-            return HTMLResponse(_group_modal_html("edit", account_id, index=index, name=name, url=url, error="URL nhóm không được để trống"))
+            return HTMLResponse(_group_modal_html("edit", account_id, group_id=group_id, name=name, url=url, error="URL nhóm không được để trống"))
         return _groups_redirect(account_id, error="URL nhóm không được để trống")
     groups = get_joined_groups(account_id)
-    if not (0 <= index < len(groups)):
+    existing = _find_group(groups, group_id)
+    if existing is None:
         if _is_htmx(request):
             return HTMLResponse(_groups_content_html(account_id, error="Mục không còn tồn tại", oob=True))
         return _groups_redirect(account_id, error="Mục không còn tồn tại")
-    groups[index] = GroupRef(name=name, url=url)
+    # Keep the same id — this is an edit, not a replace; a new random id
+    # here would break any in-flight reference to the old one (e.g. a
+    # second tab with this group's edit modal still open).
+    groups = [GroupRef(id=g.id, name=name, url=url) if g.id == group_id else g for g in groups]
     save_joined_groups(account_id, groups)
     if _is_htmx(request):
         return HTMLResponse(_groups_content_html(account_id, saved=True, oob=True))
@@ -2002,16 +2014,11 @@ async def groups_update(request: Request, _: None = Depends(_require_auth)):
 async def groups_delete(request: Request, _: None = Depends(_require_auth)):
     form = await request.form()
     account_id = str(form.get("account_id", ""))
-    try:
-        index = int(str(form.get("index", "")))
-    except ValueError:
-        if _is_htmx(request):
-            return HTMLResponse(_groups_content_html(account_id, error="Mục không hợp lệ"))
-        return _groups_redirect(account_id, error="Mục không hợp lệ")
+    group_id = str(form.get("group_id", "")).strip()
     groups = get_joined_groups(account_id)
-    if 0 <= index < len(groups):
-        groups.pop(index)
-        save_joined_groups(account_id, groups)
+    remaining = [g for g in groups if g.id != group_id]
+    if len(remaining) != len(groups):
+        save_joined_groups(account_id, remaining)
     if _is_htmx(request):
         return HTMLResponse(_groups_content_html(account_id, saved=True))
     return _groups_redirect(account_id, saved=1)

@@ -6,6 +6,8 @@ for the reasoning behind these defaults.
 """
 from __future__ import annotations
 
+import uuid
+from collections.abc import Iterable
 from dataclasses import dataclass, field, replace
 from enum import Enum
 from pathlib import Path
@@ -22,9 +24,36 @@ class AccountStatus(str, Enum):
 class GroupRef:
     """A Facebook group this account is a member of — kept as name+url
     together (not url alone) so a human glancing at /admin/groups or this
-    file can tell which group is which without opening the link."""
+    file can tell which group is which without opening the link.
+
+    `id` is a stable identifier, independent of the group's position in
+    whatever list it's stored in — /admin/groups' edit/delete used to
+    reference a group by its index in that list, which could point at the
+    wrong group if the list changed (another tab, a concurrent edit)
+    between rendering the page and submitting the form. Auto-generated so
+    every existing call site that builds a GroupRef without one keeps
+    working unchanged."""
     name: str
     url: str
+    id: str = field(default_factory=lambda: uuid.uuid4().hex[:8])
+
+
+def new_group_id(existing_ids: Iterable[str] = ()) -> str:
+    """A GroupRef.id guaranteed not to collide with any of `existing_ids`.
+    GroupRef's own default_factory above (bare `uuid.uuid4().hex[:8]`) is
+    only *probabilistically* unique — 8 hex chars is 2**32 possible
+    values, so a collision within one account's handful of groups is
+    astronomically unlikely (~n²/2**33 by the birthday bound), but not
+    impossible. Every call site that actually adds a group to an
+    account's list (human_bot/admin.py's groups_add, and
+    human_bot/runtime_config.py's get_joined_groups() migrating legacy
+    entries with no id yet) uses this instead, to make it a hard
+    guarantee rather than a probability, per the project owner's request."""
+    existing = set(existing_ids)
+    while True:
+        candidate = uuid.uuid4().hex[:8]
+        if candidate not in existing:
+            return candidate
 
 
 @dataclass
