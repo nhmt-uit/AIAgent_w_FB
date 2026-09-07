@@ -626,16 +626,18 @@ Nhớ chạy lại `pip3 install -r requirements.txt` một lần (có thêm
          ảnh chụp màn hình thật, không còn là suy đoán (xem
          `docs/skills/anomaly-detection.md`). Thêm cụm thứ 3 "certain
          actions have been restricted" cho chắc.
-      2. **Lỗ hổng thật sự phát hiện được**: `AnomalyDetected` (auto-pause
-         tài khoản) **chỉ hoạt động khi chạy qua pipeline tự động**
-         (`run_task()`) — lúc thao tác tay qua Playwright Codegen (như
-         sự cố này), hệ thống **không hề biết** tài khoản vừa bị cảnh
-         báo, không tự tạm dừng gì cả. Nếu ngay sau đó bot tự động chạy
-         tiếp trên đúng tài khoản đang bị để ý, rủi ro rất cao. Chưa có
-         giải pháp — cân nhắc: cảnh báo rõ trong tài liệu (đã làm, xem
-         `docs/skills/session-persistence.md`/quy trình Codegen) rằng
-         **luôn tạm dừng tài khoản trong `/admin/accounts` trước khi ghi
-         Codegen**, không dựa vào hệ thống tự phát hiện lúc thao tác tay.
+      2. **Lỗ hổng thật sự phát hiện được, vẫn còn tồn tại (chủ đích, xem
+         ghi chú của owner):** `AnomalyDetected` (auto-pause tài khoản)
+         **chỉ hoạt động khi chạy qua pipeline tự động** (`run_task()`)
+         — lúc thao tác tay qua Playwright Codegen (như sự cố này), hệ
+         thống **không hề biết** tài khoản vừa bị cảnh báo, không tự tạm
+         dừng gì cả. Nếu ngay sau đó bot tự động chạy tiếp trên đúng tài
+         khoản đang bị để ý, rủi ro cao. Từng cân nhắc thêm cảnh báo vào
+         hướng dẫn ghi Codegen (`facebook-custom-actions.md`) nhắc tự tay
+         tạm dừng tài khoản trước khi ghi — **owner quyết định không cần
+         thiết**, giữ nguyên tài liệu như cũ. Ghi lại đây để nếu sự cố
+         tương tự lặp lại thì nhớ đây là rủi ro đã biết, không phải bug
+         mới.
 - [ ] **Chưa có biện pháp chống fingerprint/chống phát hiện ở tầng mạng.** Mới
       chỉ có giả lập hành vi (di chuột kiểu Bézier, gõ phím có tốc độ/lỗi,
       khoảng chờ ngẫu nhiên, rate limit) trong `humanize.py`/`safety.py` —
