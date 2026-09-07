@@ -109,12 +109,6 @@ _ACTION_LABELS: dict[str, str] = {
     "read_recent_comments": "Đọc comment gần đây",
 }
 
-_SOURCE_KIND_LABELS: dict[str, str] = {
-    "job": "Tin tuyển dụng",
-    "candidate": "Ứng viên",
-}
-
-
 def _account_label(account_id: str, accounts: dict | None = None) -> str:
     """"<Tên hiển thị> (<account_id>)" for a known account, or the bare
     id if it's somehow not registered — never crashes a page render over
