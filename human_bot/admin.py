@@ -755,10 +755,27 @@ def _layout(body: str, active: str = "") -> str:
 async def admin_home(_: None = Depends(_require_auth)) -> str:
     accounts = get_all_accounts()
     accounts_html = "".join(f"<li>{html.escape(a.display_name)} ({html.escape(aid)})</li>" for aid, a in accounts.items()) or '<span class="muted">Chưa có tài khoản nào</span>'
+
+    # Surfaced here, not just at /admin/accounts, because the whole point
+    # of auto-pause (human_bot/agent.py's run_task(), on
+    # human_bot/safety.py's AnomalyDetected) is that a human notices
+    # promptly — burying it one click deep defeats that (raised in the
+    # admin UI review that asked for this).
+    paused = [a for a in accounts.values() if a.status == AccountStatus.PAUSED]
+    if paused:
+        names = ", ".join(html.escape(a.display_name) for a in paused)
+        pause_warning = f"""
+<div class="error" style="margin-bottom:20px;">
+  ⚠️ {len(paused)} tài khoản đang <strong>Tạm dừng</strong>: {names} — human_bot sẽ không đăng/comment/like gì cho các tài khoản này.
+  <a href="/admin/accounts" style="margin-left:6px;">Xem / kích hoạt lại →</a>
+</div>"""
+    else:
+        pause_warning = ""
+
     return _layout(f"""
 <h1>Bảng điều khiển</h1>
 <p class="page-desc">Trang quản trị nội bộ. Không public trang này ra internet — nó có quyền đăng bài thật lên Facebook.</p>
-
+{pause_warning}
 <div class="card">
   <h2>👤 Tài khoản đã đăng ký <span class="badge">{len(accounts)}</span></h2>
   <ul class="account-list">{accounts_html}</ul>
@@ -767,7 +784,7 @@ async def admin_home(_: None = Depends(_require_auth)) -> str:
 <div class="home-links">
   <a class="home-link-card" href="/admin/accounts">
     <div class="title">👤 Tài khoản</div>
-    <div class="desc">Đăng ký tài khoản mới sau khi chạy bootstrap_login.py — không cần sửa code.</div>
+    <div class="desc">Đăng ký tài khoản mới sau khi chạy bootstrap_login.py, tạm dừng/kích hoạt lại, xoá — không cần sửa code.</div>
   </a>
   <a class="home-link-card" href="/admin/config">
     <div class="title">⚙️ Cấu hình hành vi</div>
@@ -775,7 +792,7 @@ async def admin_home(_: None = Depends(_require_auth)) -> str:
   </a>
   <a class="home-link-card" href="/admin/post">
     <div class="title">📝 Đăng bài</div>
-    <div class="desc">Đăng trực tiếp hoặc quản lý hàng đợi nội dung (content_queue).</div>
+    <div class="desc">Soạn nội dung, lên lịch đăng tường cá nhân hoặc nhiều nhóm cùng lúc, quản lý hàng đợi nội dung.</div>
   </a>
   <a class="home-link-card" href="/admin/groups">
     <div class="title">👥 Nhóm đã tham gia</div>
@@ -783,7 +800,7 @@ async def admin_home(_: None = Depends(_require_auth)) -> str:
   </a>
   <a class="home-link-card" href="/admin/schedule">
     <div class="title">🔄 Lịch đăng</div>
-    <div class="desc">Xem, sửa, huỷ các bài đã được bộ đồng bộ bên B lên lịch — hoặc đăng ngay thủ công.</div>
+    <div class="desc">Xem, sửa, huỷ mọi bài đang chờ đăng — dù lên lịch thủ công ở /admin/post hay tự động từ bộ đồng bộ bên B.</div>
   </a>
   <a class="home-link-card" href="/admin/reports">
     <div class="title">📊 Báo cáo</div>
@@ -1130,6 +1147,18 @@ async def post_form(
         flash = ""
     err = f'<p class="error">⚠️ {html.escape(error)}</p>' if error else ""
 
+    # Doesn't block composing/scheduling for a paused account — a task
+    # created now is still safely staged behind /admin/schedule's own
+    # review step — just warns up front instead of letting it silently
+    # fail with "account_paused" whenever something later tries to fire
+    # it (found in the admin UI review that asked for this).
+    pause_warning = ""
+    if accounts[account_id].status == AccountStatus.PAUSED:
+        pause_warning = (
+            '<div class="error">⚠️ Tài khoản này đang <strong>Tạm dừng</strong> — bài lên lịch ở đây sẽ '
+            'không tự đăng cho tới khi bạn <a href="/admin/accounts">kích hoạt lại</a>.</div>'
+        )
+
     # Choosing the account fully reloads this page (plain GET form) rather
     # than trying to keep an account-scoped group checkbox list in sync
     # via JS/htmx — same "still-full-reload page" simplicity already used
@@ -1223,6 +1252,7 @@ async def post_form(
 <p class="page-desc">Soạn nội dung và chọn thời điểm đăng — bài nào cũng qua lịch (<a href="/admin/schedule">/admin/schedule</a>) trước khi thật sự chạy, kể cả muốn đăng ngay (để trống giờ đăng, rồi bấm "🚀 Đăng ngay" bên đó).</p>
 {flash}{err}
 {account_picker}
+{pause_warning}
 
 <div data-tabs>
   <div class="tab-bar">
