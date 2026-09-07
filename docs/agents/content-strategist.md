@@ -6,22 +6,55 @@ reads_before_acting: [skills/content-context-awareness.md]
 
 # Content Strategist Agent
 
-## Status (2026-09-04)
+## Status (2026-09-05, checked against the plan below on 2026-09-07)
 
 Scope narrowed from the original plan below, per the project owner: only
 **job posts broadcast to multiple Facebook groups** need AI-drafted
 wording, since that is the one case where posting identical text more
 than once is a real spam signal. Implemented as
 `human_bot/content_strategist.py`'s `draft_group_post_variants()`, wired
-into `human_bot/data_sync.py`'s `sync_once()`. Posting to one's own
+into `human_bot/data_sync.py`'s `sync_once()`. Calls Anthropic's Messages
+API directly over `httpx` — **not** through `human_bot/llm.py`'s
+provider-selection helper (`get_llm()`) mentioned in step 2 below; that
+helper returns a `browser_use.ChatAnthropic`, which pulls in the optional,
+not-installed-by-default `browser-use` package just to make one plain-text
+drafting call — decided not worth the dependency weight. No
+`ANTHROPIC_API_KEY` in `.env`, or a failed call, silently falls back to a
+plain rotating-opener template — `data_sync.py`'s behavior is unchanged
+until a key is added (and the service restarted). Posting to one's own
 profile is user-typed by hand via `/admin/post` and only happens once, so
 it is explicitly OUT of scope — not drafted by this agent at all.
 Candidate outreach replies are also a single message per candidate (no
 variation needed) and remain the plain template they always were. Comment
 actions (`comment_on_group_post`, `comment_on_friend_post`) are still
 blocked on `read_recent_comments` not being implemented in
-`human_bot/actions.py` — the rest of this file (full 5-action scope,
-`normalize_signal`, staging-into-content_queue) is the original design and
+`human_bot/actions.py`.
+
+Checked against the "Implementation plan (batch 1)" section below, step
+by step:
+- Step 0 (pull model, two drafting jobs) — the group-post half is done;
+  the candidate-outreach half is not (still the plain template).
+- Step 1 (`normalize_signal()` input adapter, `ContentSignal` dataclass) —
+  **not built**. `data_sync.py` maps side-B job fields directly into the
+  drafting call; there is no intermediate normalized shape.
+- Step 2 (one LLM call, reusing `human_bot/llm.py`'s provider selection)
+  — done, but via a direct Anthropic call as described above, not by
+  reusing `get_llm()` as originally planned.
+- Step 3 (mechanical guardrails enforced in code — near-duplicate check,
+  banned-word check) — **not built**. Guardrails 1-4 below are currently
+  only instructions inside the system prompt (see `_SYSTEM_PROMPT` in
+  `content_strategist.py`) — a prompt saying "don't do X" is not the same
+  as code checking for X, per this file's own design principle.
+- Step 4 (stage into `content_queue/` before posting) — effectively
+  satisfied a different way: every drafted task lands in
+  `human_bot/schedule_store.py` (`/admin/schedule`) for human review
+  before `run_task()` is ever called, same safety property, different
+  mechanism than originally sketched.
+- Step 5 (scope: `post_to_own_profile` + `post_to_group` only) — narrowed
+  further than planned, per the project owner: only the multi-group
+  broadcast case ended up needing AI at all (see above).
+
+The rest of this file (full 5-action scope) remains the target design,
 not yet built beyond the group-broadcast slice above.
 
 ## Role

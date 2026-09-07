@@ -196,24 +196,44 @@ thẳng hàm đó — không có bước "AI chọn công cụ" ở giữa.
 
 Xem mục 8 bên dưới để biết đầy đủ từng file `.py` dùng để làm gì.
 
-**Giao diện quản trị `/admin` (mới):** thay vì sửa `.env` + khởi động lại
-service để đổi thông số gõ phím, hoặc gõ nội dung bài đăng trực tiếp trong
-lệnh terminal (dễ lỗi dấu ngoặc kép như từng gặp), giờ có thể:
+**Giao diện quản trị `/admin` (đã viết lại 2026-09-05 → 2026-09-07):** thay
+vì sửa `.env`/code + khởi động lại service, hoặc gõ nội dung bài đăng trực
+tiếp trong lệnh terminal, giờ quản lý toàn bộ qua web:
 
 1. Chạy service: `uvicorn human_bot.service:app --host 0.0.0.0 --port 8000`
 2. Mở `http://<host>:8000/admin` trên trình duyệt.
-3. **Cấu hình gõ phím** (`/admin/config`): chỉnh tốc độ gõ, xác suất gõ
-   sai, các khoảng chờ... form này ghi vào `runtime_config.json` (không
-   đụng `.env`), có hiệu lực ngay từ bài đăng tiếp theo.
-4. **Đăng bài** (`/admin/post`): dán nội dung vào ô textarea rồi bấm Đăng,
-   hoặc thả file `.txt` vào `content_queue/pending/` (hoặc tải lên qua
-   form) rồi bấm "Đăng mục này" trong danh sách hàng đợi.
-5. Trang này có quyền đăng bài thật — nếu chạy ở đâu ngoài máy cá nhân,
+3. **Tài khoản** (`/admin/accounts`): đăng ký tài khoản mới (sau khi chạy
+   `bootstrap_login.py`) qua modal — không cần sửa `human_bot/config.py`.
+   Mỗi tài khoản có thể **Tạm dừng/Kích hoạt lại** thủ công bất cứ lúc nào,
+   hoặc **Xoá** (áp dụng cả với tài khoản khai báo sẵn trong code — xem
+   mục 9). Tài khoản cũng **tự động chuyển sang Tạm dừng** nếu hệ thống
+   phát hiện dấu hiệu Facebook hạn chế khi đang đăng bài thật (xem mục 9,
+   "Safety Monitor").
+4. **Cấu hình hành vi** (`/admin/config`): chỉnh tốc độ gõ, xác suất gõ
+   sai, các khoảng chờ, cấu hình bộ đồng bộ bên B... ghi vào
+   `runtime_config.json` (không đụng `.env`), có hiệu lực ngay.
+5. **Đăng bài** (`/admin/post`) — chia 3 tab: "Tường cá nhân" (soạn 1 nội
+   dung, chọn giờ đăng bằng lịch chọn ngày giờ thật), "Đăng vào nhóm" (tạo
+   nhiều khối nội dung khác nhau, mỗi khối gán cho một tập nhóm riêng, có
+   nút "Chọn tất cả"), và "Hàng đợi nội dung" (thả file `.txt` vào
+   `content_queue/pending/` hoặc tải lên qua form). **Mọi bài đều đi qua
+   lịch đăng** (`/admin/schedule`) trước khi thật sự chạy — không còn nút
+   "đăng ngay lập tức" nào bỏ qua bước này, kể cả muốn đăng ngay thì cũng
+   để trống giờ rồi bấm "🚀 Đăng ngay" ở `/admin/schedule`.
+6. **Lịch đăng** (`/admin/schedule`): lọc theo tài khoản, phân trang (20
+   bài/trang), sửa nội dung/giờ, huỷ, hoặc đăng ngay — có cả bài lên lịch
+   thủ công lẫn tự động từ bộ đồng bộ bên B. Giờ đăng hiển thị theo giờ
+   Nhật Bản. Các bài đã đăng/thất bại/huỷ tự động dọn sau 30 ngày
+   (`SCHEDULE_RETENTION_DAYS`), bài đang chờ thì không bao giờ bị đụng.
+7. **Báo cáo** (`/admin/reports`): thêm khối tổng quan nhanh (tổng số/
+   thành công/thất bại/tỉ lệ/số tài khoản hoạt động) và bộ lọc theo
+   khoảng thời gian (7/30/90 ngày/tất cả), áp dụng cho mọi bảng.
+8. Trang này có quyền đăng bài thật — nếu chạy ở đâu ngoài máy cá nhân,
    đặt `ADMIN_USERNAME`/`ADMIN_PASSWORD` trong `.env` (xem `.env.example`)
    để có xác thực HTTP Basic Auth.
 
 Nhớ chạy lại `pip3 install -r requirements.txt` một lần (có thêm
-`python-multipart` cho form tải file lên).
+`python-multipart` cho form tải file lên, `httpx` cho bộ đồng bộ bên B).
 
 ## 7. Quy ước ngôn ngữ trong dự án (quan trọng)
 
@@ -231,7 +251,7 @@ Nhớ chạy lại `pip3 install -r requirements.txt` một lần (có thêm
 | `human_bot/config.py` | Cấu hình tài khoản Facebook, giới hạn tốc độ hành động | Có |
 | `human_bot/humanize.py` | Mô phỏng gõ phím giống người (tốc độ, độ trễ ngẫu nhiên từng ký tự, gõ sai/sửa) và khoảng nghỉ giữa các bước UI, cấu hình qua `.env` | Có |
 | `human_bot/actions.py` | Hành động Playwright thuần trên Facebook, mỗi hành động một hàm riêng | Có |
-| `human_bot/safety.py` | Bộ đếm giới hạn tốc độ + hàm phát hiện dấu hiệu tài khoản bị hạn chế | Có |
+| `human_bot/safety.py` | Bộ đếm giới hạn tốc độ + hàm phát hiện dấu hiệu tài khoản bị hạn chế (`AnomalyDetected`) — khi bắt được, `agent.py` tự chuyển tài khoản sang trạng thái Tạm dừng bền vững (xem mục 9, "Safety Monitor") | Có |
 | `human_bot/browser_pool.py` | Giữ trình duyệt Playwright mở 24/24 cho từng tài khoản | Có |
 | `human_bot/agent.py` | Nhận Task JSON, tra bảng dispatch, gọi thẳng hàm trong actions.py | Có |
 | `human_bot/service.py` | FastAPI service — cửa ngõ HTTP để n8n gọi vào | Có |
@@ -241,7 +261,8 @@ Nhớ chạy lại `pip3 install -r requirements.txt` một lần (có thêm
 | `human_bot/schedule_store.py` | Kho lưu lịch đăng dựa trên file (`scheduled/pending|posted|failed|cancelled/`), tương tự `content_queue.py` | Có |
 | `human_bot/data_sync.py` | Poller: gọi `GET /api/jobs` + `GET /api/candidates` bên B, chống trùng theo cache ngày, lên lịch đăng ngẫu nhiên nối tiếp; chỉ thực sự đăng lên Facebook khi `auto_fire_enabled=true` | Có |
 | `human_bot/db.py` | Lịch sử mọi hành động (SQLite, `human_bot.db`) — ghi lại mỗi lần `run_task()` chạy (thành công lẫn thất bại), dùng cho `/admin/reports` | Có |
-| `human_bot/admin.py` | Giao diện web quản trị nội bộ tại `/admin`: chỉnh cấu hình gõ phím, đăng bài trực tiếp hoặc từ hàng đợi, quản lý nhóm (`/admin/groups`), lịch đăng (`/admin/schedule`), báo cáo (`/admin/reports`) — thay cho việc gõ nội dung trong lệnh terminal | Có |
+| `human_bot/content_strategist.py` | Soạn nội dung khác nhau cho mỗi nhóm khi một tin tuyển dụng được đăng vào nhiều nhóm cùng lúc — gọi thẳng Anthropic API nếu có `ANTHROPIC_API_KEY` trong `.env`, tự rơi về mẫu (template) cũ nếu không có key hoặc gọi lỗi. **Chỉ áp dụng cho bài đăng nhóm** — đăng tường cá nhân và tin nhắn ứng viên không qua đây (xem mục 9) | Có |
+| `human_bot/admin.py` | Giao diện web quản trị nội bộ tại `/admin`: quản lý tài khoản (`/admin/accounts` — đăng ký/tạm dừng/kích hoạt/xoá), cấu hình hành vi (`/admin/config`), soạn & lên lịch đăng (`/admin/post`), quản lý nhóm (`/admin/groups`), lịch đăng (`/admin/schedule`), báo cáo (`/admin/reports`) | Có |
 | `human_bot/llm.py` | Chọn LLM theo key có trong `.env` | **Dự phòng** — chưa được gọi ở đâu trong luồng chính |
 | `human_bot/prompt_loader.py` | Đọc file agent + skill, ghép thành prompt cho AI | **Dự phòng** — để dành cho phương án browser-use sau này |
 | `human_bot/bootstrap_login.py` | Đăng nhập **thủ công** một lần để lưu phiên đăng nhập đầu tiên | **Không** — chạy tay khi thiết lập tài khoản mới |
@@ -314,16 +335,21 @@ Nhớ chạy lại `pip3 install -r requirements.txt` một lần (có thêm
       lần ghi) làm bước chuẩn trước khi điều hướng, áp dụng luôn cho cả
       `post_to_own_profile`. Xem chi tiết trong `docs/skills/
       group-targeting.md` và docstring của `post_to_group`.
-- [ ] Viết Content Strategist Agent — bản tối thiểu trước, không chờ bên B chốt
-      xong định dạng dữ liệu. Xem kế hoạch chi tiết trong
-      `docs/agents/content-strategist.md`, mục "Implementation plan (đợt 1)".
-      Sau khi có, thay thế `_draft_job_post_placeholder`/
-      `_draft_candidate_reply_placeholder` trong `human_bot/data_sync.py`
-      bằng lệnh gọi thật tới agent này (chỗ nối đã được đánh dấu rõ trong
-      code) — đây cũng là chỗ bắt buộc phải viết nội dung khác nhau cho mỗi
-      nhóm khi broadcast, không được đăng đúng một chuỗi giống hệt vào nhiều
-      nhóm (xem `docs/skills/group-targeting.md`, mục "Safety pacing specific
-      to groups").
+- [x] **Content Strategist Agent — bản đầu tiên đã chạy thật (2026-09-05),
+      nhưng phạm vi hẹp hơn nhiều so với kế hoạch gốc ở
+      `docs/agents/content-strategist.md`.** Theo yêu cầu của owner: chỉ
+      cần AI viết khác nhau khi **một tin tuyển dụng đăng vào nhiều nhóm**
+      (`human_bot/content_strategist.py`'s `draft_group_post_variants()`,
+      gọi thẳng Anthropic Messages API qua `httpx`, không qua `human_bot/
+      llm.py`) — không làm cho tường cá nhân (gõ tay, đăng 1 lần, không
+      cần biến tấu) và chưa làm cho tin nhắn ứng viên (`_draft_candidate_
+      reply_placeholder` trong `data_sync.py` vẫn là template). Không có
+      `ANTHROPIC_API_KEY` trong `.env`, hoặc gọi API lỗi, thì tự rơi về
+      đúng template cũ — không văng lỗi, không chặn lịch đăng. **Vẫn
+      thiếu so với kế hoạch gốc:** chưa có `normalize_signal()` (input
+      adapter), chưa có guardrail chống trùng lặp/từ cấm bằng CODE (mới
+      chỉ có trong system prompt — xem Guardrail 1/2/3 trong file spec),
+      và chưa mở rộng sang comment/reply ứng viên.
 - [ ] Chạy lại `pip3 install -r requirements.txt` trước khi khởi động lại
       `service.py` — vừa thêm `httpx` (dùng để gọi API bên B trong
       `human_bot/data_sync.py`).
@@ -350,17 +376,89 @@ Nhớ chạy lại `pip3 install -r requirements.txt` một lần (có thêm
       thật trong `.env` — cần làm trước khi cổng này lộ ra ngoài máy/mạng nội bộ
       (n8n, bên B, ... đều phải gửi lại đúng key này trong header).
 
+### Đợt làm việc 2026-09-05 → 2026-09-07 — quản lý tài khoản + viết lại `/admin/post`
+
+- [x] **Quản lý tài khoản qua `/admin/accounts`** — đăng ký tài khoản mới
+      qua modal (bấm nút mới mở form, không còn nằm sẵn to đùng trên
+      trang), **Tạm dừng/Kích hoạt lại** thủ công, và **Xoá** — áp dụng
+      được cho MỌI tài khoản kể cả loại khai báo sẵn trong `ACCOUNTS` dict
+      ở `config.py` (trước đó các tài khoản này không có nút Xoá nào cả).
+      Xoá một tài khoản khai báo trong code không thể gỡ hằng số Python
+      lúc đang chạy — thực chất là "ẩn" nó khỏi `get_all_accounts()` qua
+      một override trong `runtime_config.json`
+      (`set_account_removed`/`get_removed_account_ids`); muốn dùng lại chỉ
+      cần đăng ký lại đúng `account_id` đó. Xoá cũng tự huỷ mọi bài đang
+      chờ lịch của tài khoản và xoá danh sách nhóm đã lưu, không để sót
+      dữ liệu tham chiếu tới tài khoản không còn tồn tại — nhưng **không**
+      đụng tới `storage_state.json` (phiên đăng nhập thật).
+- [x] **Viết lại hoàn toàn `/admin/post`** — trước đây là "Đăng trực
+      tiếp" (gõ nội dung, bấm Đăng, chạy ngay lập tức) không khác gì tự
+      vào Facebook đăng tay. Giờ là luồng "soạn & lên lịch": chia 3 tab
+      (Tường cá nhân / Đăng vào nhóm / Hàng đợi nội dung); đăng nhóm hỗ
+      trợ nhiều khối nội dung khác nhau, mỗi khối gán cho một tập nhóm
+      riêng (kèm nút "Chọn tất cả"); giờ đăng dùng `<input
+      type="datetime-local">` thật (có nút "Ngay bây giờ"/"+1 giờ"/"Ngày
+      mai") thay vì gõ tay chuỗi ISO 8601. **Mọi bài đều tạo ra một
+      `ScheduledTask`, không có đường nào bỏ qua `/admin/schedule`** — kể
+      cả "đăng ngay" cũng chỉ là để trống giờ rồi bấm nút ở trang lịch.
+      Một giờ đã chọn nhưng bị "để quên" (submit trễ, có thể rơi vào quá
+      khứ) được tự kẹp về "giờ thật lúc bấm Đăng" để giữ đúng khoảng giãn
+      cách giữa các bài trong cùng một lượt đăng nhiều nhóm — không đăng
+      dồn cục dù người dùng chần chừ trước khi bấm.
+- [x] **`/admin/schedule`** — thêm bộ lọc theo tài khoản + phân trang (20
+      bài/trang) để danh sách không bị quá dài; giờ đăng hiển thị theo
+      **giờ Nhật Bản** (đối tượng chính của các nhóm Facebook dự án này
+      nhắm tới), tách dòng riêng, bỏ hẳn UTC khỏi màn hình. File
+      `posted/failed/cancelled` cũ hơn 30 ngày (`SCHEDULE_RETENTION_DAYS`
+      trong `.env`) tự động bị xoá bởi một vòng lặp nền mới trong
+      `service.py`, chạy 1 lần/ngày — `pending` không bao giờ bị đụng dù
+      cũ tới đâu.
+- [x] **`/admin/reports`** — thêm khối tổng quan nhanh (tổng số hành
+      động/thành công/thất bại/tỉ lệ %/số tài khoản có hoạt động) và bộ
+      lọc theo khoảng thời gian (7/30/90 ngày/tất cả) áp dụng cho mọi
+      bảng; "Hoạt động gần đây" đổi từ cắt cứng 50 dòng sang phân trang
+      thật, giới hạn chiều cao khung (cuộn dọc bên trong) để không kéo
+      dài cả trang; cột "Ghi chú" (thông điệp lỗi) giờ có thể bấm mở rộng
+      xem toàn bộ thay vì cắt cụt 80 ký tự không cách nào xem lại.
+- [x] **Toàn bộ `/admin`**: key nội bộ (tên hành động, account_id, nguồn)
+      hiển thị ra màn hình giờ đổi thành nhãn tiếng Việt (`_ACTION_LABELS`,
+      `_account_label()`...) thay vì in thẳng `post_to_group`/`tu_iizuki`.
+- [x] **2 lỗi tìm thấy trong lúc rà soát `/admin` và đã sửa:** (1) sửa nội
+      dung bài ở `/admin/schedule` từng bị cắt cụt ở 400 ký tự khi bấm
+      "Lưu" — vì ô xem trước (đã cắt để hiển thị gọn) bị dùng lại làm giá
+      trị ban đầu của ô sửa; (2) route đăng từ hàng đợi/tải file lên vẫn
+      redirect kèm thông báo thành công nhưng trang đã ngừng đọc tham số
+      đó từ lần viết lại trước — thông báo bị mất mà không ai để ý.
+- [ ] Chưa làm (ghi nhận lại để không quên): cảnh báo/UI cho giới hạn
+      đăng bài mỗi tài khoản (`RateLimits` — vẫn chỉ sửa được qua code);
+      xoá/sửa nhóm ở `/admin/groups` theo vị trí (index) thay vì theo ID
+      cố định (rủi ro thấp ở quy mô hiện tại nhưng dễ nhầm nếu có 2 tab
+      cùng sửa); nút Tạm dừng/Kích hoạt/Xoá ở `/admin/accounts` vẫn tải
+      lại cả trang thay vì cập nhật tại chỗ như `/admin/groups`.
+- [ ] Chụp screenshot khi một hành động thất bại — `TaskResult.
+      screenshot_path` trong `human_bot/agent.py` hiện luôn là `None`
+      (TODO ngay trong code). Các file spec (`docs/agents/
+      human-bot-executor.md`, `docs/agents/safety-monitor.md`) mô tả như
+      thể tính năng này đã có — thực tế chưa, cần làm để khớp lại.
+
 ### Còn lại (chưa tới lượt ngay, nhưng đã ghi nhận — xem đánh giá 2026-09-03)
 
 - [ ] Ghi Codegen cho 3 hành động còn lại: `comment_on_friend_post`,
       `comment_on_group_post`, `like_post`.
-- [ ] Làm Safety Monitor thật (hiện mới có spec trong
-      `docs/agents/safety-monitor.md`) — đếm số lần `detect_anomaly()` bắt được
-      trong một khoảng thời gian cho từng tài khoản, tự động chuyển
-      `account.status` sang tạm dừng (không chỉ raise lỗi tại chỗ như hiện tại),
-      và báo cho người vận hành (email/Telegram/Slack, tuỳ chọn sau) khi có dấu
-      hiệu bất thường — quan trọng vì đây là lớp bảo vệ tài khoản duy nhất khi hệ
-      thống chạy không có người theo dõi sát.
+- [x] **Safety Monitor — hành vi #1 (tự pause khi phát hiện bất thường)
+      đã làm thật (2026-09-06/07), khớp `docs/agents/safety-monitor.md`.**
+      `human_bot/safety.py`'s `AnomalyDetected` (trước đây chỉ raise
+      `RuntimeError` chung, dừng đúng 1 lần rồi tài khoản vẫn bị thử lại
+      bình thường ở lượt sau) giờ được `agent.py`'s `run_task()` bắt riêng
+      và gọi `runtime_config.py`'s `set_account_paused()` — tài khoản
+      chuyển hẳn sang trạng thái Tạm dừng, **bền vững qua cả restart
+      service**, chặn mọi task tiếp theo ngay từ đầu (`account_paused`),
+      cho tới khi người vận hành tự tay kích hoạt lại ở `/admin/accounts`
+      (trang này cũng cho tạm dừng thủ công bất cứ lúc nào, không cần chờ
+      phát hiện tự động). **Vẫn thiếu so với spec:** hành vi #2 (throttle
+      sớm khi gần chạm giới hạn, không chờ tới khi fail hẳn) và hành vi #3
+      (báo động qua Slack/email/Telegram) — xem `docs/agents/
+      safety-monitor.md` mục "Status".
 - [x] **Đăng kèm ảnh/video (`media_path`) — xong (2026-09-04).**
       - Kho ảnh `media/memes/` + `human_bot/media.py` (`pick_random_meme()` chọn
         ngẫu nhiên), công tắc bật/tắt "Tự động đính kèm ảnh" ở `/admin/config`

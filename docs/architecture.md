@@ -346,18 +346,39 @@ built, not just planned:
   bypassing `auto_fire_enabled` — the intended way to actually post while
   the safety gate stays off.
 
-**Not yet real:** the content drafted for job posts and candidate replies
-(`_draft_job_post_placeholder`/`_draft_candidate_reply_placeholder` in
-`data_sync.py`) is a plain template, explicitly flagged in code as a
-placeholder — it is *not* the Content Strategist Agent described in
-section 3c's decisions and in `docs/agents/content-strategist.md`. That
-agent still needs to be built and swapped in, which is also the point
-where "vary wording per group when broadcasting" (a hard requirement, not
-optional — see `docs/skills/group-targeting.md`) actually gets enforced.
-Also not yet done: `GET /api/jobs`'s `attributes.canRepublish`/
-`attribution` applicability is unconfirmed (the real API doc lists those
-under `/content`'s fields specifically) — worth double-checking against a
-real `/api/jobs` response before the drafting agent relies on them.
+**Partially real as of 2026-09-05 — narrower than this section's original
+plan.** `human_bot/content_strategist.py`'s `draft_group_post_variants()`
+is a real, working slice of the Content Strategist Agent: when a job post
+is broadcast to multiple groups, it drafts genuinely different wording per
+group by calling Anthropic's Messages API directly over `httpx` (not
+through `human_bot/llm.py`'s provider-selection helper — that pulls in the
+optional, not-installed-by-default `browser-use` package just to
+construct a `ChatAnthropic`, too heavy for one plain-text drafting call).
+No `ANTHROPIC_API_KEY` in `.env`, or a failed call, silently falls back to
+the same plain-template drafting that existed before — `data_sync.py`'s
+behavior is unchanged until a real key is added and the service
+restarted. This enforces "vary wording per group when broadcasting" (the
+hard requirement from this section's decisions / `docs/skills/
+group-targeting.md`) for the one case it's wired into.
+
+Per the project owner's explicit scoping (2026-09-05): posting to one's
+own profile is user-typed via `/admin/post` and posted once, so it is
+**not** drafted by this agent at all — only the multi-group broadcast case
+needed AI. `_draft_candidate_reply_placeholder` (candidate outreach
+replies) is **still a plain template** — each candidate only gets one
+message, so there was nothing to vary against; this was never built.
+
+**Still not real, unchanged from the original plan:** `normalize_signal()`
+(the input-adapter step in `docs/agents/content-strategist.md`'s
+Implementation plan) does not exist — `data_sync.py` maps side-B fields to
+the drafting call directly. The mechanical guardrails from that same plan
+(near-duplicate check against recent posts, banned-word check) are **not
+enforced in code** — only present as instructions inside the system
+prompt, which is not the same thing (a prompt saying "don't do X" is not
+enforcement; code checking for X is). `GET /api/jobs`'s
+`attributes.canRepublish`/`attribution` applicability is also still
+unconfirmed — see `docs/agents/content-strategist.md`'s "Status" section
+for the full breakdown against the original plan's steps.
 
 ## 3d. Action history & reporting (SQLite, implemented 2026-09-04)
 
@@ -395,14 +416,59 @@ its wins. `TaskRequest` gained a `source` field (`manual` / `queue` /
 `source_id` (carried through from a `ScheduledTask` when one exists) so a
 report row can say *how* a post happened, not just that it did.
 
-`/admin/reports` (`human_bot/admin.py`) reads this table: successful
+`/admin/reports` (`human_bot/admin.py`) reads this table: a KPI summary
+row (total/succeeded/failed/success rate/active accounts), successful
 posts per account per ISO week, posts per group, success/failure counts
-per action type, and a scrollback of the 50 most recent actions —
-filterable by account. `/admin` as a whole (including this page) was
-visually upgraded 2026-09-04 — Tailwind Play CDN for styling and htmx
-for in-place updates on the CRUD-heavy pages (groups, schedule, reports),
-still Python/FastAPI rendering the HTML server-side, no separate
-frontend. See README.md section 9 for what that upgrade covers.
+per action type, and a paginated recent-activity log — all filterable by
+account AND by a date-range picker (7/30/90 days/all time, added
+2026-09-07) applied consistently across every table. `/admin` as a whole
+(including this page) was visually upgraded 2026-09-04 — Tailwind Play
+CDN for styling and htmx for in-place updates on the CRUD-heavy pages
+(groups, schedule, reports, accounts), still Python/FastAPI rendering the
+HTML server-side, no separate frontend. See README.md section 9 for the
+full history of what's been added to `/admin` since.
+
+## 3e. Account auto-pause (Safety Monitor behavior #1, implemented 2026-09-06/07)
+
+`docs/agents/safety-monitor.md` specifies three behaviors; only the first
+is real so far — see that file's "Status" section for the full breakdown.
+
+Before this, `human_bot/safety.py`'s `detect_anomaly()` being triggered
+only aborted the single in-flight action (a bare `RuntimeError`, caught by
+`agent.py`'s generic exception handler) — the account was tried again
+completely normally on the next task, with nothing stopping it from
+hitting the same restriction repeatedly. Fixed by giving detection its own
+exception type, `AnomalyDetected` (still raised from `actions.py`'s
+`_check_anomaly_or_raise`), which `agent.py`'s `run_task()` now catches
+specifically and turns into a **persistent** pause:
+`human_bot/runtime_config.py`'s `set_account_paused(account_id, True)`
+writes the override into `runtime_config.json`, and
+`human_bot/config.py`'s `get_all_accounts()` applies it on top of every
+account regardless of origin (a code-level `ACCOUNTS` entry or one
+registered at `/admin/accounts`) — the same override pattern already used
+for `joined_groups`. `run_task()`'s existing `account.status !=
+AccountStatus.ACTIVE` check (already there, previously mostly
+theoretical) is what actually blocks the next task, and it now has real
+persisted state to check against — including across a service restart,
+since the override lives on disk, not in a Python object's memory.
+
+`/admin/accounts` surfaces and manages this: a status column
+(Hoạt động/Tạm dừng), manual Tạm dừng/Kích hoạt lại buttons on every
+account (not only ones paused automatically), and the dashboard
+(`/admin`) shows a warning banner naming any currently-paused account —
+the whole point of auto-pause is a human noticing promptly, so it isn't
+buried one click deep at `/admin/accounts` alone. `/admin/post` also
+warns if the account currently selected for composing is paused (doesn't
+block scheduling — the task still safely queues behind `/admin/schedule`'s
+own review step — just warns before it silently fails later).
+
+**Not yet implemented** (behaviors #2 and #3 from
+`docs/agents/safety-monitor.md`): throttling as an account's action
+frequency *approaches* its configured limit (today it's binary — allowed
+until `RateLimiter.can_proceed()` says no, no earlier warning), and
+alerting a human operator (Slack/email/Telegram) when a pause happens —
+today, finding out means opening `/admin` and seeing the warning banner or
+noticing a failed task in `/admin/reports`, not receiving a push.
 
 ## 4. Why the Executor has no independent judgment
 
@@ -431,18 +497,38 @@ AIAgent_w_FB/
     agents/                     # English — one spec per agent
     skills/                     # English — reusable skill definitions agents reload
   human_bot/                    # Python package — the Executor Agent implementation
-    config.py
+    config.py                   # AccountConfig/RateLimits/GroupRef, get_all_accounts()
     actions.py                  # Playwright action functions (the normal path)
+    humanize.py                  # human-like typing/pacing/mouse-movement config + helpers
     browser_pool.py              # persistent per-account Playwright sessions
     agent.py                     # dispatches Task JSON -> actions.py function
-    safety.py
-    service.py
+    safety.py                    # rate limiting + AnomalyDetected (see section 3e)
+    service.py                   # FastAPI app + background loops (data sync, cleanup)
+    runtime_config.py            # /admin-editable overrides, persisted to runtime_config.json
+    admin.py                     # the /admin web UI (see README.md section 6 for full page list)
+    content_queue.py             # file-based .txt post queue for /admin/post
+    schedule_store.py            # file-based ScheduledTask store for /admin/schedule
+    data_sync.py                 # side-B poller (see section 3c)
+    data_sync_config.py          # DataSyncConfig for the poller above
+    content_strategist.py        # AI drafting for multi-group broadcasts (see section 3c)
+    media.py                     # random-meme auto-attach (media/memes/)
+    db.py                        # SQLite action_log for /admin/reports (see section 3d)
     llm.py                       # reserved fallback (browser-use), not used by default
     prompt_loader.py              # reserved for the fallback path (see docs/skills/vision-fallback.md)
+    bootstrap_login.py           # run by hand: one-time manual Facebook login
   accounts/                     # gitignored — per-account storage_state.json (secrets)
+  content_queue/                # gitignored — pending/posted/failed/ .txt files
+  scheduled/                    # gitignored — pending/posted/failed/cancelled/ ScheduledTask JSON
+  data_sync_cache/              # gitignored — day-partitioned dedup cache for the poller
+  media/memes/                  # meme images for the random-attach feature
+  runtime_config.json           # gitignored — /admin's saved overrides
+  human_bot.db                  # gitignored — SQLite action_log
   requirements.txt
   .env.example
 ```
+
+Full per-file purpose (including manual/test-only scripts not listed
+above): README.md section 8.
 
 ## 6. Language convention (why docs are split EN/VN)
 

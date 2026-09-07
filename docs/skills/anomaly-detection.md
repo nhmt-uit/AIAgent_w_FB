@@ -37,12 +37,19 @@ Structural:
 1. Stop the current task immediately — do not attempt the intended action.
 2. Do **not** retry, and do not attempt to solve a captcha or "confirm
    identity" flow programmatically.
-3. Capture a `screenshot` action for evidence.
-4. Return `TaskResult { success: false, message: "anomaly:<signal>" }`.
-5. The Safety Monitor sets the account to `paused` (see
-   `docs/agents/safety-monitor.md`) — resuming requires a human to log in
-   manually and re-bootstrap the session
-   (`skills/session-persistence.md`).
+3. Capture a `screenshot` action for evidence — **not implemented yet**
+   (`TaskResult.screenshot_path` is always `None` today, see README.md's
+   TODO list); tracked as a known gap, not a design decision.
+4. Return `TaskResult { success: false, message: "anomaly_detected:<signal>" }`
+   (`human_bot/safety.py`'s `AnomalyDetected` exception message — implemented).
+5. **Implemented (2026-09-06/07):** the account is set to `paused`
+   persistently (`human_bot/runtime_config.py`'s `set_account_paused()`,
+   applied by `human_bot/config.py`'s `get_all_accounts()` — see
+   `docs/agents/safety-monitor.md`'s "Status" section for the exact
+   mechanism) — resuming just needs a human to click "Kích hoạt lại" at
+   `/admin/accounts` (only re-bootstrapping the session
+   (`skills/session-persistence.md`) is needed if the anomaly turned out
+   to be an actual logged-out/invalidated session, not every pause).
 
 ## Maintenance
 

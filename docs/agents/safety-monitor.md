@@ -6,6 +6,36 @@ reads_before_acting: [skills/anomaly-detection.md, skills/rate-limiting-pacing.m
 
 # Safety Monitor
 
+## Status (2026-09-06/07)
+
+Behavior #1 below (auto-pause on anomaly detection) is real. Behaviors #2
+and #3 are not.
+
+Implemented as: `human_bot/actions.py`'s `_check_anomaly_or_raise` raises
+`human_bot/safety.py`'s `AnomalyDetected` (a distinct exception type, not
+a bare `RuntimeError` as before) whenever `detect_anomaly()` matches;
+`human_bot/agent.py`'s `run_task()` catches that specifically and calls
+`human_bot/runtime_config.py`'s `set_account_paused(account_id, True)`.
+That's a slight mechanism difference from this file's original wording
+below ("...in `human_bot/config.py`'s account store"): the pause is
+actually persisted as an override in `runtime_config.json`
+(`get_paused_account_ids()`), which `human_bot/config.py`'s
+`get_all_accounts()` applies on top of every account regardless of
+origin — same net effect (the account's `AccountStatus` reads as
+`PAUSED` everywhere, including the `account.status != ACTIVE` check at
+the top of `run_task()`), but the state lives in the JSON override file,
+not a mutation of the in-memory `ACCOUNTS` dict, so it survives a service
+restart. Human review/re-enable happens at `/admin/accounts`, which also
+allows pausing/resuming manually at any time — not only in response to a
+detected anomaly — and the `/admin` dashboard shows a warning banner
+naming any currently-paused account so this isn't only discoverable by
+visiting that page.
+
+**Not built:** #2 (throttling as usage approaches a configured limit,
+before it fails outright) and #3 (alerting a human via n8n/Slack/email
+when a pause happens — today, finding out means opening `/admin` and
+seeing the banner, or noticing a failed task in `/admin/reports`).
+
 ## Role
 
 Protects Facebook accounts from being restricted or banned by watching the
