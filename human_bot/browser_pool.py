@@ -42,9 +42,36 @@ class AccountSession:
         self.context: BrowserContext | None = None
         self.page: Page | None = None
 
+    def _is_alive(self) -> bool:
+        """True only if there's a page/context/browser AND it's actually
+        still usable — not just non-None. A page can go away without this
+        object ever hearing about it (most commonly: HEADLESS=false and a
+        human closes the visible Chrome tab/window by hand), and before
+        2026-09-07 that left self.page pointing at a dead Page forever —
+        ensure_started() saw "not None" and did nothing, so every
+        subsequent task failed with the same `Page.goto: Target page,
+        context or browser has been closed` until the whole service was
+        restarted (see the incident that prompted this check)."""
+        if self.page is None or self.browser is None:
+            return False
+        try:
+            return self.browser.is_connected() and not self.page.is_closed()
+        except Exception:
+            # A closed/crashed browser can make these calls themselves
+            # raise instead of returning False — either way, not alive.
+            return False
+
     async def ensure_started(self) -> None:
-        if self.page is not None:
+        if self._is_alive():
             return
+        if self.page is not None:
+            # Stale session — something (most likely a manually-closed
+            # Chrome tab/window under HEADLESS=false) killed the page or
+            # browser out from under us. Tear down whatever's left
+            # (close() is already best-effort/exception-safe on each
+            # step) before relaunching, instead of leaking the dead
+            # objects and failing forever.
+            await self.close()
         self._playwright = await async_playwright().start()
         self.browser = await self._playwright.chromium.launch(headless=self.headless)
         self.context = await self.browser.new_context(

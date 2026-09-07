@@ -1,18 +1,24 @@
 """
 Purpose of this file / Muc dich cua file nay:
 EN: Config for the side-B data-sync poller (human_bot/data_sync.py) — poll
-cadence, the safety gate that separates "fetch + dedupe" from "actually
-post to Facebook", the randomized scheduling gaps between posts/comments,
-candidate filtering thresholds, and dedup-cache retention. Same
+cadence, the randomized scheduling gaps between posts/comments, candidate
+filtering thresholds, and dedup-cache retention. The safety gate that
+separates "fetch + dedupe + schedule" from "actually post to Facebook"
+(`auto_fire_enabled`) now lives in human_bot/scheduling_config.py instead
+— it applies to every scheduled task, not just ones this poller creates,
+so it doesn't belong under a "data sync" name (moved 2026-09-07). Same
 env-override + /admin-editable pattern as human_bot/humanize.py's config
 dataclasses (HumanTypingConfig, HumanPacingConfig, HumanMouseConfig) — see
 human_bot/runtime_config.py for how the /admin overrides layer on top of
 these .env/code defaults. See docs/architecture.md section 3c for the
 full design this config drives.
 VI: Cau hinh cho bo dong bo du lieu tu ben B (human_bot/data_sync.py) —
-nhip goi API, cong tac an toan tach rieng "lay + chong trung" voi "thuc
-su dang len Facebook", khoang cach ngau nhien giua cac luot dang/comment,
-nguong loc ung vien, va thoi gian giu cache chong trung. Dung chung mot
+nhip goi API, khoang cach ngau nhien giua cac luot dang/comment, nguong
+loc ung vien, va thoi gian giu cache chong trung. Cong an toan tach rieng
+"lay + chong trung + len lich" voi "thuc su dang len Facebook"
+(`auto_fire_enabled`) gio nam trong human_bot/scheduling_config.py — vi
+no ap dung cho MOI bai len lich, khong chi bai do bo nay tao ra, nen
+khong thuoc ve cai ten "dong bo du lieu" (da doi cho 2026-09-07). Dung chung mot
 kieu env-override + chinh duoc qua /admin voi cac dataclass cau hinh
 trong human_bot/humanize.py — xem human_bot/runtime_config.py de biet
 cach /admin ghi de len cac gia tri mac dinh .env/code nay. Xem
@@ -52,16 +58,6 @@ class DataSyncConfig:
     # Master switch for the whole poller (fetch + dedupe + schedule). Safe
     # to leave on — this alone never touches Facebook, only side B's API.
     enabled: bool = field(default_factory=lambda: _env_bool("DATA_SYNC_ENABLED", True))
-
-    # SAFETY GATE — separate from `enabled` on purpose. When False, the
-    # poller still fetches/dedupes/schedules normally so you can review
-    # what it *would* post in /admin/schedule, but the due-task loop will
-    # never actually call run_task() — nothing reaches Facebook until this
-    # is explicitly turned on. See docs/agents/content-strategist.md,
-    # "Implementation plan" — same "stage before trusting" principle.
-    auto_fire_enabled: bool = field(
-        default_factory=lambda: _env_bool("DATA_SYNC_AUTO_FIRE_ENABLED", False)
-    )
 
     # How often to call side B's API for new jobs/candidates.
     poll_interval_minutes: float = field(

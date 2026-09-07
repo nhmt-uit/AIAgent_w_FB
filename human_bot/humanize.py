@@ -439,7 +439,13 @@ async def human_mouse_move(
         end_x = target_x + (target_x - start_x) * cfg.overshoot_ratio
         end_y = target_y + (target_y - start_y) * cfg.overshoot_ratio
 
-    steps = max(cfg.min_steps, min(cfg.max_steps, round(distance / 25)))
+    # int(...) matters here, not just cosmetic: cfg.min_steps/max_steps are
+    # floats (admin-editable via /admin/config), so whenever the clamp
+    # picks one of those bounds instead of round(distance / 25), max()/min()
+    # hand back that float as-is — range() below then raises "'float'
+    # object cannot be interpreted as an integer" (hit in production
+    # 2026-09-07, only on distances short/long enough to actually clamp).
+    steps = int(max(cfg.min_steps, min(cfg.max_steps, round(distance / 25))))
     for i in range(1, steps + 1):
         t = i / steps
         x, y = _quadratic_bezier((start_x, start_y), (control_x, control_y), (end_x, end_y), t)

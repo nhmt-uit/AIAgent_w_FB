@@ -28,6 +28,7 @@ from typing import Any
 
 from human_bot.humanize import HumanMouseConfig, HumanPacingConfig, HumanTypingConfig
 from human_bot.data_sync_config import DataSyncConfig
+from human_bot.scheduling_config import SchedulingConfig
 from human_bot.media import MediaConfig
 
 RUNTIME_CONFIG_PATH = Path(__file__).resolve().parent.parent / "runtime_config.json"
@@ -86,7 +87,6 @@ EDITABLE_MOUSE_FIELDS: list[str] = [
 # if it ever needs to change.
 EDITABLE_DATA_SYNC_FIELDS: list[str] = [
     "enabled",
-    "auto_fire_enabled",
     "poll_interval_minutes",
     "due_check_interval_seconds",
     "post_gap_min_minutes",
@@ -200,6 +200,58 @@ def get_data_sync_config() -> DataSyncConfig:
 
 def save_data_sync_overrides(values: dict[str, Any]) -> None:
     _save_overrides("data_sync", EDITABLE_DATA_SYNC_FIELDS, values)
+
+
+# --- Scheduling (fire gate — applies to ANY scheduled task) -----------------
+#
+# auto_fire_enabled moved here from the "data_sync" section (2026-09-07):
+# it gates human_bot/data_sync.py's fire_due_tasks(), which fires EVERY due
+# task in /admin/schedule regardless of source — including ones composed
+# by hand at /admin/post — so it never really belonged under "Đồng bộ dữ
+# liệu bên B". A value saved under the old "data_sync" key (from before
+# this move) is still honored as a one-time fallback below, so an
+# operator's existing choice isn't silently reset to the off-by-default
+# value the first time this runs after upgrading.
+
+EDITABLE_SCHEDULING_FIELDS: list[str] = [
+    "auto_fire_enabled",
+]
+
+
+def get_scheduling_overrides() -> dict[str, Any]:
+    """Admin-saved overrides for the "scheduling" section, falling back to
+    a value still left under the old "data_sync" section (from before
+    auto_fire_enabled moved here, 2026-09-07) if this section has never
+    been saved itself. Applying the fallback HERE — not only in
+    get_scheduling_config() below — matters: /admin/config's checkbox is
+    rendered straight from this function's return value, so if the
+    fallback lived only in get_scheduling_config(), the checkbox would
+    show unchecked/default while the config actually in effect (and the
+    live status banner on /admin/post and /admin/schedule, which does
+    call get_scheduling_config()) showed enabled — an inconsistency a
+    user hit right after this section was introduced."""
+    overrides = _get_overrides("scheduling", EDITABLE_SCHEDULING_FIELDS)
+    if "auto_fire_enabled" not in overrides:
+        legacy = _get_overrides("data_sync", ["auto_fire_enabled"])
+        if "auto_fire_enabled" in legacy:
+            overrides = {**overrides, "auto_fire_enabled": legacy["auto_fire_enabled"]}
+    return overrides
+
+
+def get_scheduling_config() -> SchedulingConfig:
+    """The config actually used to gate human_bot/data_sync.py's
+    fire_due_tasks(): .env/code default with get_scheduling_overrides()
+    (including its legacy "data_sync" fallback) layered on top. Built from
+    that function directly rather than the generic _get_config() helper,
+    since _get_config() would call the private _get_overrides() and skip
+    the legacy fallback."""
+    overrides = get_scheduling_overrides()
+    base = SchedulingConfig()
+    return dataclasses.replace(base, **overrides) if overrides else base
+
+
+def save_scheduling_overrides(values: dict[str, Any]) -> None:
+    _save_overrides("scheduling", EDITABLE_SCHEDULING_FIELDS, values)
 
 
 # --- Media (attach-random-meme toggle, human_bot/media.py) ------------------

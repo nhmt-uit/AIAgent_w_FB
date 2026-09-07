@@ -79,17 +79,22 @@ async def _data_sync_poll_loop() -> None:
 
 async def _data_sync_fire_loop() -> None:
     """Background loop: check for scheduled tasks that are now due and,
-    only if DataSyncConfig.auto_fire_enabled is True, actually post them
-    (via run_task()). Left False by default — see
-    human_bot/data_sync_config.py and /admin/schedule's manual 'Đăng ngay'
-    button for the safe-by-default alternative."""
+    only if SchedulingConfig.auto_fire_enabled is True, actually post them
+    (via run_task()). Runs regardless of DataSyncConfig.enabled — that
+    flag only gates the side-B poll loop above, while due tasks can also
+    come from composing by hand at /admin/post, so this check must not
+    depend on whether the side-B integration is turned on (fixed
+    2026-09-07 alongside moving auto_fire_enabled to its own config — see
+    human_bot/scheduling_config.py — since both were the same "buried
+    under data-sync" issue). Left False by default — see
+    human_bot/scheduling_config.py and /admin/schedule's manual 'Đăng
+    ngay' button for the safe-by-default alternative."""
     while True:
         cfg = get_data_sync_config()
-        if cfg.enabled:
-            try:
-                await data_sync.fire_due_tasks(cfg)
-            except Exception:  # noqa: BLE001 - keep the loop alive across failures
-                logger.exception("data_sync.fire_due_tasks failed")
+        try:
+            await data_sync.fire_due_tasks()
+        except Exception:  # noqa: BLE001 - keep the loop alive across failures
+            logger.exception("data_sync.fire_due_tasks failed")
         await asyncio.sleep(max(cfg.due_check_interval_seconds, 5.0))
 
 

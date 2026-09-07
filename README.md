@@ -257,9 +257,10 @@ Nhớ chạy lại `pip3 install -r requirements.txt` một lần (có thêm
 | `human_bot/service.py` | FastAPI service — cửa ngõ HTTP để n8n gọi vào | Có |
 | `human_bot/runtime_config.py` | Lưu/đọc các thông số gõ phím do trang `/admin` chỉnh, ghi ra `runtime_config.json` (không phải `.env`), áp dụng ngay không cần khởi động lại | Có |
 | `human_bot/content_queue.py` | Hàng đợi nội dung bài đăng dựa trên file `.txt` (`content_queue/pending|posted|failed/`), dùng cho trang `/admin` | Có |
-| `human_bot/data_sync_config.py` | Cấu hình bộ đồng bộ dữ liệu bên B — nhịp gọi API, cổng an toàn `auto_fire_enabled`, khoảng cách lịch đăng ngẫu nhiên, ngưỡng lọc ứng viên | Có |
+| `human_bot/data_sync_config.py` | Cấu hình bộ đồng bộ dữ liệu bên B — nhịp gọi API, khoảng cách lịch đăng ngẫu nhiên, ngưỡng lọc ứng viên | Có |
+| `human_bot/scheduling_config.py` | Cổng an toàn `auto_fire_enabled` — tách riêng khỏi `data_sync_config.py` (2026-09-07) vì áp dụng cho MỌI bài trong lịch, kể cả bài soạn tay ở `/admin/post`, không chỉ bài từ bên B | Có |
 | `human_bot/schedule_store.py` | Kho lưu lịch đăng dựa trên file (`scheduled/pending|posted|failed|cancelled/`), tương tự `content_queue.py` | Có |
-| `human_bot/data_sync.py` | Poller: gọi `GET /api/jobs` + `GET /api/candidates` bên B, chống trùng theo cache ngày, lên lịch đăng ngẫu nhiên nối tiếp; chỉ thực sự đăng lên Facebook khi `auto_fire_enabled=true` | Có |
+| `human_bot/data_sync.py` | Poller: gọi `GET /api/jobs` + `GET /api/candidates` bên B, chống trùng theo cache ngày, lên lịch đăng ngẫu nhiên nối tiếp; `fire_due_tasks()` chỉ thực sự đăng lên Facebook khi `SchedulingConfig.auto_fire_enabled=true` | Có |
 | `human_bot/db.py` | Lịch sử mọi hành động (SQLite, `human_bot.db`) — ghi lại mỗi lần `run_task()` chạy (thành công lẫn thất bại), dùng cho `/admin/reports` | Có |
 | `human_bot/content_strategist.py` | Soạn nội dung khác nhau cho mỗi nhóm khi một tin tuyển dụng được đăng vào nhiều nhóm cùng lúc — gọi thẳng Anthropic API nếu có `ANTHROPIC_API_KEY` trong `.env`, tự rơi về mẫu (template) cũ nếu không có key hoặc gọi lỗi. **Chỉ áp dụng cho bài đăng nhóm** — đăng tường cá nhân và tin nhắn ứng viên không qua đây (xem mục 9) | Có |
 | `human_bot/admin.py` | Giao diện web quản trị nội bộ tại `/admin`: quản lý tài khoản (`/admin/accounts` — đăng ký/tạm dừng/kích hoạt/xoá), cấu hình hành vi (`/admin/config`), soạn & lên lịch đăng (`/admin/post`), quản lý nhóm (`/admin/groups`), lịch đăng (`/admin/schedule`), báo cáo (`/admin/reports`) | Có |
@@ -495,6 +496,9 @@ Nhớ chạy lại `pip3 install -r requirements.txt` một lần (có thêm
       định `false`** — bộ đồng bộ vẫn lấy/chống trùng/lên lịch bình thường,
       nhưng sẽ không tự đăng lên Facebook cho tới khi bật cổng này; trong lúc
       đó, đăng thủ công từng bài qua nút "🚀 Đăng ngay" ở `/admin/schedule`.
+      **(2026-09-07: cổng này đã chuyển từ `DataSyncConfig` sang
+      `human_bot/scheduling_config.py` riêng — xem đánh giá bên dưới, mục
+      "Điểm yếu đã ghi nhận".)**
       Nội dung bài đăng nhóm/reply hiện dùng **template placeholder** (nối
       chuỗi đơn giản, có đánh dấu rõ trong code) — **chưa phải** Content
       Strategist Agent thật, xem mục tiếp theo.
@@ -537,6 +541,53 @@ Nhớ chạy lại `pip3 install -r requirements.txt` một lần (có thêm
       `human_bot/browser_pool.py` hiện tự ghi rõ trong docstring là chỉ an toàn
       với đúng 1 process; cần tính lại kiến trúc (pool theo process riêng cho mỗi
       account, hoặc hàng đợi công việc) nếu muốn scale.
+
+### Điểm yếu đã ghi nhận (2026-09-07) — cần cân nhắc, chưa xếp lịch làm
+
+- [x] **`auto_fire_enabled` bị "giấu" trong cấu hình sai chỗ — đã sửa (2026-09-07).**
+      Phát hiện qua đúng sự cố thật: một bài lên lịch thủ công ở `/admin/post`
+      lúc 12:40 không tự đăng, vì cổng an toàn `auto_fire_enabled` nằm trong
+      `DataSyncConfig` ("Đồng bộ dữ liệu bên B") dù nó áp dụng cho **mọi** bài
+      trong lịch, kể cả bài soạn tay — người dùng tìm cấu hình "lịch đăng" sẽ
+      không nghĩ tới việc lục trong mục đồng bộ bên B. Đã xử lý: (1) tách cờ
+      này ra `human_bot/scheduling_config.py` riêng (`SchedulingConfig`), có
+      mục `/admin/config` riêng "Lên lịch & tự động đăng"; (2) `runtime_config.py`
+      tự đọc lại giá trị cũ đã lưu dưới key `data_sync` (nếu có) làm fallback
+      một lần, để không vô tình reset về tắt cho ai đã từng bật; (3) `.env` đổi
+      tên biến thành `SCHEDULING_AUTO_FIRE_ENABLED` (vẫn đọc được
+      `DATA_SYNC_AUTO_FIRE_ENABLED` cũ nếu chưa đặt biến mới); (4) sửa luôn một
+      lỗi liên quan: vòng lặp "no lịch" (`_data_sync_fire_loop` trong
+      `service.py`) trước đây chỉ chạy khi `DataSyncConfig.enabled=true` — tức
+      tắt hẳn "bộ đồng bộ bên B" cũng vô tình chặn luôn việc tự đăng bài lên
+      lịch thủ công; giờ vòng lặp này chạy độc lập, chỉ còn phụ thuộc đúng
+      `auto_fire_enabled`; (5) thêm banner **trạng thái BẬT/TẮT hiện tại** trực
+      tiếp trên `/admin/post` và `/admin/schedule` (không cần vào `/admin/config`
+      mới biết), qua `_auto_fire_status_html()` trong `admin.py`.
+- [ ] **Không xác minh bài đăng thật sự thành công.** `post_to_own_profile` và
+      `post_to_group` chỉ chờ cứng 2 giây (`page.wait_for_timeout(2000)`) rồi
+      luôn trả về `success=True` — không kiểm tra bài có thật sự xuất hiện
+      không. Từng có sự cố thật: báo thành công nhưng ảnh không hề được đăng
+      (do chọn sai `<input type="file">`).
+- [ ] **Không có cơ chế fallback khi 1 selector gãy trong lúc đăng bài.** Mỗi
+      bước (mở composer, gõ nội dung, bấm Post, đính kèm ảnh) chỉ dùng đúng 1
+      selector; Facebook đổi giao diện là cả hành động fail luôn. Chỉ riêng
+      bước điều hướng vào group (`post_to_group`) là có chuỗi fallback 4 tầng.
+- [ ] **Fallback bằng LLM đã thiết kế nhưng chưa nối vào luồng chạy thật.**
+      `human_bot/llm.py` và docstring đầu `actions.py` mô tả ý định: khi
+      selector ghi sẵn (Codegen) bị gãy vì Facebook đổi UI, để một AI/LLM tự
+      "nhìn" trang (qua `browser-use`) và tự tìm nút bấm thay vì dựa vào
+      selector cứng. Hiện **chưa có chỗ nào trong `actions.py`/`agent.py` thật
+      sự gọi tới fallback này** — cần quyết định có nối vào hay không, và nếu
+      có thì áp dụng cho hành động nào trước.
+- [ ] `comment_on_friend_post`, `comment_on_group_post`, `like_post`,
+      `read_recent_comments` vẫn là hàm rỗng (`# TODO`, chỉ `goto()` rồi báo
+      thành công giả) — xem mục "Ghi Codegen cho 3 hành động còn lại" ở trên,
+      gộp chung vào đây vì cùng nhóm "chưa làm thật".
+- [ ] **Chưa có biện pháp chống fingerprint/chống phát hiện ở tầng mạng.** Mới
+      chỉ có giả lập hành vi (di chuột kiểu Bézier, gõ phím có tốc độ/lỗi,
+      khoảng chờ ngẫu nhiên, rate limit) trong `humanize.py`/`safety.py` —
+      chưa đổi user-agent, chưa proxy rotation, chưa dùng `playwright-stealth`
+      hay tương đương. Cân nhắc thêm nếu mở rộng quy mô nhiều tài khoản.
 
 ## 10. Cấu trúc thư mục
 

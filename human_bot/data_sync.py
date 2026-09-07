@@ -18,8 +18,8 @@ are still a plain template — each candidate only gets one message, so
 there is nothing to vary against (see the conversation that scoped
 content_strategist.py to just the group-broadcast case). Treat every
 scheduled item this produces as a DRAFT to review/edit in /admin/schedule
-before it fires — this is one of the reasons DataSyncConfig.auto_fire_enabled
-defaults to False (see human_bot/data_sync_config.py).
+before it fires — this is one of the reasons SchedulingConfig.auto_fire_enabled
+defaults to False (see human_bot/scheduling_config.py).
 VI: Goi dinh ky API cua ben B (data-ingestion) thay vi cho ho day task
 sang, loc bo nhung gi da thay/da xu ly bang mot cache luu theo ngay tren
 dia, va bien nhung ban ghi thuc su moi thanh ScheduledTask
@@ -34,7 +34,7 @@ dong roi ve mau (template) don gian neu chua co key. Tin nhan ung vien
 (_draft_candidate_reply_placeholder ben duoi) van la mau don gian — moi
 ung vien chi nhan 1 tin, khong co gi de bien tau. Coi moi muc lich sinh ra
 o day la BAN NHAP can xem/sua trong /admin/schedule truoc khi no thuc su
-chay — day cung la mot ly do DataSyncConfig.auto_fire_enabled mac dinh la
+chay — day cung la mot ly do SchedulingConfig.auto_fire_enabled mac dinh la
 False.
 """
 from __future__ import annotations
@@ -51,7 +51,8 @@ import httpx
 from human_bot import content_strategist, schedule_store
 from human_bot.config import AccountConfig, get_account
 from human_bot.data_sync_config import DataSyncConfig
-from human_bot.runtime_config import get_data_sync_config, get_joined_groups
+from human_bot.scheduling_config import SchedulingConfig
+from human_bot.runtime_config import get_data_sync_config, get_joined_groups, get_scheduling_config
 
 CACHE_ROOT = Path(__file__).resolve().parent.parent / "data_sync_cache"
 STATE_PATH = CACHE_ROOT / "_state.json"
@@ -387,15 +388,19 @@ async def sync_once(account_id: str, cfg: DataSyncConfig | None = None) -> dict[
     }
 
 
-async def fire_due_tasks(cfg: DataSyncConfig | None = None) -> dict[str, Any]:
+async def fire_due_tasks(cfg: SchedulingConfig | None = None) -> dict[str, Any]:
     """Check human_bot/schedule_store.py for anything due and, ONLY if
     cfg.auto_fire_enabled, actually run it via human_bot/agent.py's
     run_task() (in-process — not an HTTP call back to our own /tasks).
-    When auto_fire_enabled is False, due tasks are left pending so a
-    human can still fire them manually from /admin/schedule ("Đăng ngay"
-    always works regardless of this gate — it's an explicit human click,
-    same trust level as any other /admin action)."""
-    cfg = cfg or get_data_sync_config()
+    Applies to EVERY due task regardless of source — auto-scheduled from
+    side B, or composed by hand at /admin/post — which is exactly why
+    this gate lives in human_bot/scheduling_config.py rather than
+    DataSyncConfig (moved 2026-09-07). When auto_fire_enabled is False,
+    due tasks are left pending so a human can still fire them manually
+    from /admin/schedule ("Đăng ngay" always works regardless of this
+    gate — it's an explicit human click, same trust level as any other
+    /admin action)."""
+    cfg = cfg or get_scheduling_config()
     due = schedule_store.due_tasks()
     if not due:
         return {"due": 0, "fired": 0}

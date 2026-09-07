@@ -37,6 +37,7 @@ giu nguyen va duoc dinh nghia lai bang Tailwind @apply trong _PAGE_STYLE,
 nen phan lon HTML sinh ra o duoi khong doi — chi doi cach cac class do
 duoc ve.
 """
+import dataclasses
 import html
 import os
 import random
@@ -53,6 +54,7 @@ from human_bot.agent import TaskRequest, run_task
 from human_bot.config import AccountStatus, GroupRef, RateLimits, get_all_accounts, new_group_id
 from human_bot.data_sync import apply_quiet_hours
 from human_bot.data_sync_config import DataSyncConfig
+from human_bot.scheduling_config import SchedulingConfig
 from human_bot.media import MediaConfig
 from human_bot.humanize import HumanMouseConfig, HumanPacingConfig, HumanTypingConfig
 from human_bot.runtime_config import (
@@ -60,12 +62,15 @@ from human_bot.runtime_config import (
     EDITABLE_PACING_FIELDS,
     EDITABLE_MOUSE_FIELDS,
     EDITABLE_DATA_SYNC_FIELDS,
+    EDITABLE_SCHEDULING_FIELDS,
     EDITABLE_MEDIA_FIELDS,
     get_data_sync_config,
+    get_scheduling_config,
     get_human_typing_overrides,
     get_pacing_overrides,
     get_mouse_overrides,
     get_data_sync_overrides,
+    get_scheduling_overrides,
     get_media_overrides,
     get_joined_groups,
     get_registered_accounts,
@@ -73,6 +78,7 @@ from human_bot.runtime_config import (
     save_pacing_overrides,
     save_mouse_overrides,
     save_data_sync_overrides,
+    save_scheduling_overrides,
     save_media_overrides,
     save_joined_groups,
     save_registered_account,
@@ -118,6 +124,23 @@ def _account_label(account_id: str, accounts: dict | None = None) -> str:
     return f"{account.display_name} ({account_id})" if account else account_id
 
 
+def _auto_fire_status_html() -> str:
+    """A visible, LIVE reminder of SchedulingConfig.auto_fire_enabled's
+    current state, shown on both /admin/post and /admin/schedule — added
+    2026-09-07 after a manually-scheduled post sat past its due time
+    because this flag (then buried inside "Đồng bộ dữ liệu bên B" in
+    /admin/config) was off and nothing on either page said so. Always
+    reads the live config rather than being passed in, so it can never go
+    stale relative to what /admin/config → "Lên lịch & tự động đăng"
+    actually has saved."""
+    if get_scheduling_config().auto_fire_enabled:
+        return '<div class="flash">✅ Tự động đăng: <strong>Đang bật</strong> — bài đến giờ sẽ tự chạy.</div>'
+    return (
+        '<div class="error">⚠️ Tự động đăng: <strong>Đang tắt</strong> — bài đến giờ cần bấm "🚀 Đăng ngay" thủ công. '
+        '<a href="/admin/config">Bật ở Cấu hình →</a></div>'
+    )
+
+
 _TYPING_LABELS: dict[str, str] = {
     "enabled": "Bật giả lập gõ phím kiểu người",
     "wpm": "Tốc độ gõ trung bình (WPM, quy ước 5 ký tự = 1 từ)",
@@ -161,15 +184,30 @@ _MOUSE_LABELS: dict[str, str] = {
     "min_distance_for_curve_px": "Khoảng cách tối thiểu (px) mới áp dụng đường cong",
 }
 
+_BOOL_FIELDS = {"enabled", "auto_fire_enabled", "attach_random_meme_default"}
+
+_SCHEDULING_LABELS: dict[str, str] = {
+    "auto_fire_enabled": (
+        "⚠️ Tự động đăng khi đến giờ — áp dụng cho MỌI bài trong lịch (tắt = chỉ đặt "
+        "lịch, phải bấm 'Đăng ngay' thủ công ở /admin/schedule; áp dụng cả bài tự động "
+        "từ bên B lẫn bài soạn tay ở /admin/post)"
+    ),
+}
+
 _ICONS: dict[str, str] = {
+    "scheduling": "🚀",
     "typing": "⌨️",
     "pacing": "⏱️",
     "mouse": "🖱️",
 }
 
-_BOOL_FIELDS = {"enabled", "auto_fire_enabled", "attach_random_meme_default"}
-
+# Scheduling first — it's the highest-stakes/most-consulted setting (whether
+# anything auto-posts to Facebook at all), so it shouldn't require scrolling
+# past 3 other cards to find (moved to the top 2026-09-07, after a user
+# looked for it under "Đồng bộ dữ liệu bên B" and didn't find it there).
 _CONFIG_SECTIONS = [
+    ("scheduling", "scheduling", "Lên lịch & tự động đăng", SchedulingConfig, EDITABLE_SCHEDULING_FIELDS, _SCHEDULING_LABELS,
+     get_scheduling_overrides, save_scheduling_overrides),
     ("human_typing", "typing", "Gõ phím", HumanTypingConfig, EDITABLE_HUMAN_TYPING_FIELDS, _TYPING_LABELS,
      get_human_typing_overrides, save_human_typing_overrides),
     ("pacing", "pacing", "Khoảng chờ theo ngữ cảnh", HumanPacingConfig, EDITABLE_PACING_FIELDS, _PACING_LABELS,
@@ -180,7 +218,6 @@ _CONFIG_SECTIONS = [
 
 _DATA_SYNC_LABELS: dict[str, str] = {
     "enabled": "Bật bộ đồng bộ dữ liệu từ bên B (lấy + chống trùng + đặt lịch)",
-    "auto_fire_enabled": "⚠️ Tự động đăng khi đến giờ (tắt = chỉ đặt lịch, phải bấm 'Đăng ngay' thủ công)",
     "poll_interval_minutes": "Chu kỳ gọi API bên B để lấy dữ liệu mới (phút)",
     "due_check_interval_seconds": "Chu kỳ kiểm tra bài đã đến giờ đăng (giây)",
     "post_gap_min_minutes": "Khoảng cách giữa 2 bài đăng nhóm liên tiếp — tối thiểu (phút)",
@@ -855,8 +892,20 @@ async def config_form(saved: bool = False, _: None = Depends(_require_auth)) -> 
 
 @router.post("/config")
 async def config_save(request: Request, _: None = Depends(_require_auth)) -> RedirectResponse:
+    """Blindly casting every numeric field to `float` here used to corrupt
+    any field whose dataclass actually declares `int` (found 2026-09-07:
+    HumanMouseConfig.min_steps/max_steps went 8 -> 8.0 the very first time
+    this route was ever used to save ANY section, since one submit here
+    covers every section's fields at once — then silently crashed
+    human_mouse_move()'s `range(1, steps + 1)` months later, only on the
+    rare click distance that clamps to exactly one of those bounds, with
+    'float' object cannot be interpreted as an integer). Now casts to
+    whatever type each dataclass field actually declares, via
+    dataclasses.fields(), so an int-typed field survives a round trip
+    through this form as a real int."""
     form = await request.form()
-    for section_key, prefix, _title, _config_cls, editable_fields, _labels, _get_fn, save_fn in _CONFIG_SECTIONS:
+    for section_key, prefix, _title, config_cls, editable_fields, _labels, _get_fn, save_fn in _CONFIG_SECTIONS:
+        field_types = {f.name: f.type for f in dataclasses.fields(config_cls)}
         values: dict = {}
         for field_name in editable_fields:
             form_name = f"{prefix}__{field_name}"
@@ -866,8 +915,9 @@ async def config_save(request: Request, _: None = Depends(_require_auth)) -> Red
             raw = form.get(form_name)
             if raw in (None, ""):
                 continue
+            caster = int if field_types.get(field_name) is int else float
             try:
-                values[field_name] = float(raw)
+                values[field_name] = caster(float(raw))
             except (TypeError, ValueError):
                 continue
         save_fn(values)
@@ -994,13 +1044,15 @@ def _accounts_content_html(saved: bool = False, error: str | None = None, oob: b
         # human_bot/safety.py's AnomalyDetected fires on a real post — see
         # human_bot/agent.py's run_task().
         status_action = (
-            f"""<form method="post" action="/admin/accounts/resume" style="display:inline;">
+            f"""<form method="post" action="/admin/accounts/resume" style="display:inline;"
+        hx-post="/admin/accounts/resume" hx-target="#accounts-content" hx-swap="outerHTML">
   <input type="hidden" name="account_id" value="{html.escape(aid)}">
   <button type="submit" class="btn-small">▶ Kích hoạt lại</button>
 </form>"""
             if is_paused
             else f"""<form method="post" action="/admin/accounts/pause" style="display:inline;"
-        onsubmit="return confirm('Tạm dừng tài khoản {html.escape(aid)}? human_bot sẽ không đăng/comment/like gì cho tài khoản này cho tới khi bạn kích hoạt lại.');">
+        hx-post="/admin/accounts/pause" hx-target="#accounts-content" hx-swap="outerHTML"
+        hx-confirm="Tạm dừng tài khoản {html.escape(aid)}? human_bot sẽ không đăng/comment/like gì cho tài khoản này cho tới khi bạn kích hoạt lại.">
   <input type="hidden" name="account_id" value="{html.escape(aid)}">
   <button type="submit" class="btn-small btn-secondary">⏸ Tạm dừng</button>
 </form>"""
@@ -1021,7 +1073,8 @@ def _accounts_content_html(saved: bool = False, error: str | None = None, oob: b
             "account_id này ở đây. File storage_state.json sẽ KHÔNG bị xoá."
         )
         delete_btn = f"""<form method="post" action="/admin/accounts/delete" style="display:inline;"
-        onsubmit="return confirm('{delete_confirm}');">
+        hx-post="/admin/accounts/delete" hx-target="#accounts-content" hx-swap="outerHTML"
+        hx-confirm="{delete_confirm}">
   <input type="hidden" name="account_id" value="{html.escape(aid)}">
   <button type="submit" class="btn-secondary btn-small">Xoá</button>
 </form>"""
@@ -1100,23 +1153,27 @@ async def accounts_add(request: Request, _: None = Depends(_require_auth)):
 
 
 @router.post("/accounts/pause")
-async def accounts_pause(request: Request, _: None = Depends(_require_auth)) -> RedirectResponse:
+async def accounts_pause(request: Request, _: None = Depends(_require_auth)):
     form = await request.form()
     account_id = str(form.get("account_id", "")).strip()
     set_account_paused(account_id, True)
+    if _is_htmx(request):
+        return HTMLResponse(_accounts_content_html(saved=True))
     return RedirectResponse(url="/admin/accounts?saved=1", status_code=303)
 
 
 @router.post("/accounts/resume")
-async def accounts_resume(request: Request, _: None = Depends(_require_auth)) -> RedirectResponse:
+async def accounts_resume(request: Request, _: None = Depends(_require_auth)):
     form = await request.form()
     account_id = str(form.get("account_id", "")).strip()
     set_account_paused(account_id, False)
+    if _is_htmx(request):
+        return HTMLResponse(_accounts_content_html(saved=True))
     return RedirectResponse(url="/admin/accounts?saved=1", status_code=303)
 
 
 @router.post("/accounts/delete")
-async def accounts_delete(request: Request, _: None = Depends(_require_auth)) -> RedirectResponse:
+async def accounts_delete(request: Request, _: None = Depends(_require_auth)):
     """Removes the account from human_bot entirely, whatever its origin:
     delete_registered_account() drops it from /admin/accounts' registry
     (no-op if it's a code-level ACCOUNTS entry instead), and
@@ -1141,6 +1198,8 @@ async def accounts_delete(request: Request, _: None = Depends(_require_auth)) ->
     for task in schedule_store.list_pending():
         if task.account_id == account_id:
             schedule_store.cancel(task.task_id)
+    if _is_htmx(request):
+        return HTMLResponse(_accounts_content_html(saved=True))
     return RedirectResponse(url="/admin/accounts?saved=1", status_code=303)
 
 
@@ -1278,6 +1337,8 @@ async def post_form(
             'không tự đăng cho tới khi bạn <a href="/admin/accounts">kích hoạt lại</a>.</div>'
         )
 
+    auto_fire_notice = _auto_fire_status_html()
+
     # Choosing the account fully reloads this page (plain GET form) rather
     # than trying to keep an account-scoped group checkbox list in sync
     # via JS/htmx — same "still-full-reload page" simplicity already used
@@ -1372,6 +1433,7 @@ async def post_form(
 {flash}{err}
 {account_picker}
 {pause_warning}
+{auto_fire_notice}
 
 <div data-tabs>
   <div class="tab-bar">
@@ -1692,7 +1754,8 @@ async def schedule_list(
         return content
     return _layout(f"""
 <h1>Lịch đăng</h1>
-<p class="page-desc">Mọi bài chờ đăng — tự động từ bộ đồng bộ bên B (human_bot/data_sync.py) hoặc soạn thủ công ở /admin/post — đều nằm ở đây trước khi thật sự chạy. Khi "Tự động đăng khi đến giờ" đang TẮT (mặc định), các bài này chỉ được đăng khi bạn bấm "Đăng ngay" thủ công.</p>
+<p class="page-desc">Mọi bài chờ đăng — tự động từ bộ đồng bộ bên B (human_bot/data_sync.py) hoặc soạn thủ công ở /admin/post — đều nằm ở đây trước khi thật sự chạy.</p>
+{_auto_fire_status_html()}
 {content}
 """, active="schedule")
 
