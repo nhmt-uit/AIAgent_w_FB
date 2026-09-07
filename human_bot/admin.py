@@ -1461,7 +1461,13 @@ def _schedule_content_html(
     if page_tasks:
         items_html = []
         for t in page_tasks:
-            content_preview = html.escape((t.content or "")[:400])
+            # NOT truncated — this exact string is also the editable
+            # <textarea>'s value below. Truncating it here used to mean
+            # opening "Sửa" and clicking "Lưu" on any post longer than a
+            # cutoff silently chopped off everything past it, even
+            # without touching the text (found in the admin UI review
+            # that raised this).
+            content_full = html.escape(t.content or "")
             # Every mutating form below carries the current filter/page
             # back so update/fire-now/cancel re-render the SAME view
             # instead of silently resetting to "all accounts, page 1".
@@ -1479,7 +1485,7 @@ def _schedule_content_html(
         style="margin-top:8px; display:flex; gap:8px; align-items:flex-start; flex-wrap:wrap;">
     <input type="hidden" name="task_id" value="{html.escape(t.task_id)}">
     {filter_fields}
-    <textarea name="content" style="flex:1; min-width:240px; min-height:60px;">{content_preview}</textarea>
+    <textarea name="content" style="flex:1; min-width:240px; min-height:60px;">{content_full}</textarea>
     {_datetime_picker_html("scheduled_at", current_value=t.scheduled_at, required=True, blank_hint=False)}
     <button type="submit" class="btn-small">Lưu</button>
   </form>
