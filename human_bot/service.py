@@ -46,7 +46,7 @@ import logging  # noqa: E402
 import os  # noqa: E402
 import secrets  # noqa: E402
 
-from human_bot import data_sync, schedule_store  # noqa: E402
+from human_bot import data_sync, schedule_store, screenshots  # noqa: E402
 from human_bot.admin import router as admin_router  # noqa: E402
 from human_bot.agent import TaskRequest, run_task  # noqa: E402
 from human_bot.browser_pool import close_all, warm_up  # noqa: E402
@@ -114,6 +114,22 @@ async def _schedule_cleanup_loop() -> None:
         await asyncio.sleep(SCHEDULE_CLEANUP_INTERVAL_SECONDS)
 
 
+async def _screenshot_cleanup_loop() -> None:
+    """Background loop: prune old evidence screenshots
+    (human_bot/screenshots.py's cleanup_old()) so `screenshots/` doesn't
+    grow without bound — every posting attempt, success or failure, saves
+    one (added 2026-09-07). Same daily-interval, startup-plus-once-a-day
+    pattern as _schedule_cleanup_loop right above; a pruned screenshot
+    just means that row in /admin/reports loses its image link, the text
+    history in human_bot.db is unaffected."""
+    while True:
+        try:
+            screenshots.cleanup_old()
+        except Exception:  # noqa: BLE001 - a cleanup failure must not take down posting
+            logger.exception("screenshots.cleanup_old failed")
+        await asyncio.sleep(SCHEDULE_CLEANUP_INTERVAL_SECONDS)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     active_accounts = [a for a in get_all_accounts().values() if a.status == AccountStatus.ACTIVE]
@@ -121,11 +137,13 @@ async def lifespan(app: FastAPI):
     poll_task = asyncio.create_task(_data_sync_poll_loop())
     fire_task = asyncio.create_task(_data_sync_fire_loop())
     cleanup_task = asyncio.create_task(_schedule_cleanup_loop())
+    screenshot_cleanup_task = asyncio.create_task(_screenshot_cleanup_loop())
     yield
     poll_task.cancel()
     fire_task.cancel()
     cleanup_task.cancel()
-    for t in (poll_task, fire_task, cleanup_task):
+    screenshot_cleanup_task.cancel()
+    for t in (poll_task, fire_task, cleanup_task, screenshot_cleanup_task):
         try:
             await t
         except asyncio.CancelledError:

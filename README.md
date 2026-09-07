@@ -430,17 +430,46 @@ Nhớ chạy lại `pip3 install -r requirements.txt` một lần (có thêm
       trị ban đầu của ô sửa; (2) route đăng từ hàng đợi/tải file lên vẫn
       redirect kèm thông báo thành công nhưng trang đã ngừng đọc tham số
       đó từ lần viết lại trước — thông báo bị mất mà không ai để ý.
-- [ ] Chưa làm (ghi nhận lại để không quên): cảnh báo/UI cho giới hạn
-      đăng bài mỗi tài khoản (`RateLimits` — vẫn chỉ sửa được qua code);
-      xoá/sửa nhóm ở `/admin/groups` theo vị trí (index) thay vì theo ID
-      cố định (rủi ro thấp ở quy mô hiện tại nhưng dễ nhầm nếu có 2 tab
-      cùng sửa); nút Tạm dừng/Kích hoạt/Xoá ở `/admin/accounts` vẫn tải
-      lại cả trang thay vì cập nhật tại chỗ như `/admin/groups`.
-- [ ] Chụp screenshot khi một hành động thất bại — `TaskResult.
-      screenshot_path` trong `human_bot/agent.py` hiện luôn là `None`
-      (TODO ngay trong code). Các file spec (`docs/agents/
-      human-bot-executor.md`, `docs/agents/safety-monitor.md`) mô tả như
-      thể tính năng này đã có — thực tế chưa, cần làm để khớp lại.
+- [x] **3 việc từng ghi "chưa làm" ở đây — xong (2026-09-07).** UI chỉnh
+      giới hạn đăng bài/tốc độ mỗi tài khoản (`RateLimits`) ở
+      `/admin/accounts` (modal "⏱️ Giới hạn", có khôi phục mặc định); xoá/sửa
+      nhóm ở `/admin/groups` đổi sang tham chiếu theo `GroupRef.id` cố định
+      thay vì vị trí (`new_group_id()` kiểm tra trùng thật, không chỉ dựa
+      xác suất); nút Tạm dừng/Kích hoạt/Xoá ở `/admin/accounts` chuyển sang
+      htmx, cập nhật tại chỗ như `/admin/groups`.
+- [x] **Chụp screenshot bằng chứng + xác minh đăng thành công thật —
+      xong (2026-09-07), NHƯNG cần bạn tự chạy thử thật để xác nhận
+      selector đúng (xem ghi chú "CẦN XÁC NHẬN SỐNG" bên dưới).**
+      - `TaskResult.screenshot_path` (trước đây luôn `None`) giờ chụp
+        thật — **cả lúc thành công lẫn thất bại** — qua
+        `human_bot/screenshots.py`'s `capture()`, gọi tập trung 1 chỗ
+        duy nhất trong `run_task()` (`agent.py`), không phải sửa từng
+        hàm action riêng lẻ. Lưu vào `screenshots/<account_id>/`, tự
+        dọn sau 30 ngày (`SCREENSHOT_RETENTION_DAYS`) giống hệt cách
+        `scheduled/` đang được dọn. `human_bot.db`'s `action_log` có
+        thêm cột `screenshot_path` (tự động thêm vào DB cũ có sẵn, không
+        mất dữ liệu), `/admin/reports` → "Hoạt động gần đây" có cột
+        "Ảnh" bấm xem trực tiếp (`/admin/screenshot`, có chặn dò file
+        ngoài phạm vi).
+      - **Đồng thời sửa đúng gốc rễ của mục "Không xác minh bài đăng
+        thật sự thành công" bên dưới**: `post_to_own_profile` và
+        `post_to_group` (`actions.py`) trước đây chờ cứng 2 giây rồi
+        luôn báo `success=True`, không kiểm tra gì — giờ **chủ động chờ
+        nút "Post" biến mất khỏi màn hình** (dấu hiệu Facebook đã nhận
+        submit) trong tối đa 15 giây, hết giờ mà nút vẫn còn thì báo
+        thất bại thật (`post_button_still_visible_after_click`) thay vì
+        đoán mò. `_attach_media` (đính kèm ảnh) cũng thêm bước chờ
+        thumbnail ảnh thật sự hiện ra trong khung soạn trước khi tiếp
+        tục — đúng chỗ đã từng gây sự cố thật (ảnh gắn nhầm input, báo
+        thành công nhưng ảnh không lên bài).
+      - **⚠️ CẦN XÁC NHẬN SỐNG:** cả 2 selector xác minh trên (nút
+        "Post" biến mất, ảnh thumbnail xuất hiện) đều **chưa được ghi
+        Codegen/kiểm chứng thật trên Facebook** — viết theo suy luận hợp
+        lý từ cấu trúc DOM đã biết, có ghi rõ trong code
+        (`# NEEDS LIVE CONFIRMATION`). Hãy `test_run_task` thử đăng 1
+        bài thật (có và không có ảnh) để xác nhận không báo `False` sai
+        cho một bài thật ra đã đăng thành công, trước khi tin tưởng
+        hoàn toàn vào báo cáo.
 
 ### Còn lại (chưa tới lượt ngay, nhưng đã ghi nhận — xem đánh giá 2026-09-03)
 
@@ -563,11 +592,10 @@ Nhớ chạy lại `pip3 install -r requirements.txt` một lần (có thêm
       `auto_fire_enabled`; (5) thêm banner **trạng thái BẬT/TẮT hiện tại** trực
       tiếp trên `/admin/post` và `/admin/schedule` (không cần vào `/admin/config`
       mới biết), qua `_auto_fire_status_html()` trong `admin.py`.
-- [ ] **Không xác minh bài đăng thật sự thành công.** `post_to_own_profile` và
-      `post_to_group` chỉ chờ cứng 2 giây (`page.wait_for_timeout(2000)`) rồi
-      luôn trả về `success=True` — không kiểm tra bài có thật sự xuất hiện
-      không. Từng có sự cố thật: báo thành công nhưng ảnh không hề được đăng
-      (do chọn sai `<input type="file">`).
+- [x] **Không xác minh bài đăng thật sự thành công — đã sửa (2026-09-07,
+      cần xác nhận sống).** Xem chi tiết ở mục "Chụp screenshot bằng
+      chứng + xác minh đăng thành công thật" phía trên (mục 9, đợt
+      2026-09-05 → 2026-09-07) — cùng 1 đợt sửa với việc thêm screenshot.
 - [ ] **Không có cơ chế fallback khi 1 selector gãy trong lúc đăng bài.** Mỗi
       bước (mở composer, gõ nội dung, bấm Post, đính kèm ảnh) chỉ dùng đúng 1
       selector; Facebook đổi giao diện là cả hành động fail luôn. Chỉ riêng

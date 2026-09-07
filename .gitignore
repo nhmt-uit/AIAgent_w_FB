@@ -5,6 +5,7 @@ runtime_config.json
 content_queue/
 scheduled/
 data_sync_cache/
+screenshots/
 human_bot.db
 # scratch Playwright Codegen recordings — merged into human_bot/actions.py, not kept
 codegen_*.py

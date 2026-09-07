@@ -46,10 +46,11 @@ import secrets
 from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile, status
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
+from pathlib import Path
 
-from human_bot import content_queue, db, schedule_store
+from human_bot import content_queue, db, schedule_store, screenshots
 from human_bot.agent import TaskRequest, run_task
 from human_bot.config import AccountStatus, GroupRef, RateLimits, get_all_accounts, new_group_id
 from human_bot.data_sync import apply_quiet_hours
@@ -2113,6 +2114,18 @@ def _expandable_text(text: str | None, limit: int = 80) -> str:
     )
 
 
+def _screenshot_link_html(path: str | None) -> str:
+    """A "📷 Xem" link to /admin/screenshot for one action_log row's
+    evidence screenshot (human_bot/screenshots.py, added 2026-09-07) — or
+    a muted dash if this row has none (older rows from before this
+    feature, or the screenshot itself failed to capture / was already
+    pruned by screenshots.cleanup_old())."""
+    if not path:
+        return '<span class="muted">—</span>'
+    from urllib.parse import quote
+    return f'<a href="/admin/screenshot?path={quote(path, safe="")}" target="_blank" rel="noopener">📷 Xem</a>'
+
+
 _REPORTS_DAYS_LABELS: dict[str, str] = {
     "": "Tất cả thời gian",
     "7": "7 ngày qua",
@@ -2244,12 +2257,13 @@ def _reports_content_html(account_id: str | None = None, days: str | None = None
   <td class="row-url">{html.escape((r['target_group_name'] or r['target_url'] or '—'))}</td>
   <td>{'✅' if r['success'] else '⚠️'}</td>
   <td>{html.escape(_SOURCE_LABELS.get(r['source'], r['source']))}</td>
+  <td>{_screenshot_link_html(r['screenshot_path'] if 'screenshot_path' in r.keys() else None)}</td>
   <td class="muted">{_expandable_text(r['message'])}</td>
 </tr>""" for r in recent_rows
         )
         recent_table = f"""
 <div class="table-scroll" style="max-height:420px; overflow-y:auto;"><table class="data-table">
-  <thead><tr><th>Thời gian (UTC)</th><th>Tài khoản</th><th>Hành động</th><th>Đích</th><th>KQ</th><th>Nguồn</th><th>Ghi chú</th></tr></thead>
+  <thead><tr><th>Thời gian (UTC)</th><th>Tài khoản</th><th>Hành động</th><th>Đích</th><th>KQ</th><th>Nguồn</th><th>Ảnh</th><th>Ghi chú</th></tr></thead>
   <tbody>{recent_html}</tbody>
 </table></div>"""
     else:
@@ -2300,6 +2314,23 @@ def _reports_content_html(account_id: str | None = None, days: str | None = None
   {recent_pagination_html}
 </div>
 </div>"""
+
+
+@router.get("/screenshot")
+async def admin_screenshot(path: str, _: None = Depends(_require_auth)):
+    """Serves one evidence screenshot (human_bot/screenshots.py) from
+    /admin/reports' "Ảnh" column. `path` is the absolute path stored in
+    action_log.screenshot_path — resolved and checked against
+    SCREENSHOTS_ROOT before ever touching the filesystem, so this can
+    never be used to read an arbitrary file elsewhere on disk via a
+    crafted `path` query param."""
+    target = Path(path).resolve()
+    root = screenshots.SCREENSHOTS_ROOT.resolve()
+    if target != root and root not in target.parents:
+        raise HTTPException(status_code=404, detail="Not found")
+    if not target.is_file():
+        raise HTTPException(status_code=404, detail="Not found")
+    return FileResponse(str(target))
 
 
 @router.get("/reports", response_class=HTMLResponse)

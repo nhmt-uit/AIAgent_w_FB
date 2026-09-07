@@ -45,6 +45,7 @@ CREATE TABLE IF NOT EXISTS action_log (
     source             TEXT    NOT NULL,
     source_kind        TEXT,
     source_id          TEXT,
+    screenshot_path    TEXT,
     created_at         TEXT    NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_action_log_account_time ON action_log(account_id, created_at);
@@ -62,6 +63,16 @@ def ensure_schema() -> None:
     conn = _connect()
     try:
         conn.executescript(_SCHEMA)
+        # CREATE TABLE IF NOT EXISTS above only creates screenshot_path on
+        # a brand-new database — an existing human_bot.db from before this
+        # column existed needs it added explicitly. SQLite has no "ADD
+        # COLUMN IF NOT EXISTS", so just attempt it and swallow the
+        # "duplicate column" error every run after the first (added
+        # 2026-09-07, screenshot-on-every-attempt feature).
+        try:
+            conn.execute("ALTER TABLE action_log ADD COLUMN screenshot_path TEXT")
+        except sqlite3.OperationalError:
+            pass
         conn.commit()
     finally:
         conn.close()
@@ -86,6 +97,7 @@ def log_action(
     source: str = "api",
     source_kind: str | None = None,
     source_id: str | None = None,
+    screenshot_path: str | None = None,
     created_at: str | None = None,
 ) -> None:
     """Record one attempted action, whatever the outcome. Called from the
@@ -101,8 +113,8 @@ def log_action(
             """
             INSERT INTO action_log
                 (account_id, action, target_url, target_group_name, content,
-                 success, message, source, source_kind, source_id, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 success, message, source, source_kind, source_id, screenshot_path, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 account_id,
@@ -115,6 +127,7 @@ def log_action(
                 source,
                 source_kind,
                 source_id,
+                screenshot_path,
                 created_at or datetime.now(timezone.utc).isoformat(),
             ),
         )

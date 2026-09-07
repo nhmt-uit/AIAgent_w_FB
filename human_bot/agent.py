@@ -15,7 +15,7 @@ from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from typing import Awaitable, Callable
 
-from human_bot import actions, db, media
+from human_bot import actions, db, media, screenshots
 from human_bot.actions import ActionResult, _group_id_from_url
 from human_bot.browser_pool import get_session
 from human_bot.config import AccountStatus, get_account
@@ -115,7 +115,7 @@ def _resolve_group_name(account_id: str, url: str | None) -> str | None:
     return None
 
 
-def _log_result(request: TaskRequest, success: bool, message: str) -> None:
+def _log_result(request: TaskRequest, success: bool, message: str, screenshot_path: str | None = None) -> None:
     """Best-effort write to human_bot/db.py's action_log — every return
     path in run_task() calls this, including the early-exit failures
     (paused account, unsupported action, rate limited), so /admin/reports
@@ -133,6 +133,7 @@ def _log_result(request: TaskRequest, success: bool, message: str) -> None:
             source=request.source,
             source_kind=request.source_kind,
             source_id=request.source_id,
+            screenshot_path=screenshot_path,
         )
     except Exception:  # noqa: BLE001 — see docstring
         pass
@@ -227,10 +228,23 @@ async def run_task(request: TaskRequest) -> TaskResult:
         # a scheduling delay on the n8n side, not a blocking sleep here.
         # limiter.jittered_delay()
 
-    _log_result(request, success, message)
+    # Evidence screenshot — success or failure — taken here, not inside
+    # each actions.py function, for the same "one choke point" reason as
+    # db.log_action() above: session.page is whatever state the action
+    # left it in (the browser page persists; nothing closes it), so this
+    # is close enough to the actual moment of success/failure without
+    # needing every action function to know about screenshots at all.
+    # None when there's no page to shoot from (an early-exit failure
+    # above — paused account, unsupported action, rate limited — none of
+    # which ever opened a browser).
+    screenshot_path = None
+    if session is not None and session.page is not None:
+        screenshot_path = await screenshots.capture(session.page, request.account_id, request.action, success)
+
+    _log_result(request, success, message, screenshot_path)
     return TaskResult(
         success=success,
         message=message,
-        screenshot_path=None,  # TODO: capture a screenshot on failure for debugging
+        screenshot_path=screenshot_path,
         timestamp=datetime.now(timezone.utc).isoformat(),
     )

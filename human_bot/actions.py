@@ -24,6 +24,7 @@ import re
 from dataclasses import dataclass
 
 from playwright.async_api import Page
+from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 
 from human_bot.humanize import (
     human_click,
@@ -114,6 +115,22 @@ async def _attach_media(page: Page, scope, media_path: str, mouse, pacing) -> No
     # Let the thumbnail actually finish uploading/rendering in the
     # composer before anything else (typing, clicking Post) happens.
     await pause_after_page_load(pacing)
+
+    # Verify the attachment actually took — added 2026-09-07 after the
+    # exact incident described above (set_input_files landing on the
+    # wrong hidden <input>): run_task() reported success but no image
+    # ever appeared on the live post, with nothing anywhere having
+    # actually checked. An <img> rendering inside the SAME composer_form
+    # just uploaded into is the signal the thumbnail attached to the
+    # right composer, not a coincidence elsewhere on the page.
+    # NEEDS LIVE CONFIRMATION — this generic `img` selector wasn't
+    # captured by either Codegen recording this function is based on (see
+    # docstring above); test_run_task a real image attach and narrow this
+    # selector if Facebook renders the thumbnail differently than assumed.
+    try:
+        await composer_form.locator("img").first.wait_for(state="visible", timeout=8000)
+    except PlaywrightTimeoutError:
+        raise RuntimeError("media_attach_failed: khong thay anh xuat hien trong khung soan sau khi dinh kem")
 
 
 async def post_to_own_profile(
@@ -207,10 +224,22 @@ async def post_to_own_profile(
         # Confirmed live 2026-09-03. Scoped to composer_dialog (not
         # page-wide) and exact=True since "Post" is a common word that
         # could otherwise match unrelated buttons.
-        await human_click(page, composer_dialog.get_by_role(
-            "button", name="Post", exact=True
-        ), mouse)
-        await page.wait_for_timeout(2000)  # let the post submit before we move on
+        post_button = composer_dialog.get_by_role("button", name="Post", exact=True)
+        await human_click(page, post_button, mouse)
+
+        # Verify the post actually submitted instead of assuming success
+        # after a flat wait — added 2026-09-07 after a real incident where
+        # a silently-failed step (a mis-attached image, see _attach_media)
+        # still returned success=True because nothing here ever checked.
+        # The dialog closing (its own "Post" button leaving the DOM) is
+        # the signal a submit actually went through; still visible after a
+        # generous timeout means something's wrong (a validation error,
+        # still uploading media, disconnected...) — NEEDS LIVE
+        # CONFIRMATION like every other selector in this file.
+        try:
+            await post_button.wait_for(state="hidden", timeout=15000)
+        except PlaywrightTimeoutError:
+            return ActionResult(success=False, message="post_button_still_visible_after_click")
 
         return ActionResult(success=True, message="posted_to_own_profile")
     except RuntimeError as e:
@@ -502,10 +531,21 @@ async def post_to_group(
         # what I wrote" moment.
         await human_click(page, page.get_by_role("paragraph"), mouse)
         await reading_pause(content, pacing)
-        await human_click(page, page.get_by_role(
-            "button", name="Post", exact=True
-        ), mouse)
-        await page.wait_for_timeout(2000)  # let the post submit before we move on
+        post_button = page.get_by_role("button", name="Post", exact=True)
+        await human_click(page, post_button, mouse)
+
+        # Same verification as post_to_own_profile (see its comment) —
+        # NEEDS LIVE CONFIRMATION. This composer is inline (no dialog
+        # wrapper), so "the Post button leaves the DOM" is the best
+        # generic signal available without a live recording of a
+        # successful vs. failed submit to compare against; still applies
+        # equally to the pending-approval case below, since that only
+        # affects whether the post is visible yet, not whether the
+        # composer closes on submit.
+        try:
+            await post_button.wait_for(state="hidden", timeout=15000)
+        except PlaywrightTimeoutError:
+            return ActionResult(success=False, message="post_button_still_visible_after_click")
 
         if await _looks_like_pending_approval(page):
             return ActionResult(success=True, message="posted_to_group_pending_approval")
