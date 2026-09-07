@@ -50,7 +50,7 @@ from fastapi.security import HTTPBasic, HTTPBasicCredentials
 
 from human_bot import content_queue, db, schedule_store
 from human_bot.agent import TaskRequest, run_task
-from human_bot.config import AccountStatus, GroupRef, get_all_accounts
+from human_bot.config import AccountStatus, GroupRef, RateLimits, get_all_accounts
 from human_bot.data_sync import apply_quiet_hours
 from human_bot.data_sync_config import DataSyncConfig
 from human_bot.media import MediaConfig
@@ -79,6 +79,9 @@ from human_bot.runtime_config import (
     delete_registered_account,
     set_account_paused,
     set_account_removed,
+    get_rate_limits_overrides,
+    save_rate_limits_overrides,
+    EDITABLE_RATE_LIMITS_FIELDS,
 )
 
 router = APIRouter(prefix="/admin", tags=["admin"])
@@ -912,6 +915,58 @@ def _account_modal_html(account_id: str = "", display_name: str = "", error: str
 </div>"""
 
 
+_RATE_LIMITS_LABELS: dict[str, str] = {
+    "posts_per_day": "Số bài đăng tối đa / ngày",
+    "comments_per_hour": "Số comment tối đa / giờ",
+    "comments_per_day": "Số comment tối đa / ngày",
+    "likes_per_hour": "Số like tối đa / giờ",
+    "min_delay_seconds": "Khoảng chờ tối thiểu giữa 2 hành động (giây)",
+    "max_delay_seconds": "Khoảng chờ tối đa giữa 2 hành động (giây)",
+}
+
+
+def _rate_limits_modal_html(account_id: str, limits: RateLimits, is_override: bool, error: str | None = None) -> str:
+    """Renders the whole #modal-root swap for the "Giới hạn tốc độ" form —
+    same open/redisplay-with-error/close-via-oob-update pattern as
+    _account_modal_html() and _group_modal_html(). `limits` is always the
+    EFFECTIVE values (override applied if one exists, else the account's
+    code-level default) — the form always shows/edits what's actually in
+    force, never a stale default alongside an active override."""
+    err_html = f'<p class="error">⚠️ {html.escape(error)}</p>' if error else ""
+    rows = "".join(
+        f'''<div class="field-row">
+  <div class="field-label">{html.escape(label)}<div class="field-key">key: {field}</div></div>
+  <div class="field-input"><input type="number" step="1" min="0" name="{field}" value="{getattr(limits, field)}" required></div>
+</div>'''
+        for field, label in _RATE_LIMITS_LABELS.items()
+    )
+    reset_note = (
+        '<p class="page-desc">Tài khoản này đang dùng giá trị tuỳ chỉnh riêng — bấm "Khôi phục mặc định" để quay lại giá trị chuẩn trong code.</p>'
+        if is_override
+        else '<p class="page-desc">Tài khoản này đang dùng giá trị mặc định chung (chưa tuỳ chỉnh riêng).</p>'
+    )
+    return f"""
+<div class="modal-backdrop" onclick="if(event.target===this) this.remove()">
+  <div class="modal-box">
+    <div class="modal-header">
+      <h2>⏱️ Giới hạn tốc độ — {html.escape(account_id)}</h2>
+      <button type="button" class="modal-close" onclick="this.closest('.modal-backdrop').remove()">✕</button>
+    </div>
+    {reset_note}
+    {err_html}
+    <form method="post" action="/admin/accounts/rate-limits" hx-post="/admin/accounts/rate-limits" hx-target="#modal-root" hx-swap="innerHTML">
+      <input type="hidden" name="account_id" value="{html.escape(account_id)}">
+      <div class="field-grid">{rows}</div>
+      <div class="form-actions">
+        <button type="submit" name="reset" value="1" class="btn-secondary" style="margin-right:8px;">Khôi phục mặc định</button>
+        <button type="button" class="btn-secondary" style="margin-right:8px;" onclick="this.closest('.modal-backdrop').remove()">Huỷ</button>
+        <button type="submit">Lưu</button>
+      </div>
+    </form>
+  </div>
+</div>"""
+
+
 def _accounts_content_html(saved: bool = False, error: str | None = None, oob: bool = False) -> str:
     accounts = get_all_accounts()
     registered_ids = {a["account_id"] for a in get_registered_accounts()}
@@ -970,13 +1025,18 @@ def _accounts_content_html(saved: bool = False, error: str | None = None, oob: b
   <input type="hidden" name="account_id" value="{html.escape(aid)}">
   <button type="submit" class="btn-secondary btn-small">Xoá</button>
 </form>"""
+        rate_limits_btn = (
+            f'<button type="button" class="btn-small btn-secondary" '
+            f'hx-get="/admin/accounts/rate-limits-modal?account_id={html.escape(aid)}" '
+            f'hx-target="#modal-root" hx-swap="innerHTML">⏱️ Giới hạn</button>'
+        )
         rows.append(f"""
 <tr>
   <td>{html.escape(a.display_name)}<div class="row-url">{html.escape(aid)}</div></td>
   <td>{status_badge}</td>
   <td>{session_badge}</td>
   <td class="row-url">{html.escape(source)}</td>
-  <td class="col-actions">{status_action} {delete_btn}</td>
+  <td class="col-actions">{status_action} {rate_limits_btn} {delete_btn}</td>
 </tr>""")
 
     table = f"""
@@ -1081,6 +1141,65 @@ async def accounts_delete(request: Request, _: None = Depends(_require_auth)) ->
     for task in schedule_store.list_pending():
         if task.account_id == account_id:
             schedule_store.cancel(task.task_id)
+    return RedirectResponse(url="/admin/accounts?saved=1", status_code=303)
+
+
+@router.get("/accounts/rate-limits-modal", response_class=HTMLResponse)
+async def accounts_rate_limits_modal(account_id: str, _: None = Depends(_require_auth)) -> str:
+    accounts = get_all_accounts()
+    if account_id not in accounts:
+        return _rate_limits_modal_html(account_id, RateLimits(), is_override=False, error="Không tìm thấy tài khoản này")
+    is_override = bool(get_rate_limits_overrides(account_id))
+    return _rate_limits_modal_html(account_id, accounts[account_id].rate_limits, is_override=is_override)
+
+
+@router.post("/accounts/rate-limits")
+async def accounts_rate_limits_save(request: Request, _: None = Depends(_require_auth)):
+    """Saves a per-account RateLimits override (human_bot/runtime_config.py's
+    save_rate_limits_overrides) — or, on the "Khôi phục mặc định" button
+    (form field `reset`), clears it back to the account's code-level
+    default. Validated here rather than trusting the <input
+    type="number">/min="0"> HTML attributes, which a bad/absent client
+    never actually enforces server-side."""
+    form = await request.form()
+    account_id = str(form.get("account_id", "")).strip()
+    accounts = get_all_accounts()
+    if account_id not in accounts:
+        err = "Không tìm thấy tài khoản này"
+        if _is_htmx(request):
+            return HTMLResponse(_rate_limits_modal_html(account_id, RateLimits(), is_override=False, error=err))
+        from urllib.parse import urlencode
+        return RedirectResponse(url=f"/admin/accounts?{urlencode({'error': err})}", status_code=303)
+
+    if form.get("reset"):
+        save_rate_limits_overrides(account_id, {})
+        if _is_htmx(request):
+            return HTMLResponse(_accounts_content_html(saved=True, oob=True))
+        return RedirectResponse(url="/admin/accounts?saved=1", status_code=303)
+
+    def _fail(err: str, attempted: RateLimits):
+        if _is_htmx(request):
+            return HTMLResponse(_rate_limits_modal_html(account_id, attempted, is_override=True, error=err))
+        from urllib.parse import urlencode
+        return RedirectResponse(url=f"/admin/accounts?{urlencode({'error': err})}", status_code=303)
+
+    values: dict[str, int] = {}
+    current = accounts[account_id].rate_limits
+    for field in EDITABLE_RATE_LIMITS_FIELDS:
+        raw = form.get(field)
+        try:
+            n = int(raw)
+        except (TypeError, ValueError):
+            return _fail(f"Giá trị '{field}' không hợp lệ", current)
+        if n < 0:
+            return _fail(f"Giá trị '{field}' phải >= 0", current)
+        values[field] = n
+    if values["min_delay_seconds"] > values["max_delay_seconds"]:
+        return _fail("Khoảng chờ tối thiểu phải nhỏ hơn hoặc bằng khoảng chờ tối đa", RateLimits(**values))
+
+    save_rate_limits_overrides(account_id, values)
+    if _is_htmx(request):
+        return HTMLResponse(_accounts_content_html(saved=True, oob=True))
     return RedirectResponse(url="/admin/accounts?saved=1", status_code=303)
 
 

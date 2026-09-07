@@ -88,8 +88,17 @@ def get_all_accounts() -> dict[str, AccountConfig]:
     should require a code edit. Same for removed accounts: /admin/accounts'
     "Xoá" works on a code-level ACCOUNTS entry too (via set_account_removed)
     even though the Python constant itself can't be deleted at runtime —
-    it just never shows up here again until re-registered."""
-    from human_bot.runtime_config import get_paused_account_ids, get_registered_accounts, get_removed_account_ids
+    it just never shows up here again until re-registered. Same again for
+    per-account rate-limit overrides (get_rate_limits_overrides) — applied
+    here so human_bot/safety.py's RateLimiter, which just reads
+    `account.rate_limits` off whatever it's given, picks them up with no
+    separate call site to remember."""
+    from human_bot.runtime_config import (
+        get_paused_account_ids,
+        get_rate_limits_overrides,
+        get_registered_accounts,
+        get_removed_account_ids,
+    )
 
     result = dict(ACCOUNTS)
     for entry in get_registered_accounts():
@@ -103,6 +112,10 @@ def get_all_accounts() -> dict[str, AccountConfig]:
     for aid in paused_ids:
         if aid in result and result[aid].status != AccountStatus.PAUSED:
             result[aid] = replace(result[aid], status=AccountStatus.PAUSED)
+    for aid, account in list(result.items()):
+        overrides = get_rate_limits_overrides(aid)
+        if overrides:
+            result[aid] = replace(account, rate_limits=replace(account.rate_limits, **overrides))
     return result
 
 

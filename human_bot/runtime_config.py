@@ -400,3 +400,58 @@ def set_account_removed(account_id: str, removed: bool) -> None:
         json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8"
     )
 
+
+# --- Per-account rate limit overrides ---------------------------------------
+#
+# human_bot/config.py's AccountConfig.rate_limits (a RateLimits dataclass:
+# posts_per_day, comments_per_hour, comments_per_day, likes_per_hour,
+# min_delay_seconds, max_delay_seconds) is a code-level default — the same
+# 6 numbers for every account unless hand-customized in config.py. This
+# lets /admin/accounts override any of those fields per account_id instead
+# — a new/low-trust account might want tighter limits, an established one
+# might tolerate looser ones — without a code edit or restart. Applied by
+# human_bot/config.py's get_all_accounts(), same layering as account_status
+# and joined_groups: human_bot/safety.py's RateLimiter just reads
+# `account.rate_limits` off whatever AccountConfig it's given, so it picks
+# this up automatically with no separate call site to remember.
+
+_RATE_LIMITS_KEY = "rate_limits"
+EDITABLE_RATE_LIMITS_FIELDS: list[str] = [
+    "posts_per_day",
+    "comments_per_hour",
+    "comments_per_day",
+    "likes_per_hour",
+    "min_delay_seconds",
+    "max_delay_seconds",
+]
+
+
+def get_rate_limits_overrides(account_id: str) -> dict[str, Any]:
+    data = _read_all()
+    raw = data.get(_RATE_LIMITS_KEY, {})
+    if not isinstance(raw, dict):
+        return {}
+    overrides = raw.get(account_id, {})
+    if not isinstance(overrides, dict):
+        return {}
+    return {k: v for k, v in overrides.items() if k in EDITABLE_RATE_LIMITS_FIELDS}
+
+
+def save_rate_limits_overrides(account_id: str, values: dict[str, Any]) -> None:
+    """`values` empty (or every field cleared) removes the override
+    entirely, falling back to the account's code-level default — the
+    "Khôi phục mặc định" case in /admin/accounts' rate-limits modal."""
+    clean = {k: v for k, v in values.items() if k in EDITABLE_RATE_LIMITS_FIELDS}
+    data = _read_all()
+    raw = data.get(_RATE_LIMITS_KEY, {})
+    if not isinstance(raw, dict):
+        raw = {}
+    if clean:
+        raw[account_id] = clean
+    else:
+        raw.pop(account_id, None)
+    data[_RATE_LIMITS_KEY] = raw
+    RUNTIME_CONFIG_PATH.write_text(
+        json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8"
+    )
+
