@@ -105,8 +105,29 @@ không cần khởi động lại service.
 
 Nếu bước 6 báo `TaskResult(success=True, ...)` và bạn thấy bài đăng thật
 trên Facebook (mặc định audience "Only me" — chỉ mình bạn thấy), vậy là
-mọi thứ đã chạy đúng. Chi tiết kiến trúc/lý do thiết kế nằm ở các mục
-bên dưới.
+mọi thứ đã chạy đúng.
+
+**Bước 7 — Nhập danh sách nhóm đã tham gia** (bắt buộc nếu dùng
+`post_to_group`/`comment_on_group_post`, hoặc bộ đồng bộ bên B): mở
+`http://localhost:8000/admin/groups`, chọn tài khoản, thêm từng nhóm
+(tên + URL). Bỏ qua bước này nếu chỉ đăng lên tường cá nhân
+(`post_to_own_profile`). Chi tiết: mục 9, "Quản lý nhóm đã tham gia qua
+`/admin/groups`".
+
+**Bước 8 — Bật tự động đăng theo lịch (nếu cần):** mặc định cổng
+`auto_fire_enabled` ở `/admin/config` mục "Lên lịch & tự động đăng" đang
+**tắt** — mọi bài lên lịch (kể cả soạn tay ở `/admin/post`) sẽ nằm chờ ở
+`/admin/schedule`, không tự đăng, phải tự bấm "🚀 Đăng ngay" từng bài. Bật
+cổng này lên nếu muốn bài tự động đăng đúng giờ đã hẹn không cần bấm tay.
+Chi tiết: mục 9, "Điểm yếu đã ghi nhận" → `auto_fire_enabled`.
+
+**Bước 9 — Đặt `TASKS_API_KEY` trước khi mở ra ngoài máy cá nhân:** nếu
+n8n hoặc một service khác sẽ gọi `POST /tasks` từ máy/mạng khác (không
+chỉ chạy trên localhost để test tay), đặt `TASKS_API_KEY` trong `.env` —
+nếu không đặt, endpoint này không yêu cầu xác thực. Chi tiết: mục 9,
+"Xác thực (auth) cho `POST /tasks`".
+
+Chi tiết kiến trúc/lý do thiết kế nằm ở các mục bên dưới.
 
 ## 3. Đã nghiên cứu gì
 
