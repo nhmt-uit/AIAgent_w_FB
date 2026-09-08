@@ -86,6 +86,19 @@ _ACTION_DISPATCH: dict[str, tuple[str, Callable[[Page, TaskRequest], Awaitable[A
 }
 
 
+def rate_limit_bucket_for(action: str) -> str | None:
+    """The RateLimiter bucket ("post" / "comment" / "like") a given
+    TaskRequest.action falls into, per _ACTION_DISPATCH above — or None
+    for an unknown action. Public wrapper so callers outside this module
+    (data_sync.py's fire_due_tasks(), admin.py's schedule_fire_now())
+    can look up the same bucket run_task() itself will use, e.g. to call
+    human_bot.safety.rate_limit_wait_message(account, bucket) BEFORE
+    attempting the task, without needing to know _ACTION_DISPATCH's
+    (private) internal shape."""
+    entry = _ACTION_DISPATCH.get(action)
+    return entry[0] if entry else None
+
+
 def _resolve_group_name(account_id: str, url: str | None) -> str | None:
     """Best-effort lookup of a group's display name from /admin/groups'
     saved list, purely for readability in action_log (e.g. so a report

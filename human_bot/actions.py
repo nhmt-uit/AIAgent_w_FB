@@ -644,11 +644,17 @@ async def comment_on_group_post(
         await human_click(page, page.get_by_role("paragraph").first, mouse)
         await pause_between_ui_steps(pacing)
 
-        # Substring match ("comment", not the recording's exact "Write a
-        # public comment…") since a non-public/closed group plausibly
-        # shows different wording ("Write a comment…") — same reasoning
-        # already applied to other context-dependent labels in this file.
-        comment_box = page.get_by_role("textbox", name="comment")
+        # Regex match ("comment" OR "answer", not the recording's exact
+        # "Write a public comment…") since wording varies by group
+        # privacy ("Write a comment…") AND by post type — confirmed live
+        # 2026-09-08 that a Q&A-style group post renders "Write an
+        # answer…" instead, causing a 30s timeout here before this was
+        # widened. The "Post comment"-labeled submit button below is NOT
+        # widened the same way — a Q&A post's compact composer showed no
+        # such text button in that screenshot (icon-only send control),
+        # so a Q&A post will still fail at that step; this only fixes the
+        # textbox-not-found timeout, not full Q&A support.
+        comment_box = page.get_by_role("textbox", name=re.compile("comment|answer", re.IGNORECASE))
         await human_click(page, comment_box, mouse)
         await human_type(page, content, config=get_human_typing_config())
 

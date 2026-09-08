@@ -39,6 +39,7 @@ duoc ve.
 """
 import dataclasses
 import html
+import json
 import os
 import random
 import re
@@ -129,6 +130,29 @@ _ACTION_LABELS: dict[str, str] = {
     "like_post": "Thích bài viết",
     "read_recent_comments": "Đọc comment gần đây",
 }
+
+# Icon + Tailwind color pair per action, so "Đăng vào nhóm" and "Comment
+# bài trong nhóm" (easy to confuse at a glance, both group-related) read
+# as visually distinct badges instead of same-weight plain text — added
+# after a request to make /admin/schedule items easier to scan quickly.
+_ACTION_BADGE_STYLE: dict[str, tuple[str, str]] = {
+    "post_to_own_profile": ("🧑", "bg-blue-50 text-blue-600"),
+    "post_to_group": ("👥", "bg-purple-50 text-purple-600"),
+    "comment_on_group_post": ("💬", "bg-emerald-50 text-emerald-600"),
+    "comment_on_friend_post": ("💬", "bg-teal-50 text-teal-600"),
+    "like_post": ("👍", "bg-amber-50 text-amber-600"),
+    "read_recent_comments": ("👀", "bg-gray-100 text-gray-600"),
+}
+
+
+def _action_badge_html(action: str) -> str:
+    icon, color_classes = _ACTION_BADGE_STYLE.get(action, ("•", "bg-gray-100 text-gray-600"))
+    label = html.escape(_ACTION_LABELS.get(action, action))
+    return (
+        f'<span class="inline-flex items-center gap-1 text-xs font-semibold '
+        f'px-2.5 py-0.5 rounded-full {color_classes}">{icon} {label}</span>'
+    )
+
 
 def _account_label(account_id: str, accounts: dict | None = None) -> str:
     """"<Tên hiển thị> (<account_id>)" for a known account, or the bare
@@ -360,12 +384,18 @@ _PAGE_STYLE = """
   button.btn-secondary, a.btn-secondary { @apply bg-white text-gray-900 border border-gray-200; }
   button.btn-secondary:hover, a.btn-secondary:hover { @apply bg-gray-50 no-underline; }
   .btn-small { @apply px-3 py-1.5 text-[13px]; }
+  button.btn-copy, a.btn-copy { @apply bg-teal-50 text-teal-700 border border-teal-200 px-2.5 py-1 text-xs rounded-full; }
+  button.btn-copy:hover, a.btn-copy:hover { @apply bg-teal-100 no-underline; }
 
   .muted { @apply text-gray-500 text-sm; }
 
-  .flash, .error { @apply rounded-2xl px-4 py-3 mb-5 text-sm flex items-center gap-2; }
+  .flash, .error, .warning { @apply rounded-2xl px-4 py-3 mb-5 text-sm flex items-center gap-2; }
   .flash { @apply bg-emerald-50 border border-emerald-200 text-emerald-700; }
   .error { @apply bg-red-50 border border-red-200 text-red-700; }
+  .warning { @apply bg-amber-50 border border-amber-200 text-amber-800; }
+  /* Same look as .warning above, but sized/margined for sitting INSIDE a
+     .queue-item (per-task banner) rather than at page level. */
+  .warning-inline { @apply bg-amber-50 border border-amber-200 text-amber-800 rounded-xl px-3 py-2 mt-2 mb-2 text-sm flex items-center gap-2; }
 
   .form-actions { @apply mt-2 flex justify-end; }
 
@@ -2026,11 +2056,26 @@ def _schedule_content_html(
                 f'<input type="hidden" name="account_id" value="{html.escape(account_id or "")}">'
                 f'<input type="hidden" name="page" value="{page}">'
             )
+            url_row_html = ""
+            if t.target_url:
+                url_label = "Url nhóm" if t.action == "post_to_group" else "Url bài viết"
+                url_display = html.escape(t.target_url)
+                url_js = html.escape(json.dumps(t.target_url), quote=True)
+                url_row_html = f"""
+  <div class="field-key">{url_label}: <a class="row-url" href="{url_display}" target="_blank" rel="noopener">{url_display}</a>
+    <button type="button" class="btn-copy" style="margin-left:6px;"
+            onclick="navigator.clipboard.writeText({url_js}); var b=this; var t0=b.textContent; b.textContent='✅ Đã copy'; setTimeout(function(){{b.textContent=t0;}}, 1500);">📋 Copy</button>
+  </div>"""
+            warning_html = ""
+            if t.last_warning:
+                warning_html = f'<div class="warning-inline">{html.escape(t.last_warning)}</div>'
             items_html.append(f"""
 <div class="queue-item">
-  <div class="queue-filename">{html.escape(_ACTION_LABELS.get(t.action, t.action))} · {html.escape(_account_label(t.account_id, accounts))}</div>
-  <div class="queue-filename">({_fmt_jst(t.scheduled_at)} giờ Nhật Bản)</div>
+  <div class="queue-filename">{_action_badge_html(t.action)} · {html.escape(_account_label(t.account_id, accounts))}</div>
   <div class="field-key">id: {html.escape(t.task_id)}</div>
+  <div class="field-key">Ngày giờ thực hiện: {_fmt_jst(t.scheduled_at)} (giờ Nhật Bản)</div>
+  {url_row_html}
+  {warning_html}
   <form method="post" action="/admin/schedule/update"
         hx-post="/admin/schedule/update" hx-target="#schedule-content" hx-swap="outerHTML"
         style="margin-top:8px; display:flex; gap:8px; align-items:flex-start; flex-wrap:wrap;">
@@ -2123,7 +2168,11 @@ async def schedule_update(request: Request, _: None = Depends(_require_auth)):
     task_id = str(form.get("task_id", ""))
     content = str(form.get("content", ""))
     scheduled_at = str(form.get("scheduled_at", ""))
-    updated = schedule_store.update(task_id, content=content, scheduled_at=scheduled_at)
+    # Clearing last_warning here: editing the schedule (most likely the
+    # time, per the rate-limit banner's own suggestion) is the admin
+    # acting on the warning — an unresolved warning should not linger
+    # after they've already adjusted it.
+    updated = schedule_store.update(task_id, content=content, scheduled_at=scheduled_at, last_warning=None)
     if updated is None:
         err = "Không tìm thấy mục này (có thể đã được đăng hoặc huỷ)"
         if _is_htmx(request):
@@ -2175,6 +2224,20 @@ async def schedule_fire_now(request: Request, _: None = Depends(_require_auth)):
         if _is_htmx(request):
             return HTMLResponse(_schedule_content_html(account_id=account_id, page=page, saved=True))
         return _schedule_redirect(account_id, page, saved=1)
+    if result.message.startswith("rate_limited:"):
+        # Same reasoning as data_sync.py's fire_due_tasks(): this isn't a
+        # real failure of the post, it just fired too soon after the
+        # account's last action — keep it in pending/ with a warning
+        # instead of failed/.
+        from human_bot.agent import rate_limit_bucket_for
+        from human_bot.safety import rate_limit_wait_message
+        account = get_all_accounts().get(task.account_id)
+        bucket = rate_limit_bucket_for(task.action)
+        warning = rate_limit_wait_message(account, bucket) if account and bucket else None
+        schedule_store.update(task_id, last_warning=warning or result.message)
+        if _is_htmx(request):
+            return HTMLResponse(_schedule_content_html(account_id=account_id, page=page, error=warning or result.message))
+        return _schedule_redirect(account_id, page, error=warning or result.message)
     schedule_store.mark_failed(task_id, result.message)
     if _is_htmx(request):
         return HTMLResponse(_schedule_content_html(account_id=account_id, page=page, error=f"Đăng thất bại: {result.message}"))

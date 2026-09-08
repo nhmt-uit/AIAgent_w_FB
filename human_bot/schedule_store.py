@@ -47,6 +47,15 @@ class ScheduledTask:
     source_kind: str = ""  # "job" | "candidate" — which side-B endpoint this came from
     source_id: str = ""  # side-B's own record id, for traceability/debugging
     created_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+    # Set instead of moving the task to failed/ when a fire attempt hits
+    # RateLimiter's min_delay_seconds gap specifically (not other failure
+    # reasons) — a rate-limit gap says nothing wrong with the post itself,
+    # it just fired too soon after the account's last action, so the task
+    # stays in pending/ and /admin/schedule shows this as a banner with a
+    # suggested reschedule time instead of silently landing in failed/.
+    # Cleared on the next successful edit/fire. See data_sync.py's
+    # fire_due_tasks() and admin.py's schedule_fire_now()/schedule_update().
+    last_warning: str | None = None
 
 
 def ensure_dirs() -> None:

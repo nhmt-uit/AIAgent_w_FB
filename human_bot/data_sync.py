@@ -299,6 +299,28 @@ def _count_scheduled_group_posts_by_day(account_id: str) -> dict[date, int]:
     return counts
 
 
+def _effective_gap_minutes(cfg_min: float, cfg_max: float, account: AccountConfig) -> tuple[float, float]:
+    """Widen (cfg_min, cfg_max) if needed so the auto-scheduler's gap
+    between two tasks never lands under this account's real RateLimiter
+    floor (RateLimits.min_delay_seconds/max_delay_seconds — enforced
+    across EVERY action type on the account, not just within one chain;
+    see safety.py's RateLimiter._last_action_gap_ok()). Without this,
+    DataSyncConfig.comment_gap_min/max_minutes (default 10-45min) is
+    routinely tighter than an account's real min_delay_seconds (1-2h+,
+    raised 2026-09-07 — see RateLimits' own docstring), so nearly every
+    auto-scheduled batch would land tasks that fire, hit
+    rate_limited:min_delay_seconds, and sit waiting anyway (harmless
+    since 2026-09-08's auto-retry-with-warning fix, but pointless —
+    spacing them out up front avoids the wait entirely). Never narrows
+    cfg's own values, only raises the floor — a deliberately more
+    generous cfg gap is left untouched."""
+    rl_min = account.rate_limits.min_delay_seconds / 60
+    rl_max = account.rate_limits.max_delay_seconds / 60
+    eff_min = max(cfg_min, rl_min)
+    eff_max = max(cfg_max, rl_max, eff_min)
+    return eff_min, eff_max
+
+
 def _last_scheduled_time_per_group(account_id: str) -> dict[str, datetime]:
     """Most recent scheduled_at (pending or posted) per target group URL
     for this account — seeds the per-group minimum-gap check below so it
@@ -479,12 +501,12 @@ async def _sync_once_inner(account_id: str, cfg: DataSyncConfig | None) -> dict[
     contacted = _load_contacted_contacts()
 
     now = datetime.now(timezone.utc)
-    next_post_time = now + timedelta(
-        minutes=random.uniform(cfg.post_gap_min_minutes, cfg.post_gap_max_minutes)
+    post_gap_min, post_gap_max = _effective_gap_minutes(cfg.post_gap_min_minutes, cfg.post_gap_max_minutes, account)
+    comment_gap_min, comment_gap_max = _effective_gap_minutes(
+        cfg.comment_gap_min_minutes, cfg.comment_gap_max_minutes, account
     )
-    next_comment_time = now + timedelta(
-        minutes=random.uniform(cfg.comment_gap_min_minutes, cfg.comment_gap_max_minutes)
-    )
+    next_post_time = now + timedelta(minutes=random.uniform(post_gap_min, post_gap_max))
+    next_comment_time = now + timedelta(minutes=random.uniform(comment_gap_min, comment_gap_max))
 
     scheduled_posts = 0
     scheduled_comments = 0
@@ -550,9 +572,7 @@ async def _sync_once_inner(account_id: str, cfg: DataSyncConfig | None) -> dict[
             )
             schedule_store.add(task)
             scheduled_posts += 1
-            next_post_time = next_post_time + timedelta(
-                minutes=random.uniform(cfg.post_gap_min_minutes, cfg.post_gap_max_minutes)
-            )
+            next_post_time = next_post_time + timedelta(minutes=random.uniform(post_gap_min, post_gap_max))
         _mark_seen(jid, "job")
 
     for cand in candidates:
@@ -596,9 +616,7 @@ async def _sync_once_inner(account_id: str, cfg: DataSyncConfig | None) -> dict[
         )
         schedule_store.add(task)
         scheduled_comments += 1
-        next_comment_time = next_comment_time + timedelta(
-            minutes=random.uniform(cfg.comment_gap_min_minutes, cfg.comment_gap_max_minutes)
-        )
+        next_comment_time = next_comment_time + timedelta(minutes=random.uniform(comment_gap_min, comment_gap_max))
         if contact:
             _mark_contacted(contact)
 
@@ -636,10 +654,33 @@ async def fire_due_tasks(cfg: SchedulingConfig | None = None) -> dict[str, Any]:
     if not cfg.auto_fire_enabled:
         return {"due": len(due), "fired": 0, "reason": "auto_fire_enabled is False"}
 
-    from human_bot.agent import TaskRequest, run_task  # local import — avoid import cycle at module load
+    from human_bot.agent import TaskRequest, run_task, rate_limit_bucket_for  # local import — avoid import cycle at module load
+    from human_bot.safety import rate_limit_wait_message
 
     fired = 0
     for task in due:
+        # Cheap pre-check BEFORE calling run_task(): we already know
+        # exactly when this account is allowed to act again FOR THIS
+        # SAME action_type bucket ("post"/"comment"/"like" — the gap is
+        # tracked per bucket, not account-wide, see safety.py's
+        # RateLimiter.next_allowed_at()) — rate_limit_wait_message() just
+        # re-reads its action log, no browser/Playwright involved. If
+        # still blocked, skip run_task() entirely this cycle — just
+        # refresh the pending task's warning banner with the current
+        # remaining wait. Without this, a due task sitting on a
+        # rate-limited account would get a full run_task() call (and an
+        # action_log DB row) every single due_check_interval_seconds
+        # (default 60s) for the ENTIRE min_delay_seconds gap (up to
+        # several hours) — e.g. ~120 rows for a 2h wait — even though the
+        # outcome was already knowable without attempting anything. Only
+        # calls run_task() for real once the gap has actually elapsed.
+        account = get_account(task.account_id)
+        bucket = rate_limit_bucket_for(task.action)
+        warning = rate_limit_wait_message(account, bucket) if account and bucket else None
+        if warning:
+            schedule_store.update(task.task_id, last_warning=warning)
+            continue
+
         request = TaskRequest(
             action=task.action,
             account_id=task.account_id,
@@ -654,6 +695,14 @@ async def fire_due_tasks(cfg: SchedulingConfig | None = None) -> dict[str, Any]:
         result = await run_task(request)
         if result.success:
             schedule_store.mark_posted(task.task_id, result.message)
+        elif result.message.startswith("rate_limited:"):
+            # Rare fallback: the pre-check above just said this account
+            # was free, but a concurrent action (e.g. a manual "Đăng
+            # ngay" click on another due task) claimed the slot first,
+            # so run_task()'s own check still caught it. Same
+            # stay-pending-with-warning handling as the pre-check.
+            warning = rate_limit_wait_message(account, bucket) if account and bucket else None
+            schedule_store.update(task.task_id, last_warning=warning or result.message)
         else:
             schedule_store.mark_failed(task.task_id, result.message)
         fired += 1

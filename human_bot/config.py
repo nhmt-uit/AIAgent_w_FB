@@ -68,15 +68,19 @@ class RateLimits:
     comments_per_hour: int = 5
     comments_per_day: int = 20
     likes_per_hour: int = 15
-    # Minimum gap enforced between ANY two consecutive actions on this
-    # account (see human_bot/safety.py's RateLimiter._last_action_gap_ok()
-    # — refuses a task outright rather than sleeping/blocking). Raised
-    # from 90-400s (which, until 2026-09-07, was defined but never
-    # actually enforced anywhere — see docs/skills/anomaly-detection.md's
-    # git history) to 1-2 hours per the project owner's explicit request,
-    # after cross-referencing external reports suggesting even 10-20
-    # minutes between actions reads as automated to Facebook's abuse
-    # systems.
+    # Minimum gap enforced between two consecutive actions of the SAME
+    # kind on this account — post-to-post, comment-to-comment, each
+    # tracked independently (see human_bot/safety.py's
+    # RateLimiter._last_action_gap_ok()/next_allowed_at(), scoped per
+    # action_type bucket 2026-09-08 — a comment no longer waits on a
+    # post's gap or vice versa, same as posts_per_day/comments_per_hour
+    # above already only count same-type actions) — refuses a task
+    # outright rather than sleeping/blocking. Raised from 90-400s (which,
+    # until 2026-09-07, was defined but never actually enforced anywhere
+    # — see docs/skills/anomaly-detection.md's git history) to 1-2 hours
+    # per the project owner's explicit request, after cross-referencing
+    # external reports suggesting even 10-20 minutes between actions
+    # reads as automated to Facebook's abuse systems.
     min_delay_seconds: int = 3600
     max_delay_seconds: int = 7200
 
