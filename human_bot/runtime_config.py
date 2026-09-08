@@ -20,6 +20,7 @@ cua human_bot/humanize.py (HumanTypingConfig, HumanPacingConfig,
 HumanMouseConfig); key nao thieu trong JSON thi van dung gia tri mac
 dinh do.
 """
+import asyncio
 import dataclasses
 import json
 import os
@@ -161,6 +162,46 @@ def _save_overrides(section_key: str, editable_fields: list[str], values: dict[s
     RUNTIME_CONFIG_PATH.write_text(
         json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8"
     )
+    notify_config_changed()
+
+
+# --- Wake signal for human_bot/service.py's background loops ---------------
+#
+# A saved config change must apply the moment it's saved, not whenever a
+# background loop next happens to wake up on its own — see
+# human_bot/service.py's _data_sync_poll_loop()/_data_sync_fire_loop() for
+# the incident this fixes (2026-09-08): those loops used to compute one
+# `asyncio.sleep(interval)` from whatever config was current when the
+# sleep STARTED, so raising the poll interval, or flipping `enabled` back
+# on, from /admin/config had no effect until that stale sleep happened to
+# run out — up to the PREVIOUS interval's full length later, with no way
+# to apply it short of restarting the whole service (a human changing a
+# setting in the admin UI must never require that).
+#
+# This lives here rather than in human_bot/service.py because both
+# human_bot/admin.py (the writer, via _save_overrides() above and the
+# few per-account setters below that don't go through it) and
+# human_bot/service.py (the reader/waiter) already import
+# human_bot/runtime_config.py — putting it in service.py instead would
+# make admin.py import service.py, a circular import (service.py already
+# imports admin.py's router). asyncio.Event() is safe to construct here at
+# module import time (outside any running loop) on Python 3.10+, which
+# this project targets — it only binds to a loop the first time it's
+# awaited, not at construction.
+_config_changed_event = asyncio.Event()
+
+
+def get_config_changed_event() -> asyncio.Event:
+    return _config_changed_event
+
+
+def notify_config_changed() -> None:
+    """Call after any write that a background loop's timing/gating
+    decisions depend on. Safe to call more times than strictly necessary
+    (a loop simply re-reads current config a bit early and finds nothing
+    changed) — never call it from a hot path that isn't an explicit
+    config write."""
+    _config_changed_event.set()
 
 
 # --- Typing ---------------------------------------------------------------
@@ -759,6 +800,46 @@ def _expire_resume_cooldown_if_due(account_id: str) -> None:
     RUNTIME_CONFIG_PATH.write_text(
         json.dumps(rl_data, indent=2, ensure_ascii=False), encoding="utf-8"
     )
+
+
+# --- Per-account data-sync opt-out (side-B poller only) ---------------------
+#
+# DataSyncConfig.enabled (above) is a global on/off switch for the whole
+# poller — it can't exclude a single account while leaving the rest synced.
+# Account status (ACTIVE/PAUSED) can't do it either: PAUSED blocks EVERY
+# action for that account (agent.py's run_task() rejects any status !=
+# ACTIVE), not just the side-B sync. This override sits between the two —
+# an ACTIVE account listed here still posts/comments normally via
+# /admin/post or the /tasks API, it's just skipped by
+# human_bot/service.py's _data_sync_poll_loop(). A PAUSED account is never
+# synced regardless of this list (see get_all_accounts()'s status check,
+# which already keeps a paused account out of _data_sync_poll_loop's
+# active_accounts filter) — so this only ever *adds* an exclusion on top
+# of, never overrides, the PAUSED gate.
+
+_SYNC_DISABLED_ACCOUNTS_KEY = "sync_disabled_accounts"
+
+
+def get_sync_disabled_account_ids() -> set[str]:
+    data = _read_all()
+    raw = data.get(_SYNC_DISABLED_ACCOUNTS_KEY, [])
+    if not isinstance(raw, list):
+        return set()
+    return {str(aid) for aid in raw if str(aid).strip()}
+
+
+def set_account_sync_enabled(account_id: str, enabled: bool) -> None:
+    ids = get_sync_disabled_account_ids()
+    if enabled:
+        ids.discard(account_id)
+    else:
+        ids.add(account_id)
+    data = _read_all()
+    data[_SYNC_DISABLED_ACCOUNTS_KEY] = sorted(ids)
+    RUNTIME_CONFIG_PATH.write_text(
+        json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8"
+    )
+    notify_config_changed()
 
 
 def clear_resume_cooldown(account_id: str) -> None:

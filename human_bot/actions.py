@@ -35,13 +35,31 @@ from human_bot.humanize import (
     reading_pause,
 )
 from human_bot.runtime_config import get_human_typing_config, get_mouse_config, get_pacing_config
-from human_bot.safety import AnomalyDetected, detect_anomaly
+from human_bot.safety import AnomalyDetected, detect_anomaly, is_content_unavailable
 
 
 @dataclass
 class ActionResult:
     success: bool
     message: str
+
+
+async def _check_target_content_available(page: Page) -> str | None:
+    """Returns a failure message if the current page is Facebook's "this
+    content isn't available" dead-link page (target post deleted, made
+    private, or in a group this account can't see), else None. Call this
+    right after page.goto(post_url) and BEFORE trying to click anything
+    on the post — otherwise Playwright just times out (~30s) hunting for
+    a comment box that will never appear, and the eventual failure gets
+    reported as a generic timeout instead of the real reason. Deliberately
+    NOT routed through _check_anomaly_or_raise()/AnomalyDetected: a dead
+    target post says nothing about this bot account's own standing, so it
+    must never pause the account — see human_bot/safety.py's
+    is_content_unavailable() docstring."""
+    text = await page.inner_text("body")
+    if is_content_unavailable(text or ""):
+        return "target_content_unavailable"
+    return None
 
 
 async def _check_anomaly_or_raise(page: Page) -> None:
@@ -578,6 +596,9 @@ async def comment_on_friend_post(
     try:
         await page.goto(post_url)
         await _check_anomaly_or_raise(page)
+        unavailable = await _check_target_content_available(page)
+        if unavailable:
+            return ActionResult(success=False, message=unavailable)
 
         # TODO: fill in from a Codegen recording of commenting on a
         # friend's post.
@@ -615,6 +636,9 @@ async def comment_on_group_post(
     try:
         await page.goto(post_url)
         await _check_anomaly_or_raise(page)
+        unavailable = await _check_target_content_available(page)
+        if unavailable:
+            return ActionResult(success=False, message=unavailable)
         await pause_after_page_load(pacing)
 
         await human_click(page, page.get_by_role("paragraph").first, mouse)

@@ -106,6 +106,24 @@ def list_pending() -> list[ScheduledTask]:
     return items
 
 
+def list_posted() -> list[ScheduledTask]:
+    """All already-fired tasks — mirrors list_pending() but reads
+    POSTED_DIR. _move_to() only renames the file on posting, it never
+    touches the JSON content, so every ScheduledTask field (including
+    scheduled_at) survives intact; only the companion .result.txt is new.
+    Added for human_bot/data_sync.py's daily-post-cap check, which needs
+    to count a day's posts that have ALREADY fired, not just ones still
+    pending, so the cap isn't meaningless for the rest of a day after the
+    quota already fired once."""
+    ensure_dirs()
+    items = []
+    for path in sorted(POSTED_DIR.glob("*.json")):
+        task = _read(path)
+        if task is not None:
+            items.append(task)
+    return items
+
+
 def due_tasks(now: datetime | None = None) -> list[ScheduledTask]:
     now = now or datetime.now(timezone.utc)
     result = []

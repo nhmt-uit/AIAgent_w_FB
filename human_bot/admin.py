@@ -60,7 +60,7 @@ from human_bot.config import (
     get_all_accounts,
     new_group_id,
 )
-from human_bot.data_sync import apply_quiet_hours
+from human_bot.data_sync import apply_quiet_hours, get_all_sync_statuses
 from human_bot.data_sync_config import DataSyncConfig
 from human_bot.scheduling_config import SchedulingConfig
 from human_bot.media import MediaConfig
@@ -106,6 +106,8 @@ from human_bot.runtime_config import (
     get_rate_limits_overrides,
     save_rate_limits_overrides,
     EDITABLE_RATE_LIMITS_FIELDS,
+    get_sync_disabled_account_ids,
+    set_account_sync_enabled,
 )
 from human_bot.safety_cooldown_config import SafetyCooldownConfig
 
@@ -829,7 +831,7 @@ def _layout(body: str, active: str = "") -> str:
     <nav class="topnav">
       <a href="/admin" class="{nav_class('home')}">Trang chủ</a>
       <a href="/admin/accounts" class="{nav_class('accounts')}">Tài khoản</a>
-      <a href="/admin/config" class="{nav_class('config')}">Cấu hình hành vi</a>
+      <a href="/admin/config" class="{nav_class('config')}">Cấu hình</a>
       <a href="/admin/post" class="{nav_class('post')}">Đăng bài</a>
       <a href="/admin/groups" class="{nav_class('groups')}">Nhóm đã tham gia</a>
       <a href="/admin/schedule" class="{nav_class('schedule')}">Lịch đăng</a>
@@ -879,8 +881,8 @@ async def admin_home(_: None = Depends(_require_auth)) -> str:
     <div class="desc">Đăng ký tài khoản mới sau khi chạy bootstrap_login.py, tạm dừng/kích hoạt lại, xoá — không cần sửa code.</div>
   </a>
   <a class="home-link-card" href="/admin/config">
-    <div class="title">⚙️ Cấu hình hành vi</div>
-    <div class="desc">Chỉnh tốc độ gõ, khoảng chờ, di chuyển chuột — áp dụng ngay, không cần khởi động lại.</div>
+    <div class="title">⚙️ Cấu hình</div>
+    <div class="desc">Tốc độ gõ, khoảng chờ, di chuyển chuột (tab "Cấu hình hành vi") và chu kỳ/ngưỡng lọc của bộ đồng bộ bên B (tab "Đồng bộ dữ liệu") — áp dụng ngay, không cần khởi động lại.</div>
   </a>
   <a class="home-link-card" href="/admin/post">
     <div class="title">📝 Đăng bài</div>
@@ -903,7 +905,7 @@ async def admin_home(_: None = Depends(_require_auth)) -> str:
 
 
 @router.get("/config", response_class=HTMLResponse)
-async def config_form(saved: bool = False, _: None = Depends(_require_auth)) -> str:
+async def config_form(saved: bool = False, tab: str = "behavior", _: None = Depends(_require_auth)) -> str:
     sections_html = []
     for section_key, prefix, title, config_cls, editable_fields, labels, get_overrides, _save_fn in _CONFIG_SECTIONS:
         current = get_overrides()
@@ -925,18 +927,45 @@ async def config_form(saved: bool = False, _: None = Depends(_require_auth)) -> 
   <div class="field-input">{input_html}</div>
 </div>""")
         icon = _ICONS.get(prefix, "")
-        sections_html.append(f"""
+        sections_html.append((section_key, f"""
 <div class="card">
   <h2>{icon} {html.escape(title)}</h2>
   <div class="field-grid">{''.join(rows)}</div>
-</div>""")
+</div>"""))
     flash = '<p class="flash">✅ Đã lưu cấu hình. Áp dụng ngay từ lần đăng bài tiếp theo.</p>' if saved else ""
+
+    behavior_cards = "".join(card for key, card in sections_html if key != "data_sync")
+    sync_cards = "".join(card for key, card in sections_html if key == "data_sync")
+
+    active_tab = tab if tab in ("behavior", "sync") else "behavior"
+
+    def tab_btn(key: str, label: str) -> str:
+        cls = "tab-btn active" if key == active_tab else "tab-btn"
+        return f'<button type="button" class="{cls}" data-tab-target="tab-{key}">{label}</button>'
+
+    def panel_attrs(key: str) -> str:
+        return "" if key == active_tab else " hidden"
+
     return _layout(f"""
-<h1>Cấu hình hành vi giống người</h1>
+<h1>Cấu hình</h1>
 <p class="page-desc">Ghi vào runtime_config.json (không đụng tới .env), có hiệu lực ngay, không cần khởi động lại service.</p>
 {flash}
 <form method="post" action="/admin/config">
-{''.join(sections_html)}
+<div data-tabs>
+  <div class="tab-bar">
+    {tab_btn("behavior", "🧑 Cấu hình hành vi")}
+    {tab_btn("sync", "🔄 Đồng bộ dữ liệu")}
+  </div>
+
+  <div class="tab-panel" id="tab-behavior"{panel_attrs("behavior")}>
+    {behavior_cards}
+  </div>
+
+  <div class="tab-panel" id="tab-sync"{panel_attrs("sync")}>
+    <p class="page-desc">Cấu hình cho bộ đồng bộ dữ liệu bên B (human_bot/data_sync.py). Lần sync gần nhất theo từng tài khoản: xem <a href="/admin/accounts?tab=sync">Tài khoản → Đồng bộ</a>.</p>
+    {sync_cards}
+  </div>
+</div>
 <div class="form-actions"><button type="submit">Lưu cấu hình</button></div>
 </form>
 """, active="config")
@@ -1111,6 +1140,90 @@ def _rate_limits_modal_html(account_id: str, limits: RateLimits, is_override: bo
 </div>"""
 
 
+def _sync_content_html(saved: bool = False, oob: bool = False) -> str:
+    """Everything about the side-B sync that's per-account: the Bật/Tắt
+    toggle (human_bot/runtime_config.py's get_sync_disabled_account_ids()/
+    set_account_sync_enabled()) AND the last sync_once() outcome
+    (human_bot/data_sync.py's get_all_sync_statuses()) — both moved here
+    from the "Tài khoản" tab/the old /admin/config page respectively
+    (2026-09-08) so everything sync-related lives under one "Đồng bộ" tab
+    instead of being split by coincidence of which table it started in.
+    Self-contained with its own #sync-content id so its own toggle actions
+    can htmx-swap just this block, independent of #accounts-content."""
+    accounts = get_all_accounts()
+    statuses = get_all_sync_statuses()
+    sync_disabled_ids = get_sync_disabled_account_ids()
+    flash = '<p class="flash">✅ Đã lưu.</p>' if saved else ""
+
+    rows = []
+    for aid, account in accounts.items():
+        is_paused = account.status == AccountStatus.PAUSED
+        # Paused blocks EVERY action (agent.py's run_task() rejects any
+        # status != ACTIVE), sync included — so it already can't run
+        # regardless of this override, and the toggle is replaced with a
+        # plain note instead of an actionable button.
+        if is_paused:
+            status_cell = '<span class="row-url">tạm dừng — đã chặn sync</span>'
+            action_cell = ""
+        elif aid in sync_disabled_ids:
+            status_cell = '<span class="badge" style="background:#fef2f2;color:#dc2626;">⏸ Tắt</span>'
+            action_cell = f"""<form method="post" action="/admin/accounts/sync-enable" style="display:inline;"
+        hx-post="/admin/accounts/sync-enable" hx-target="#sync-content" hx-swap="outerHTML">
+  <input type="hidden" name="account_id" value="{html.escape(aid)}">
+  <button type="submit" class="btn-small">Bật lại</button>
+</form>"""
+        else:
+            status_cell = '<span class="badge" style="background:#ecfdf5;color:#059669;">● Bật</span>'
+            action_cell = f"""<form method="post" action="/admin/accounts/sync-disable" style="display:inline;"
+        hx-post="/admin/accounts/sync-disable" hx-target="#sync-content" hx-swap="outerHTML"
+        hx-confirm="Tắt đồng bộ dữ liệu bên B cho tài khoản {html.escape(aid)}? Tài khoản vẫn hoạt động bình thường (đăng tay, comment...) — chỉ riêng việc tự lấy job/candidate mới từ bên B bị bỏ qua.">
+  <input type="hidden" name="account_id" value="{html.escape(aid)}">
+  <button type="submit" class="btn-small btn-secondary">Tắt</button>
+</form>"""
+
+        entry = statuses.get(aid)
+        if entry is None:
+            last_run_cell = '<span class="row-url">chưa chạy lần nào</span>'
+        elif entry.get("status") == "ok":
+            last_run_cell = (
+                f'<span class="badge" style="background:#ecfdf5;color:#059669;">✅ OK</span> '
+                f'{_fmt_jst(entry.get("last_run_at"))} — '
+                f'{entry.get("jobs_fetched", 0)} job, {entry.get("candidates_fetched", 0)} candidate lấy về, '
+                f'{entry.get("scheduled_posts", 0)} bài + {entry.get("scheduled_comments", 0)} comment mới lên lịch'
+            )
+        else:
+            last_run_cell = (
+                f'<span class="badge" style="background:#fef2f2;color:#dc2626;">⚠️ Lỗi</span> '
+                f'{_fmt_jst(entry.get("last_run_at"))} — {html.escape(str(entry.get("error", "")))}'
+            )
+
+        rows.append(f"""
+<tr>
+  <td>{html.escape(account.display_name)}<div class="row-url">{html.escape(aid)}</div></td>
+  <td>{status_cell}</td>
+  <td class="col-actions">{action_cell}</td>
+  <td>{last_run_cell}</td>
+</tr>""")
+
+    table = f"""
+<div class="table-scroll">
+  <table class="data-table">
+    <thead><tr><th>Tài khoản</th><th>Trạng thái</th><th>Hành động</th><th>Lần sync gần nhất</th></tr></thead>
+    <tbody>{"".join(rows) or '<tr><td colspan="4" class="empty-state">Chưa có tài khoản nào</td></tr>'}</tbody>
+  </table>
+</div>"""
+
+    oob_attr = ' hx-swap-oob="true"' if oob else ""
+    return f"""<div id="sync-content"{oob_attr}>
+{flash}
+<div class="card">
+  <h2>🔄 Đồng bộ dữ liệu bên B theo tài khoản</h2>
+  <p class="page-desc">Bật/tắt riêng cho từng tài khoản — một tài khoản ACTIVE bị tắt ở đây vẫn đăng/comment bình thường qua /admin/post, chỉ riêng việc tự lấy job/candidate mới từ bên B bị bỏ qua. Cấu hình chu kỳ, khoảng cách, ngưỡng lọc... ở <a href="/admin/config?tab=sync">Cấu hình → Đồng bộ dữ liệu</a>.</p>
+  {table}
+</div>
+</div>"""
+
+
 def _accounts_content_html(saved: bool = False, error: str | None = None, oob: bool = False) -> str:
     accounts = get_all_accounts()
     registered_ids = {a["account_id"] for a in get_registered_accounts()}
@@ -1235,14 +1348,41 @@ def _accounts_content_html(saved: bool = False, error: str | None = None, oob: b
 
 
 @router.get("/accounts", response_class=HTMLResponse)
-async def accounts_page(request: Request, saved: bool = False, error: str | None = None, _: None = Depends(_require_auth)) -> str:
+async def accounts_page(
+    request: Request, saved: bool = False, error: str | None = None, tab: str = "accounts",
+    _: None = Depends(_require_auth),
+) -> str:
     content = _accounts_content_html(saved, error)
     if _is_htmx(request):
         return content
+
+    active_tab = tab if tab in ("accounts", "sync") else "accounts"
+
+    def tab_btn(key: str, label: str) -> str:
+        cls = "tab-btn active" if key == active_tab else "tab-btn"
+        return f'<button type="button" class="{cls}" data-tab-target="tab-{key}">{label}</button>'
+
+    def panel_attrs(key: str) -> str:
+        return "" if key == active_tab else " hidden"
+
     return _layout(f"""
 <h1>Tài khoản</h1>
 <p class="page-desc">Đăng ký tài khoản mới sau khi đã chạy <code>python3 human_bot/bootstrap_login.py &lt;account_id&gt;</code> trên máy này để lưu phiên đăng nhập — không cần sửa human_bot/config.py hay khởi động lại service. Tài khoản đăng ký ở đây dùng rate limit / nhóm mặc định, chỉnh thêm ở /admin/config và /admin/groups nếu cần.</p>
-{content}
+
+<div data-tabs>
+  <div class="tab-bar">
+    {tab_btn("accounts", "👤 Tài khoản")}
+    {tab_btn("sync", "🔄 Đồng bộ")}
+  </div>
+
+  <div class="tab-panel" id="tab-accounts"{panel_attrs("accounts")}>
+    {content}
+  </div>
+
+  <div class="tab-panel" id="tab-sync"{panel_attrs("sync")}>
+    {_sync_content_html(saved=(saved and active_tab == "sync"))}
+  </div>
+</div>
 """, active="accounts")
 
 
@@ -1296,6 +1436,26 @@ async def accounts_resume(request: Request, _: None = Depends(_require_auth)):
     return RedirectResponse(url="/admin/accounts?saved=1", status_code=303)
 
 
+@router.post("/accounts/sync-disable")
+async def accounts_sync_disable(request: Request, _: None = Depends(_require_auth)):
+    form = await request.form()
+    account_id = str(form.get("account_id", "")).strip()
+    set_account_sync_enabled(account_id, False)
+    if _is_htmx(request):
+        return HTMLResponse(_sync_content_html(saved=True))
+    return RedirectResponse(url="/admin/accounts?tab=sync&saved=1", status_code=303)
+
+
+@router.post("/accounts/sync-enable")
+async def accounts_sync_enable(request: Request, _: None = Depends(_require_auth)):
+    form = await request.form()
+    account_id = str(form.get("account_id", "")).strip()
+    set_account_sync_enabled(account_id, True)
+    if _is_htmx(request):
+        return HTMLResponse(_sync_content_html(saved=True))
+    return RedirectResponse(url="/admin/accounts?tab=sync&saved=1", status_code=303)
+
+
 @router.post("/accounts/delete")
 async def accounts_delete(request: Request, _: None = Depends(_require_auth)):
     """Removes the account from human_bot entirely, whatever its origin:
@@ -1313,6 +1473,7 @@ async def accounts_delete(request: Request, _: None = Depends(_require_auth)):
       to fire them — get_account() raises for an unknown id)
     - the saved joined-groups list
     - any pause status
+    - any per-account data-sync opt-out (set_account_sync_enabled)
     - the rate-limits override (human_bot/runtime_config.py's
       save_rate_limits_overrides({})) — without this, re-registering the
       same account_id later and picking a fresh age tier would be
@@ -1334,6 +1495,7 @@ async def accounts_delete(request: Request, _: None = Depends(_require_auth)):
     delete_registered_account(account_id)
     set_account_removed(account_id, True)
     set_account_paused(account_id, False)  # drop any stale pause override too
+    set_account_sync_enabled(account_id, True)  # drop any stale sync opt-out too
     save_joined_groups(account_id, [])
     save_rate_limits_overrides(account_id, {})
     clear_resume_cooldown(account_id)
@@ -1546,7 +1708,7 @@ async def post_form(
         group_post_card = f"""
 <div class="card">
   <h2>👥 Đăng vào nhóm — {html.escape(account_labels[account_id])}</h2>
-  <p class="page-desc">Có thể tạo nhiều khối nội dung khác nhau, mỗi khối đăng vào một tập nhóm riêng — ví dụ nội dung A cho 3 nhóm đầu, nội dung B cho nhóm còn lại. Hệ thống tự rải giờ đăng giữa TẤT CẢ các bài (kể cả giữa các khối khác nhau) theo khoảng cách đang cấu hình ở "Cấu hình hành vi" → "Đồng bộ dữ liệu bên B" — không đăng dồn một lúc dù chọn nhiều nhóm.</p>
+  <p class="page-desc">Có thể tạo nhiều khối nội dung khác nhau, mỗi khối đăng vào một tập nhóm riêng — ví dụ nội dung A cho 3 nhóm đầu, nội dung B cho nhóm còn lại. Hệ thống tự rải giờ đăng giữa TẤT CẢ các bài (kể cả giữa các khối khác nhau) theo khoảng cách đang cấu hình ở <a href="/admin/config?tab=sync">Cấu hình → Đồng bộ dữ liệu</a> — không đăng dồn một lúc dù chọn nhiều nhóm.</p>
   <form method="post" action="/admin/post/schedule-groups">
     <input type="hidden" name="account_id" value="{html.escape(account_id)}">
     <div data-repeatable-blocks>
@@ -1711,7 +1873,10 @@ async def post_schedule_groups(request: Request, _: None = Depends(_require_auth
     scheduled_count = 0
     for content, group_urls in blocks:
         for group_url in group_urls:
-            scheduled_at = apply_quiet_hours(next_time, cfg)
+            # Clamp the CHAIN variable itself (not a throwaway copy) — see
+            # human_bot/data_sync.py's apply_quiet_hours() docstring for why.
+            next_time = apply_quiet_hours(next_time, cfg)
+            scheduled_at = next_time
             task = schedule_store.ScheduledTask(
                 task_id=schedule_store.new_task_id(scheduled_at.isoformat()),
                 action="post_to_group",

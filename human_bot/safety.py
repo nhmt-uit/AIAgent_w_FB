@@ -26,6 +26,23 @@ ANOMALY_TEXT_SIGNALS = [
     "checkpoint",
 ]
 
+# Text signals meaning the TARGET post/content is gone (deleted, made
+# private, or the group isn't one this account can see) — confirmed
+# 2026-09-08 against a real dead link from side B's candidate feed
+# (screenshot: "This content isn't available right now" / "Go to Feed" /
+# "Go back" / "Visit Help Center", no post body, no comment box). This is
+# NOT an ANOMALY_TEXT_SIGNALS case: nothing here indicates Facebook has
+# flagged THIS BOT ACCOUNT — pausing the account over a dead link the bot
+# had no control over would be wrong. Checked separately by
+# human_bot/actions.py's _check_content_unavailable() so a dead
+# comment_on_group_post/comment_on_friend_post target fails fast with a
+# clear reason instead of timing out ~30s waiting for a comment box that
+# will never appear, then surfacing as a generic "Timeout ... exceeded".
+CONTENT_UNAVAILABLE_TEXT_SIGNALS = [
+    "this content isn't available right now",
+    "this content isn't available",
+]
+
 
 class AnomalyDetected(RuntimeError):
     """Raised by human_bot/actions.py's _check_anomaly_or_raise() when a
@@ -55,6 +72,17 @@ def detect_anomaly(page_text: str, current_url: str = "") -> str | None:
     if "checkpoint" in current_url:
         return "checkpoint_url"
     return None
+
+
+def is_content_unavailable(page_text: str) -> bool:
+    """True if the page is Facebook's "this content isn't available"
+    dead-link page (post deleted, made private, or in a group this
+    account can't see) — see CONTENT_UNAVAILABLE_TEXT_SIGNALS above.
+    Deliberately separate from detect_anomaly(): this says nothing about
+    the bot account's own standing, so it must never trigger
+    AnomalyDetected/account-pause."""
+    haystack = page_text.lower()
+    return any(signal in haystack for signal in CONTENT_UNAVAILABLE_TEXT_SIGNALS)
 
 
 class RateLimiter:

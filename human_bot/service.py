@@ -45,17 +45,42 @@ import asyncio  # noqa: E402
 import logging  # noqa: E402
 import os  # noqa: E402
 import secrets  # noqa: E402
+from datetime import datetime, timezone  # noqa: E402
 
 from human_bot import data_sync, schedule_store, screenshots  # noqa: E402
 from human_bot.admin import router as admin_router  # noqa: E402
 from human_bot.agent import TaskRequest, run_task  # noqa: E402
 from human_bot.browser_pool import close_all, warm_up  # noqa: E402
 from human_bot.config import AccountStatus, get_all_accounts  # noqa: E402
-from human_bot.runtime_config import get_data_sync_config  # noqa: E402
+from human_bot.logging_setup import configure_logging  # noqa: E402
+from human_bot.runtime_config import (  # noqa: E402
+    get_config_changed_event,
+    get_data_sync_config,
+    get_sync_disabled_account_ids,
+)
+
+configure_logging()
 
 SCHEDULE_CLEANUP_INTERVAL_SECONDS = 24 * 60 * 60
 
-logger = logging.getLogger("human_bot.service")
+
+async def _wait_until_due(remaining_seconds: float) -> None:
+    """Sleep for up to `remaining_seconds`, but wake up EARLY the moment
+    human_bot/runtime_config.py's notify_config_changed() fires (any
+    /admin/config save, or a per-account sync toggle) — see that
+    function's docstring for the incident this fixes (2026-09-08): a
+    human changing a setting in the admin UI must apply immediately, not
+    whenever a background loop's current sleep happens to end on its own.
+    The timeout is still there as a plain safety net for the ordinary
+    "nothing changed, just waiting for the interval to elapse" case, so
+    this never depends solely on every writer remembering to notify."""
+    event = get_config_changed_event()
+    try:
+        await asyncio.wait_for(event.wait(), timeout=max(remaining_seconds, 0))
+    except asyncio.TimeoutError:
+        pass
+    else:
+        event.clear()
 
 
 async def _data_sync_poll_loop() -> None:
@@ -64,17 +89,43 @@ async def _data_sync_poll_loop() -> None:
     already-24/7 process rather than as a separate cron job — see
     docs/architecture.md section 3c. Never lets one bad cycle kill the
     loop: side B being briefly unreachable, or one malformed record,
-    should not take down posting for the rest of the process."""
+    should not take down posting for the rest of the process.
+
+    Re-reads config every time it wakes — either because the interval
+    elapsed, or because _wait_until_due() woke it early on a config
+    change — and only runs once `poll_interval_minutes` has actually
+    elapsed since the last real sync. `last_run_at` only advances when a
+    sync actually runs, so flipping `enabled` back on fires on the very
+    next wake instead of waiting out whatever interval was current before
+    it was turned off.
+
+    An ACTIVE account can still be excluded from just this loop via
+    get_sync_disabled_account_ids() (human_bot/runtime_config.py) — set
+    from /admin/accounts, independent of pausing the account outright
+    (which would also block manual posting)."""
+    last_run_at: datetime | None = None
     while True:
         cfg = get_data_sync_config()
-        if cfg.enabled:
-            active_accounts = [a for a in get_all_accounts().values() if a.status == AccountStatus.ACTIVE]
+        now = datetime.now(timezone.utc)
+        interval_seconds = max(cfg.poll_interval_minutes, 1.0) * 60
+        elapsed = None if last_run_at is None else (now - last_run_at).total_seconds()
+        due = elapsed is None or elapsed >= interval_seconds
+        if cfg.enabled and due:
+            last_run_at = now
+            sync_disabled = get_sync_disabled_account_ids()
+            active_accounts = [
+                a for a in get_all_accounts().values()
+                if a.status == AccountStatus.ACTIVE and a.account_id not in sync_disabled
+            ]
             for account in active_accounts:
                 try:
                     await data_sync.sync_once(account.account_id, cfg)
                 except Exception:  # noqa: BLE001 - one account's failure must not stop the others
                     logger.exception("data_sync.sync_once failed for account_id=%s", account.account_id)
-        await asyncio.sleep(max(cfg.poll_interval_minutes, 1.0) * 60)
+            await _wait_until_due(interval_seconds)
+        else:
+            remaining = interval_seconds if elapsed is None else interval_seconds - elapsed
+            await _wait_until_due(remaining)
 
 
 async def _data_sync_fire_loop() -> None:
@@ -88,14 +139,26 @@ async def _data_sync_fire_loop() -> None:
     human_bot/scheduling_config.py — since both were the same "buried
     under data-sync" issue). Left False by default — see
     human_bot/scheduling_config.py and /admin/schedule's manual 'Đăng
-    ngay' button for the safe-by-default alternative."""
+    ngay' button for the safe-by-default alternative.
+
+    Same wake-on-change-or-interval pattern as _data_sync_poll_loop()
+    above, same reason — see _wait_until_due()'s docstring."""
+    last_run_at: datetime | None = None
     while True:
         cfg = get_data_sync_config()
-        try:
-            await data_sync.fire_due_tasks()
-        except Exception:  # noqa: BLE001 - keep the loop alive across failures
-            logger.exception("data_sync.fire_due_tasks failed")
-        await asyncio.sleep(max(cfg.due_check_interval_seconds, 5.0))
+        now = datetime.now(timezone.utc)
+        interval_seconds = max(cfg.due_check_interval_seconds, 5.0)
+        elapsed = None if last_run_at is None else (now - last_run_at).total_seconds()
+        due = elapsed is None or elapsed >= interval_seconds
+        if due:
+            last_run_at = now
+            try:
+                await data_sync.fire_due_tasks()
+            except Exception:  # noqa: BLE001 - keep the loop alive across failures
+                logger.exception("data_sync.fire_due_tasks failed")
+            await _wait_until_due(interval_seconds)
+        else:
+            await _wait_until_due(interval_seconds - elapsed)
 
 
 async def _schedule_cleanup_loop() -> None:

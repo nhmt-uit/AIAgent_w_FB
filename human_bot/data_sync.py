@@ -57,6 +57,7 @@ from human_bot.runtime_config import get_data_sync_config, get_joined_groups, ge
 CACHE_ROOT = Path(__file__).resolve().parent.parent / "data_sync_cache"
 STATE_PATH = CACHE_ROOT / "_state.json"
 CONTACTED_PATH = CACHE_ROOT / "_contacted_contacts.json"
+SYNC_STATUS_PATH = CACHE_ROOT / "_sync_status.json"
 
 MAX_PAGES_PER_ENDPOINT = 50  # defensive cap — real pulls should be tiny once `since` is narrow
 
@@ -171,6 +172,47 @@ def _save_sync_state(state: dict[str, Any]) -> None:
     STATE_PATH.write_text(json.dumps(state, indent=2, ensure_ascii=False), encoding="utf-8")
 
 
+# --- Last-sync outcome, per account (for /admin visibility) -----------------
+#
+# sync_once() used to return its outcome (or an {"error": ...} dict) purely
+# to its caller — service.py's _data_sync_poll_loop() only wraps the call
+# in try/except and never inspected the return value, so a handled error
+# (e.g. missing DATA_INGESTION_API_TOKEN) vanished silently: no exception,
+# no log, nothing on /admin. This file persists the outcome of every
+# sync_once() call (success or failure, handled or raised) so /admin/config
+# can show "last sync: <time> — ok (N jobs, M candidates) / lỗi: <msg>" per
+# account_id instead of requiring someone to infer it from whether new
+# pending tasks showed up at /admin/schedule.
+
+def _load_sync_status() -> dict[str, Any]:
+    if not SYNC_STATUS_PATH.exists():
+        return {}
+    try:
+        data = json.loads(SYNC_STATUS_PATH.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def _record_sync_status(account_id: str, status: dict[str, Any]) -> None:
+    _ensure_cache_dir()
+    all_status = _load_sync_status()
+    all_status[account_id] = status
+    SYNC_STATUS_PATH.write_text(json.dumps(all_status, indent=2, ensure_ascii=False), encoding="utf-8")
+
+
+def get_sync_status(account_id: str) -> dict[str, Any] | None:
+    """Outcome of the most recent sync_once() call for this account_id, or
+    None if it has never run. Shape: {"last_run_at": iso-str, "status": "ok"
+    | "error", plus either the counts sync_once() normally returns or an
+    "error" message}."""
+    return _load_sync_status().get(account_id)
+
+
+def get_all_sync_statuses() -> dict[str, Any]:
+    return _load_sync_status()
+
+
 # --- Fetching side B's API --------------------------------------------------
 
 async def _fetch_all_pages(client: httpx.AsyncClient, path: str, params: dict) -> list[dict]:
@@ -209,7 +251,22 @@ def apply_quiet_hours(dt: datetime, cfg: DataSyncConfig) -> datetime:
     docs/skills/rate-limiting-pacing.md, this is a known limitation, not
     an oversight). Public (not `_`-prefixed) because human_bot/admin.py's
     manual "compose & schedule" flow (/admin/post) reuses it too — any
-    scheduled task, auto or manual, gets the same quiet-hours treatment."""
+    scheduled task, auto or manual, gets the same quiet-hours treatment.
+
+    IMPORTANT for callers building a chain of several scheduled items
+    (post_gap/comment_gap loops in this file and admin.py's
+    post_schedule_groups()): feed the RETURN VALUE back into the running
+    "next_*_time" variable before adding the next gap, don't just clamp a
+    throwaway copy for display. Fixed 2026-09-08 — previously every caller
+    clamped a fresh copy each iteration while the underlying chain kept
+    drifting through the quiet window unclamped, so several consecutive
+    chain items landing inside the window each got an INDEPENDENT random
+    minute here, collapsing what should have been post_gap/comment_gap-
+    apart posts into a few minutes of each other. Clamping the chain
+    itself means this only fires once per window entry — after that, the
+    chain has already moved past window's end and later gaps compound on
+    top of that corrected point normally, preserving the configured
+    spacing between everything that follows."""
     if cfg.quiet_hour_start_local <= dt.hour < cfg.quiet_hour_end_local:
         dt = dt.replace(
             hour=int(cfg.quiet_hour_end_local), minute=random.randint(0, 30),
@@ -218,14 +275,112 @@ def apply_quiet_hours(dt: datetime, cfg: DataSyncConfig) -> datetime:
     return dt
 
 
+def _count_scheduled_group_posts_by_day(account_id: str) -> dict[date, int]:
+    """How many `post_to_group` tasks this account already has on the
+    books per calendar date (UTC — same simplification apply_quiet_hours
+    makes), counting both PENDING (not fired yet) and already-POSTED
+    ones. Both matter for the daily cap below: posted ones already used
+    up today's quota, and pending ones from an earlier sync_once() call
+    reserve tomorrow's (or later) quota too, so a later call in the same
+    day doesn't schedule right on top of them. Includes every account's
+    tasks in the pending/posted directories, filtered down to this one —
+    small-scale by design, matching this project's other file-based
+    stores (see human_bot/schedule_store.py)."""
+    counts: dict[date, int] = {}
+    for task in schedule_store.list_pending() + schedule_store.list_posted():
+        if task.account_id != account_id or task.action != "post_to_group":
+            continue
+        try:
+            scheduled = datetime.fromisoformat(task.scheduled_at.replace("Z", "+00:00"))
+        except ValueError:
+            continue
+        d = scheduled.date()
+        counts[d] = counts.get(d, 0) + 1
+    return counts
+
+
+def _last_scheduled_time_per_group(account_id: str) -> dict[str, datetime]:
+    """Most recent scheduled_at (pending or posted) per target group URL
+    for this account — seeds the per-group minimum-gap check below so it
+    also respects postings a PREVIOUS sync_once() call already queued,
+    not only ones decided within the current call."""
+    latest: dict[str, datetime] = {}
+    for task in schedule_store.list_pending() + schedule_store.list_posted():
+        if task.account_id != account_id or task.action != "post_to_group" or not task.target_url:
+            continue
+        try:
+            scheduled = datetime.fromisoformat(task.scheduled_at.replace("Z", "+00:00"))
+        except ValueError:
+            continue
+        if task.target_url not in latest or scheduled > latest[task.target_url]:
+            latest[task.target_url] = scheduled
+    return latest
+
+
+def _next_available_post_slot(
+    dt: datetime,
+    cfg: DataSyncConfig,
+    daily_limit: int,
+    day_counts: dict[date, int],
+    group_url: str,
+    last_group_post_at: dict[str, datetime],
+) -> datetime:
+    """Push `dt` forward until it satisfies, together: quiet hours, this
+    account's RateLimits.posts_per_day (overflow rolls to the START of
+    the next day rather than being dropped — decided 2026-09-08), and a
+    minimum cfg.post_gap_min_minutes gap since the last post scheduled
+    to this SAME group (the sequential chain in the caller only
+    guarantees spacing between the overall last two posts, not
+    specifically between two posts landing on the same group).
+
+    Iterates because satisfying one constraint can violate another (e.g.
+    rolling to the next day can land back inside quiet hours, or push
+    past another group's minimum gap) — bounded so a pathological config
+    (e.g. daily_limit=0) can't loop forever; whatever `dt` lands on after
+    the cap is used as-is rather than crashing."""
+    for _ in range(60):
+        moved = False
+
+        clamped = apply_quiet_hours(dt, cfg)
+        if clamped != dt:
+            dt, moved = clamped, True
+
+        last_for_group = last_group_post_at.get(group_url)
+        if last_for_group is not None:
+            min_gap = timedelta(minutes=cfg.post_gap_min_minutes)
+            if dt - last_for_group < min_gap:
+                dt, moved = last_for_group + min_gap, True
+
+        if day_counts.get(dt.date(), 0) >= daily_limit:
+            dt = datetime.combine(dt.date() + timedelta(days=1), datetime.min.time(), tzinfo=dt.tzinfo)
+            moved = True
+
+        if not moved:
+            break
+    return dt
+
+
 # --- Draft content (candidate outreach — see module docstring) --------------
 # Job-post drafting (which needs per-group variation) lives in
 # human_bot/content_strategist.py's draft_group_post_variants() instead.
 
+def _format_attr(value: Any) -> str:
+    """attributes.desiredJobField/preferredRegion come back from side B as
+    a LIST (e.g. ["cơ khí", "thực phẩm"]), not a string — confirmed
+    2026-09-08 against real API responses. Interpolating that list
+    directly into an f-string used to render Python's repr
+    (`['cơ khí', 'thực phẩm']`) straight into the comment text. Joining
+    here is the one place every caller needs to go through instead of
+    each re-implementing the same isinstance check."""
+    if isinstance(value, list):
+        return ", ".join(str(v) for v in value if v)
+    return str(value) if value else ""
+
+
 def _draft_candidate_reply_placeholder(candidate: dict) -> str:
     attrs = candidate.get("attributes") or {}
-    field_wanted = attrs.get("desiredJobField") or "công việc phù hợp"
-    region = attrs.get("preferredRegion")
+    field_wanted = _format_attr(attrs.get("desiredJobField")) or "công việc phù hợp"
+    region = _format_attr(attrs.get("preferredRegion"))
     text = f"Chào bạn, mình thấy bạn đang tìm {field_wanted}"
     if region:
         text += f" ở khu vực {region}"
@@ -233,9 +388,59 @@ def _draft_candidate_reply_placeholder(candidate: dict) -> str:
     return text
 
 
+# TODO(side B contract): "suggestedReply" is a PLACEHOLDER name, agreed
+# 2026-09-08 to keep as a stand-in until side B actually ships this field
+# — NOT YET CONFIRMED in any real response seen so far (checked
+# 2026-09-08 against live /api/candidates, no such field present). Once
+# side B tells us the real field name, update this constant to match —
+# that is the ONLY change needed here; _draft_candidate_reply() below
+# already prefers it over the local template whenever it's a non-empty
+# string. Until then this constant matches nothing, so every candidate
+# keeps falling through to the local template exactly like today.
+SIDE_B_REPLY_FIELD = "suggestedReply"
+
+
+def _draft_candidate_reply(candidate: dict) -> str:
+    """Priority order (agreed 2026-09-08, see the conversation that
+    decided this): (1) side B's own suggested reply, once they actually
+    send SIDE_B_REPLY_FIELD — highest quality, side B has more context on
+    the candidate than we do; (2) TODO — an LLM-drafted reply tailored to
+    this candidate's specific ask (visa type, region, urgency...), still
+    to be researched/designed, not implemented yet; (3) the local
+    template (_draft_candidate_reply_placeholder) as the last-resort
+    fallback, same as the only behavior that existed before this."""
+    side_b_reply = candidate.get(SIDE_B_REPLY_FIELD)
+    if isinstance(side_b_reply, str) and side_b_reply.strip():
+        return side_b_reply.strip()
+    return _draft_candidate_reply_placeholder(candidate)
+
+
 # --- Main entry point ---------------------------------------------------------
 
 async def sync_once(account_id: str, cfg: DataSyncConfig | None = None) -> dict[str, Any]:
+    """Fetch new jobs/candidates for one account, dedupe, and write new
+    ScheduledTask entries — then always records the outcome via
+    _record_sync_status(), success or failure, BEFORE returning/re-raising,
+    so /admin/config can show it. This wraps _sync_once_inner() rather than
+    recording inline at every return point, so no future edit to that
+    function's body can accidentally add a new return path that skips
+    recording (a real gap before this: the "missing API token" case used to
+    return an {"error": ...} dict that service.py's poll loop never
+    inspected, so it vanished with no trace anywhere)."""
+    now_iso = datetime.now(timezone.utc).isoformat()
+    try:
+        result = await _sync_once_inner(account_id, cfg)
+    except Exception as exc:
+        _record_sync_status(account_id, {"last_run_at": now_iso, "status": "error", "error": str(exc)})
+        raise
+    if "error" in result:
+        _record_sync_status(account_id, {"last_run_at": now_iso, "status": "error", "error": result["error"]})
+    elif "skipped" not in result:
+        _record_sync_status(account_id, {"last_run_at": now_iso, "status": "ok", **result})
+    return result
+
+
+async def _sync_once_inner(account_id: str, cfg: DataSyncConfig | None) -> dict[str, Any]:
     """Fetch new jobs/candidates for one account, dedupe, and write new
     ScheduledTask entries. Never calls run_task() itself — see
     human_bot/data_sync.py's fire_due_tasks() / human_bot/service.py for
@@ -286,6 +491,17 @@ async def sync_once(account_id: str, cfg: DataSyncConfig | None = None) -> dict[
     latest_job_ts = jobs_since
     latest_candidate_ts = candidates_since
 
+    # Daily posts_per_day cap + per-group minimum gap (agreed 2026-09-08 —
+    # broadcasting every new job to every joined group could otherwise
+    # pile up far more posts on one account in one day than a real person
+    # would ever make, regardless of how generous post_gap_min/max is).
+    # Seeded from what's ALREADY on the books (other pending/posted
+    # tasks) so a second sync_once() call the same day doesn't ignore
+    # what the first one already committed.
+    daily_post_limit = account.rate_limits.posts_per_day
+    day_post_counts = _count_scheduled_group_posts_by_day(account_id)
+    last_group_post_at = _last_scheduled_time_per_group(account_id)
+
     for job in jobs:
         jid = str(job.get("id") or "")
         job_ts = job.get("last_seen_at") or job.get("published_at")
@@ -301,7 +517,17 @@ async def sync_once(account_id: str, cfg: DataSyncConfig | None = None) -> dict[
         # generated and coincidentally similar.
         variants = await content_strategist.draft_group_post_variants(job, groups)
         for group, content in zip(groups, variants):
-            scheduled_at = apply_quiet_hours(next_post_time, cfg)
+            # Clamp the CHAIN variable itself (not a throwaway copy) — see
+            # apply_quiet_hours()'s docstring for why this matters. Also
+            # enforces the daily posts_per_day cap (overflow rolls to the
+            # next day) and a minimum gap since this same group's last
+            # scheduled post — see _next_available_post_slot()'s docstring.
+            next_post_time = _next_available_post_slot(
+                next_post_time, cfg, daily_post_limit, day_post_counts, group.url, last_group_post_at,
+            )
+            scheduled_at = next_post_time
+            day_post_counts[scheduled_at.date()] = day_post_counts.get(scheduled_at.date(), 0) + 1
+            last_group_post_at[group.url] = scheduled_at
             task = schedule_store.ScheduledTask(
                 task_id=schedule_store.new_task_id(scheduled_at.isoformat()),
                 action="post_to_group",
@@ -353,13 +579,16 @@ async def sync_once(account_id: str, cfg: DataSyncConfig | None = None) -> dict[
             continue
 
         action = "comment_on_group_post" if "/groups/" in url else "comment_on_friend_post"
-        scheduled_at = apply_quiet_hours(next_comment_time, cfg)
+        # Clamp the CHAIN variable itself (not a throwaway copy) — see
+        # apply_quiet_hours()'s docstring for why this matters.
+        next_comment_time = apply_quiet_hours(next_comment_time, cfg)
+        scheduled_at = next_comment_time
         task = schedule_store.ScheduledTask(
             task_id=schedule_store.new_task_id(scheduled_at.isoformat()),
             action=action,
             account_id=account_id,
             scheduled_at=scheduled_at.isoformat(),
-            content=_draft_candidate_reply_placeholder(cand),
+            content=_draft_candidate_reply(cand),
             target_url=url,
             reasoning=f"auto: reply to candidate {cid}",
             source_kind="candidate",
