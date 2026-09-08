@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import json
 import random
-import time
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -81,7 +80,43 @@ class RateLimiter:
                     continue
         return rows
 
+    def _last_action_gap_ok(self) -> tuple[bool, str]:
+        """Enforces RateLimits.min_delay_seconds/max_delay_seconds as an
+        actual minimum gap between ANY two consecutive actions on this
+        account, regardless of action type — refuses the task outright if
+        not enough time has passed, rather than sleeping/blocking (see
+        docs/skills/rate-limiting-pacing.md's "Enforcement point": "refuse
+        the task rather than queue and wait"). Previously these two
+        fields were defined but never actually enforced anywhere — see
+        the conversation that requested wiring this up, 2026-09-07."""
+        if not self.log_path.exists():
+            return True, "ok"
+        last_row: dict | None = None
+        with self.log_path.open() as f:
+            for line in f:
+                try:
+                    last_row = json.loads(line)
+                except ValueError:
+                    continue
+        if not last_row:
+            return True, "ok"
+        next_allowed_at = last_row.get("next_allowed_at")
+        if not next_allowed_at:
+            return True, "ok"  # a row logged before this field existed
+        try:
+            allowed_at = datetime.fromisoformat(next_allowed_at)
+        except ValueError:
+            return True, "ok"
+        now = datetime.utcnow()
+        if now < allowed_at:
+            wait_s = int((allowed_at - now).total_seconds())
+            return False, f"min_delay_seconds gap not elapsed yet, wait ~{wait_s}s"
+        return True, "ok"
+
     def can_proceed(self, action_type: str) -> tuple[bool, str]:
+        gap_ok, gap_reason = self._last_action_gap_ok()
+        if not gap_ok:
+            return False, gap_reason
         limits = self.account.rate_limits
         if action_type == "post":
             count = len([r for r in self._read_recent(timedelta(days=1)) if r["action"] == "post"])
@@ -101,17 +136,21 @@ class RateLimiter:
         return True, "ok"
 
     def record(self, action_type: str, success: bool) -> None:
+        # Draws the randomized gap ONCE, right here, and persists it as
+        # next_allowed_at — rather than re-rolling it on every
+        # can_proceed() check, which would let the required wait shrink
+        # or grow each time it's checked. _last_action_gap_ok() above
+        # just compares "now" against this stored value.
+        limits = self.account.rate_limits
+        next_allowed_at = (
+            datetime.utcnow()
+            + timedelta(seconds=random.uniform(limits.min_delay_seconds, limits.max_delay_seconds))
+        ).isoformat()
         row = {
             "timestamp": datetime.utcnow().isoformat(),
             "action": action_type,
             "success": success,
+            "next_allowed_at": next_allowed_at,
         }
         with self.log_path.open("a") as f:
             f.write(json.dumps(row) + "\n")
-
-    def jittered_delay(self) -> float:
-        """Sleep a randomized duration per docs/skills/rate-limiting-pacing.md and return it."""
-        limits = self.account.rate_limits
-        delay = random.uniform(limits.min_delay_seconds, limits.max_delay_seconds)
-        time.sleep(delay)
-        return delay

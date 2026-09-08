@@ -171,9 +171,10 @@ thẳng hàm đó — không có bước "AI chọn công cụ" ở giữa.
 
 - `human_bot/config.py` — cấu hình tài khoản, giới hạn tốc độ
 - `human_bot/actions.py` — các hành động cụ thể bằng Playwright thuần, mỗi
-  hành động một hàm riêng: `post_to_own_profile` (**đã hoạt động**, ghi từ
-  Codegen thật), `post_to_group`, `comment_on_friend_post`,
-  `comment_on_group_post`, `like_post`, `read_recent_comments` (còn TODO)
+  hành động một hàm riêng: `post_to_own_profile`, `post_to_group`,
+  `comment_on_group_post` (**đã hoạt động**, ghi từ Codegen thật và xác
+  nhận sống); `comment_on_friend_post`, `like_post`, `read_recent_comments`
+  còn TODO
 - `human_bot/safety.py` — rate limiter + phát hiện dấu hiệu bị hạn chế
 - `human_bot/browser_pool.py` — quản lý trình duyệt Playwright sống 24/24
   cho từng tài khoản
@@ -473,8 +474,16 @@ Nhớ chạy lại `pip3 install -r requirements.txt` một lần (có thêm
 
 ### Còn lại (chưa tới lượt ngay, nhưng đã ghi nhận — xem đánh giá 2026-09-03)
 
-- [ ] Ghi Codegen cho 3 hành động còn lại: `comment_on_friend_post`,
-      `comment_on_group_post`, `like_post`.
+- [x] **`comment_on_group_post` — đã ghi Codegen và xác nhận sống
+      (2026-09-08).** Ghi lại đúng nhóm tài khoản đã tham gia thật
+      ("Việc làm Kỹ Sư Nhật Bản"), comment xác nhận hiện lên sau khi F5.
+      Có thêm bước re-check anomaly khi verify submit timeout (cùng
+      pattern `post_to_own_profile`/`post_to_group`).
+- [~] **Ngưng làm — chưa cần thiết (quyết định 2026-09-08).** 3 hành động
+      còn lại (`comment_on_friend_post`, `like_post`, `read_recent_comments`)
+      không cần cho nhu cầu hiện tại — chủ dự án chủ động yêu cầu dừng,
+      không phải vì vướng lỗi hay bị chặn kỹ thuật. Xem lại nếu sau này
+      thật sự cần.
 - [x] **Safety Monitor — hành vi #1 (tự pause khi phát hiện bất thường)
       đã làm thật (2026-09-06/07), khớp `docs/agents/safety-monitor.md`.**
       `human_bot/safety.py`'s `AnomalyDetected` (trước đây chỉ raise
@@ -607,10 +616,10 @@ Nhớ chạy lại `pip3 install -r requirements.txt` một lần (có thêm
       selector cứng. Hiện **chưa có chỗ nào trong `actions.py`/`agent.py` thật
       sự gọi tới fallback này** — cần quyết định có nối vào hay không, và nếu
       có thì áp dụng cho hành động nào trước.
-- [ ] `comment_on_friend_post`, `comment_on_group_post`, `like_post`,
-      `read_recent_comments` vẫn là hàm rỗng (`# TODO`, chỉ `goto()` rồi báo
-      thành công giả) — xem mục "Ghi Codegen cho 3 hành động còn lại" ở trên,
-      gộp chung vào đây vì cùng nhóm "chưa làm thật".
+- [~] `comment_on_friend_post`, `like_post`, `read_recent_comments` vẫn là
+      hàm rỗng (`# TODO`, chỉ `goto()` rồi báo thành công giả) — **ngưng
+      làm, chưa cần thiết** (quyết định 2026-09-08, xem mục ngay phía
+      trên). `comment_on_group_post` đã xong và xác nhận sống (2026-09-08).
 - [x] **Sự cố thật: tài khoản `tu_iizuki` bị Facebook checkpoint
       "confirm your identity" (2026-09-07)** — xảy ra lúc đang ghi
       Codegen thủ công (comment vào 2 bài nhóm liên tiếp trong thời gian
@@ -643,6 +652,61 @@ Nhớ chạy lại `pip3 install -r requirements.txt` một lần (có thêm
       khoảng chờ ngẫu nhiên, rate limit) trong `humanize.py`/`safety.py` —
       chưa đổi user-agent, chưa proxy rotation, chưa dùng `playwright-stealth`
       hay tương đương. Cân nhắc thêm nếu mở rộng quy mô nhiều tài khoản.
+- [x] **Nâng cấp mô phỏng chuột/cuộn trang (2026-09-08), sau khi nghiên cứu
+      thêm bên ngoài (ghost-cursor, các bài viết về mouse-dynamics bot
+      detection — xem hội thoại thêm chi tiết/nguồn):**
+      1. **Dwell time khi click** — `human_click()` giờ truyền
+         `delay=40-120ms` (cấu hình được, `HumanMouseConfig.click_delay_*`)
+         vào `page.mouse.click()`, thay vì bấm-nhả gần như 0ms như trước —
+         khoảng dừng giữa nhấn/nhả là 1 tín hiệu phân biệt người/bot khá rõ.
+      2. **Đường cong tốc độ (velocity profile)** — thêm hàm easing
+         `_ease_in_out()` (smoothstep) áp vào từng bước di chuyển, mô phỏng
+         đúng dạng "tăng tốc → đỉnh giữa đường → giảm tốc" của chuyển động
+         tay thật (định luật Fitts), thay vì tốc độ đều như trước.
+      3. **Rung tay (jitter)** — mỗi điểm trung gian trên đường Bézier lệch
+         ngẫu nhiên ±`HumanMouseConfig.jitter_px` (mặc định 1.5px, không áp
+         dụng cho điểm đích cuối cùng) — đường cong toán học "quá sạch"
+         cũng là 1 tín hiệu bị các hệ phân loại mouse-dynamics dùng.
+      4. **Cuộn trang có giảm tốc** — hàm mới `human_scroll_to()`
+         (`HumanScrollConfig`, mục `/admin/config` → "Cuộn trang") dùng
+         `page.mouse.wheel()` nhiều bước co dần theo khoảng cách còn lại,
+         thay cho `scroll_into_view_if_needed()` nhảy thẳng tức thời trước
+         đây; chốt lại bằng chính hàm đó ở bước cuối để đảm bảo chính xác.
+         Đã nối thẳng vào `human_click()` nên toàn bộ ~25 chỗ gọi trong
+         `actions.py` tự động dùng, không cần sửa từng chỗ.
+      Cả 4 điểm đều dùng API thật của Playwright (`page.mouse.*`,
+      `page.keyboard.*` — lệnh CDP cấp thấp, sự kiện có `isTrusted: true`),
+      **không phải** tự dựng sự kiện DOM bằng JS injection kiểu
+      `dispatchEvent(new PointerEvent(...))` (kỹ thuật đó luôn cho ra
+      `isTrusted: false`, không sửa được — xem ghi chú đầu file
+      `human_bot/humanize.py`, mục "GIỚI HẠN KHÔNG VÁ ĐƯỢC Ở TẦNG CODE
+      NÀY").
+- [ ] **Đã cân nhắc và QUYẾT ĐỊNH CHƯA LÀM (2026-09-08): điều khiển chuột
+      thật ở tầng hệ điều hành (OS-level, không qua CDP nữa) —** ví dụ
+      `pyautogui`/`pynput` điều khiển con trỏ chuột vật lý thật thay vì
+      `page.mouse.*` của Playwright. Lý do không làm, dù về lý thuyết loại
+      bỏ hẳn được giới hạn "movementX/Y luôn = 0" và "không có mẫu toạ độ
+      tần số cao" của CDP (xem ghi chú đầu `human_bot/humanize.py`):
+      1. Máy phải luôn có 1 phiên desktop thật, mở khoá, còn màn hình —
+         mất khả năng chạy nền 24/7 không người trông (máy ngủ/khoá màn
+         hình là dừng hẳn).
+      2. Không dùng máy song song được — chuột OS là tài nguyên vật lý
+         dùng chung, con trỏ sẽ nhảy lung tung nếu ai đó dùng máy đúng lúc
+         bot đang chạy.
+      3. Mất khả năng chạy nhiều tài khoản song song — mỗi tài khoản hiện
+         có 1 trình duyệt + 1 "chuột ảo" độc lập qua CDP; chuột OS chỉ có
+         1 con trỏ vật lý, bắt buộc xếp hàng tuần tự cho mọi tài khoản.
+      4. Dễ vỡ vì bất kỳ cửa sổ/thông báo nào che khuất Chrome đúng lúc
+         click — trong khi CDP luôn click đúng vào tab Playwright đang
+         điều khiển bất kể trên màn hình đang hiện gì.
+      5. Khoá cứng vĩnh viễn vào "phải có màn hình thật" — không bao giờ
+         chuyển sang chạy server không màn hình (headless) được nữa.
+      Theo nghiên cứu thêm, các hệ chống bot tinh vi ngoài đời thực tế vẫn
+      dùng chính cách CDP + làm mượt hành vi (đường cong có nhiễu, easing,
+      dwell time — đúng 4 điểm vừa làm ở trên) và được xem là đủ tốt cho
+      production; lợi ích thêm từ chuột OS thật là biên rất nhỏ so với chi
+      phí vận hành ở trên. **Owner đồng ý ghi lại, sẽ tự nghiên cứu thêm,
+      chưa triển khai.**
 
 ## 10. Cấu trúc thư mục
 

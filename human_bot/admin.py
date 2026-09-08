@@ -52,32 +52,45 @@ from pathlib import Path
 
 from human_bot import content_queue, db, schedule_store, screenshots
 from human_bot.agent import TaskRequest, run_task
-from human_bot.config import AccountStatus, GroupRef, RateLimits, get_all_accounts, new_group_id
+from human_bot.config import (
+    ACCOUNT_AGE_TIERS,
+    AccountStatus,
+    GroupRef,
+    RateLimits,
+    get_all_accounts,
+    new_group_id,
+)
 from human_bot.data_sync import apply_quiet_hours
 from human_bot.data_sync_config import DataSyncConfig
 from human_bot.scheduling_config import SchedulingConfig
 from human_bot.media import MediaConfig
-from human_bot.humanize import HumanMouseConfig, HumanPacingConfig, HumanTypingConfig
+from human_bot.humanize import HumanMouseConfig, HumanPacingConfig, HumanScrollConfig, HumanTypingConfig
 from human_bot.runtime_config import (
     EDITABLE_HUMAN_TYPING_FIELDS,
     EDITABLE_PACING_FIELDS,
     EDITABLE_MOUSE_FIELDS,
+    EDITABLE_SCROLL_FIELDS,
     EDITABLE_DATA_SYNC_FIELDS,
     EDITABLE_SCHEDULING_FIELDS,
     EDITABLE_MEDIA_FIELDS,
+    EDITABLE_SAFETY_COOLDOWN_FIELDS,
     get_data_sync_config,
     get_scheduling_config,
     get_human_typing_overrides,
     get_pacing_overrides,
     get_mouse_overrides,
+    get_scroll_overrides,
     get_data_sync_overrides,
     get_scheduling_overrides,
     get_media_overrides,
+    get_safety_cooldown_overrides,
+    save_safety_cooldown_overrides,
     get_joined_groups,
     get_registered_accounts,
     save_human_typing_overrides,
     save_pacing_overrides,
     save_mouse_overrides,
+    save_scroll_overrides,
     save_data_sync_overrides,
     save_scheduling_overrides,
     save_media_overrides,
@@ -86,10 +99,15 @@ from human_bot.runtime_config import (
     delete_registered_account,
     set_account_paused,
     set_account_removed,
+    resume_account,
+    get_pause_info,
+    get_resume_cooldown_info,
+    clear_resume_cooldown,
     get_rate_limits_overrides,
     save_rate_limits_overrides,
     EDITABLE_RATE_LIMITS_FIELDS,
 )
+from human_bot.safety_cooldown_config import SafetyCooldownConfig
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 _security = HTTPBasic(auto_error=False)
@@ -177,6 +195,18 @@ _MOUSE_LABELS: dict[str, str] = {
     "overshoot_probability": "Xác suất di chuyển vọt quá đích rồi kéo lại (0.15 = 15%)",
     "overshoot_ratio": "Mức vọt quá đích, tỉ lệ theo khoảng cách",
     "min_distance_for_curve_px": "Khoảng cách tối thiểu (px) mới áp dụng đường cong",
+    "click_delay_min_ms": "Thời gian giữ chuột (nhấn xuống → nhả ra) — tối thiểu (ms)",
+    "click_delay_max_ms": "Thời gian giữ chuột (nhấn xuống → nhả ra) — tối đa (ms)",
+    "jitter_px": "Độ rung tay ngẫu nhiên trong lúc di chuyển (px, 0 = tắt)",
+}
+
+_SCROLL_LABELS: dict[str, str] = {
+    "enabled": "Bật cuộn trang nhiều bước có giảm tốc (tắt = nhảy thẳng tới vị trí)",
+    "step_delay_min_ms": "Độ trễ giữa mỗi lần cuộn — tối thiểu (ms)",
+    "step_delay_max_ms": "Độ trễ giữa mỗi lần cuộn — tối đa (ms)",
+    "max_step_px": "Khoảng cách tối đa mỗi lần cuộn (px)",
+    "deceleration_ratio": "Tỉ lệ quãng đường còn lại được cuộn mỗi lần (0.5 = 50%, càng nhỏ càng giảm tốc rõ)",
+    "max_iterations": "Số lần cuộn tối đa trước khi chốt vị trí chính xác",
 }
 
 _BOOL_FIELDS = {"enabled", "auto_fire_enabled", "attach_random_meme_default"}
@@ -194,6 +224,7 @@ _ICONS: dict[str, str] = {
     "typing": "⌨️",
     "pacing": "⏱️",
     "mouse": "🖱️",
+    "scroll": "↕️",
 }
 
 # Scheduling first — it's the highest-stakes/most-consulted setting (whether
@@ -209,6 +240,8 @@ _CONFIG_SECTIONS = [
      get_pacing_overrides, save_pacing_overrides),
     ("mouse", "mouse", "Di chuyển chuột", HumanMouseConfig, EDITABLE_MOUSE_FIELDS, _MOUSE_LABELS,
      get_mouse_overrides, save_mouse_overrides),
+    ("scroll", "scroll", "Cuộn trang", HumanScrollConfig, EDITABLE_SCROLL_FIELDS, _SCROLL_LABELS,
+     get_scroll_overrides, save_scroll_overrides),
 ]
 
 _DATA_SYNC_LABELS: dict[str, str] = {
@@ -245,6 +278,25 @@ _ICONS["media"] = "🖼️"
 _CONFIG_SECTIONS.append(
     ("media", "media", "Ảnh đính kèm", MediaConfig, EDITABLE_MEDIA_FIELDS, _MEDIA_LABELS,
      get_media_overrides, save_media_overrides)
+)
+
+_SAFETY_COOLDOWN_LABELS: dict[str, str] = {
+    "enabled": "Bật hạ nhiệt sau khi 'Kích hoạt lại' một tài khoản từng bị tạm dừng",
+    "cooldown_days": "Số ngày áp giới hạn thấp sau khi kích hoạt lại, trước khi tự trở về giới hạn cũ",
+    "posts_per_day": "Số bài đăng tối đa/ngày trong lúc hạ nhiệt",
+    "comments_per_hour": "Số comment tối đa/giờ trong lúc hạ nhiệt",
+    "comments_per_day": "Số comment tối đa/ngày trong lúc hạ nhiệt",
+    "likes_per_hour": "Số lượt thích tối đa/giờ trong lúc hạ nhiệt",
+    "min_delay_seconds": "Khoảng chờ giữa 2 hành động — tối thiểu (giây) trong lúc hạ nhiệt",
+    "max_delay_seconds": "Khoảng chờ giữa 2 hành động — tối đa (giây) trong lúc hạ nhiệt",
+}
+
+_ICONS["safety_cooldown"] = "🧊"
+
+_CONFIG_SECTIONS.append(
+    ("safety_cooldown", "safety_cooldown", "Hạ nhiệt sau khi kích hoạt lại tài khoản",
+     SafetyCooldownConfig, EDITABLE_SAFETY_COOLDOWN_FIELDS, _SAFETY_COOLDOWN_LABELS,
+     get_safety_cooldown_overrides, save_safety_cooldown_overrides)
 )
 
 _PAGE_STYLE = """
@@ -368,6 +420,11 @@ _PAGE_STYLE = """
      close. */
   .modal-backdrop { @apply fixed inset-0 bg-black/50 flex items-center justify-center z-[100] p-4; }
   .modal-box { @apply bg-white rounded-2xl shadow-xl max-w-md w-full p-6 max-h-[90vh] overflow-y-auto; }
+  /* Wider variant for /admin/accounts' modals (account add, rate-limits —
+     the latter got noticeably more crowded once the age-tier quick-apply
+     buttons were added) — .modal-box's own max-w-md stays the default for
+     every other modal (e.g. /admin/groups' edit modal). */
+  .modal-box-wide { @apply max-w-2xl; }
   .modal-header { @apply flex items-center justify-between mb-4; }
   .modal-header h2 { @apply mb-0; }
   .modal-close { @apply bg-transparent text-gray-400 border-0 text-lg leading-none px-2 py-1 rounded-md; }
@@ -937,9 +994,14 @@ def _account_modal_html(account_id: str = "", display_name: str = "", error: str
     entirely (_accounts_content_html's oob update) which is what actually
     closes it."""
     err_html = f'<p class="error">⚠️ {html.escape(error)}</p>' if error else ""
+    tier_options = "".join(
+        f'<option value="{tier_key}"{" selected" if tier_key == "under_1_month" else ""}>'
+        f'{html.escape(label)} ({rl.posts_per_day} bài/ngày)</option>'
+        for tier_key, (label, rl) in ACCOUNT_AGE_TIERS.items()
+    )
     return f"""
 <div class="modal-backdrop" onclick="if(event.target===this) this.remove()">
-  <div class="modal-box">
+  <div class="modal-box modal-box-wide">
     <div class="modal-header">
       <h2>➕ Đăng ký tài khoản mới</h2>
       <button type="button" class="modal-close" onclick="this.closest('.modal-backdrop').remove()">✕</button>
@@ -950,6 +1012,7 @@ def _account_modal_html(account_id: str = "", display_name: str = "", error: str
       <div class="field-grid">
         <div class="field-stack"><div class="field-label">account_id (khớp với tên đã dùng ở bootstrap_login.py)</div><div class="field-input"><input type="text" name="account_id" value="{html.escape(account_id)}" placeholder="vd: my_page" required pattern="[a-z0-9_]+"></div></div>
         <div class="field-stack"><div class="field-label">Tên hiển thị</div><div class="field-input"><input type="text" name="display_name" value="{html.escape(display_name)}" placeholder="vd: Trang của tôi"></div></div>
+        <div class="field-stack"><div class="field-label">Tuổi tài khoản Facebook (đặt giới hạn tốc độ ban đầu tương ứng)</div><div class="field-input"><select name="age_tier">{tier_options}</select></div></div>
       </div>
       <div class="form-actions">
         <button type="button" class="btn-secondary" style="margin-right:8px;" onclick="this.closest('.modal-backdrop').remove()">Huỷ</button>
@@ -970,13 +1033,15 @@ _RATE_LIMITS_LABELS: dict[str, str] = {
 }
 
 
-def _rate_limits_modal_html(account_id: str, limits: RateLimits, is_override: bool, error: str | None = None) -> str:
-    """Renders the whole #modal-root swap for the "Giới hạn tốc độ" form —
-    same open/redisplay-with-error/close-via-oob-update pattern as
-    _account_modal_html() and _group_modal_html(). `limits` is always the
-    EFFECTIVE values (override applied if one exists, else the account's
-    code-level default) — the form always shows/edits what's actually in
-    force, never a stale default alongside an active override."""
+def _rate_limits_modal_body_html(account_id: str, limits: RateLimits, is_override: bool, error: str | None = None) -> str:
+    """Just the part of the "Giới hạn tốc độ" modal that actually changes
+    when a quick-apply age-tier button is clicked — the backdrop/box/header
+    shell around this (_rate_limits_modal_html, below) stays untouched
+    across those clicks. Split out 2026-09-07 after the tier buttons were
+    found to make the WHOLE modal visibly jump/flash on every click, when
+    they swapped #modal-root's entire innerHTML (backdrop included) each
+    time — swapping only this inner, id-tagged div instead means the
+    backdrop/box never unmounts, so there's nothing left to jump."""
     err_html = f'<p class="error">⚠️ {html.escape(error)}</p>' if error else ""
     rows = "".join(
         f'''<div class="field-row">
@@ -990,15 +1055,27 @@ def _rate_limits_modal_html(account_id: str, limits: RateLimits, is_override: bo
         if is_override
         else '<p class="page-desc">Tài khoản này đang dùng giá trị mặc định chung (chưa tuỳ chỉnh riêng).</p>'
     )
-    return f"""
-<div class="modal-backdrop" onclick="if(event.target===this) this.remove()">
-  <div class="modal-box">
-    <div class="modal-header">
-      <h2>⏱️ Giới hạn tốc độ — {html.escape(account_id)}</h2>
-      <button type="button" class="modal-close" onclick="this.closest('.modal-backdrop').remove()">✕</button>
-    </div>
+    # Quick-apply buttons per age tier — for when an account ages into the
+    # next tier (e.g. crosses 1 month old) and its limits should loosen a
+    # bit, without typing 6 numbers by hand each time. Each posts straight
+    # to a dedicated route rather than filling the form client-side, so
+    # the numbers applied always match ACCOUNT_AGE_TIERS exactly. Targets
+    # just #rate-limits-body (this function's own wrapper below), not the
+    # whole modal — see this function's docstring.
+    tier_buttons = "".join(
+        f'''<form method="post" action="/admin/accounts/rate-limits/apply-tier" style="display:inline;"
+        hx-post="/admin/accounts/rate-limits/apply-tier" hx-target="#rate-limits-body" hx-swap="innerHTML">
+  <input type="hidden" name="account_id" value="{html.escape(account_id)}">
+  <input type="hidden" name="age_tier" value="{tier_key}">
+  <button type="submit" class="btn-small btn-secondary" style="margin:2px;">{html.escape(label)} ({rl.posts_per_day} bài/ngày)</button>
+</form>'''
+        for tier_key, (label, rl) in ACCOUNT_AGE_TIERS.items()
+    )
+    return f"""<div id="rate-limits-body">
     {reset_note}
     {err_html}
+    <p class="page-desc">Áp nhanh theo tuổi tài khoản Facebook:</p>
+    <div>{tier_buttons}</div>
     <form method="post" action="/admin/accounts/rate-limits" hx-post="/admin/accounts/rate-limits" hx-target="#modal-root" hx-swap="innerHTML">
       <input type="hidden" name="account_id" value="{html.escape(account_id)}">
       <div class="field-grid">{rows}</div>
@@ -1008,6 +1085,28 @@ def _rate_limits_modal_html(account_id: str, limits: RateLimits, is_override: bo
         <button type="submit">Lưu</button>
       </div>
     </form>
+</div>"""
+
+
+def _rate_limits_modal_html(account_id: str, limits: RateLimits, is_override: bool, error: str | None = None) -> str:
+    """Renders the whole #modal-root swap for the "Giới hạn tốc độ" form —
+    same open/redisplay-with-error/close-via-oob-update pattern as
+    _account_modal_html() and _group_modal_html(). `limits` is always the
+    EFFECTIVE values (override applied if one exists, else the account's
+    code-level default) — the form always shows/edits what's actually in
+    force, never a stale default alongside an active override. Used for
+    the initial open and for any full-page (non-htmx) fallback; the
+    quick-apply tier buttons instead swap _rate_limits_modal_body_html()'s
+    output directly, see that function's docstring."""
+    body = _rate_limits_modal_body_html(account_id, limits, is_override, error)
+    return f"""
+<div class="modal-backdrop" onclick="if(event.target===this) this.remove()">
+  <div class="modal-box modal-box-wide">
+    <div class="modal-header">
+      <h2>⏱️ Giới hạn tốc độ — {html.escape(account_id)}</h2>
+      <button type="button" class="modal-close" onclick="this.closest('.modal-backdrop').remove()">✕</button>
+    </div>
+    {body}
   </div>
 </div>"""
 
@@ -1032,12 +1131,38 @@ def _accounts_content_html(saved: bool = False, error: str | None = None, oob: b
             if is_paused
             else '<span class="badge" style="background:#ecfdf5;color:#059669;">● Hoạt động</span>'
         )
+        # Reason + timestamp of the pause, and (once resumed) the reduced-
+        # limit cooldown window — shown right under the badge so a human
+        # deciding whether it's actually safe to "Kích hoạt lại" has real
+        # context instead of a bare status dot. See
+        # docs/skills/anomaly-detection.md and
+        # human_bot/safety_cooldown_config.py for the reasoning (a real
+        # external report of accounts getting re-flagged after resuming
+        # full-speed too soon post-restriction).
+        status_detail = ""
+        if is_paused:
+            info = get_pause_info(aid)
+            if info:
+                reason_txt = html.escape(info["reason"] or "không rõ (tạm dừng thủ công)")
+                when_txt = _fmt_jst(info["paused_at"])
+                status_detail = f'<div class="row-url">từ {when_txt} — {reason_txt}</div>'
+        else:
+            cooldown = get_resume_cooldown_info(aid)
+            if cooldown:
+                until_txt = _fmt_jst(cooldown.get("until"))
+                reason_txt = html.escape(cooldown.get("reason") or "không rõ")
+                status_detail = (
+                    f'<div class="row-url">🧊 Hạ nhiệt tới {until_txt} (giới hạn thấp) '
+                    f'— lần trước bị dừng vì: {reason_txt}</div>'
+                )
         # Pausing is a runtime override that applies to ANY account
         # (code-level or registered here) — see human_bot/config.py's
         # get_all_accounts() and human_bot/runtime_config.py's
         # set_account_paused(). Also set automatically the moment
         # human_bot/safety.py's AnomalyDetected fires on a real post — see
-        # human_bot/agent.py's run_task().
+        # human_bot/agent.py's run_task(). Resuming goes through
+        # resume_account() (not set_account_paused directly) so the
+        # post-resume cooldown above gets applied.
         status_action = (
             f"""<form method="post" action="/admin/accounts/resume" style="display:inline;"
         hx-post="/admin/accounts/resume" hx-target="#accounts-content" hx-swap="outerHTML">
@@ -1081,7 +1206,7 @@ def _accounts_content_html(saved: bool = False, error: str | None = None, oob: b
         rows.append(f"""
 <tr>
   <td>{html.escape(a.display_name)}<div class="row-url">{html.escape(aid)}</div></td>
-  <td>{status_badge}</td>
+  <td>{status_badge}{status_detail}</td>
   <td>{session_badge}</td>
   <td class="row-url">{html.escape(source)}</td>
   <td class="col-actions">{status_action} {rate_limits_btn} {delete_btn}</td>
@@ -1139,6 +1264,10 @@ async def accounts_add(request: Request, _: None = Depends(_require_auth)):
         return RedirectResponse(url=f"/admin/accounts?{urlencode({'error': error})}", status_code=303)
     save_registered_account(account_id, display_name or account_id)
     set_account_removed(account_id, False)  # undo a previous "Xoá", if any
+    age_tier = str(form.get("age_tier", "")).strip()
+    if age_tier in ACCOUNT_AGE_TIERS:
+        _, preset = ACCOUNT_AGE_TIERS[age_tier]
+        save_rate_limits_overrides(account_id, dataclasses.asdict(preset))
     if _is_htmx(request):
         # No primary content for #modal-root (the form's own hx-target) —
         # htmx empties it, closing the modal — plus an out-of-band refresh
@@ -1161,7 +1290,7 @@ async def accounts_pause(request: Request, _: None = Depends(_require_auth)):
 async def accounts_resume(request: Request, _: None = Depends(_require_auth)):
     form = await request.form()
     account_id = str(form.get("account_id", "")).strip()
-    set_account_paused(account_id, False)
+    resume_account(account_id)  # clears the pause AND starts the reduced-limit cooldown
     if _is_htmx(request):
         return HTMLResponse(_accounts_content_html(saved=True))
     return RedirectResponse(url="/admin/accounts?saved=1", status_code=303)
@@ -1175,21 +1304,39 @@ async def accounts_delete(request: Request, _: None = Depends(_require_auth)):
     set_account_removed() hides it from get_all_accounts() either way —
     that second part is what makes "Xoá" actually work on a code-level
     account too (see human_bot/runtime_config.py's docstring for the undo
-    path: register the same account_id again here). Also cleans up
-    everything else that would otherwise dangle and reference a
-    now-unknown account_id: pending schedule tasks (would error the next
-    time something tries to fire them — get_account() raises for an
-    unknown id) and the saved joined-groups list. Deliberately does NOT
-    touch accounts/<id>/storage_state.json (the real Facebook login
-    session) — same "never silently delete real login data" reasoning as
-    everywhere else in this project; delete that file by hand if it's
-    truly no longer needed."""
+    path: register the same account_id again here).
+
+    Also cleans up everything else that would otherwise dangle and
+    reference a now-unknown account_id, OR silently reappear if the same
+    account_id is registered again later:
+    - pending schedule tasks (would error the next time something tries
+      to fire them — get_account() raises for an unknown id)
+    - the saved joined-groups list
+    - any pause status
+    - the rate-limits override (human_bot/runtime_config.py's
+      save_rate_limits_overrides({})) — without this, re-registering the
+      same account_id later and picking a fresh age tier would be
+      silently overridden by whatever limits it had before deletion
+    - any still-running post-resume cooldown record
+      (clear_resume_cooldown()) — found 2026-09-07: left alone, a
+      cooldown active at delete time would keep ticking in
+      runtime_config.json and could later overwrite a freshly
+      re-registered account's rate limits once its `until` naturally
+      passed, reaching back from before the account even existed again
+
+    Deliberately does NOT touch accounts/<id>/storage_state.json (the
+    real Facebook login session), action_log.jsonl / the action_log DB
+    table, or screenshots/<id>/ — same "never silently delete real login
+    data / historical records" reasoning as everywhere else in this
+    project; delete those by hand if truly no longer needed."""
     form = await request.form()
     account_id = str(form.get("account_id", "")).strip()
     delete_registered_account(account_id)
     set_account_removed(account_id, True)
     set_account_paused(account_id, False)  # drop any stale pause override too
     save_joined_groups(account_id, [])
+    save_rate_limits_overrides(account_id, {})
+    clear_resume_cooldown(account_id)
     for task in schedule_store.list_pending():
         if task.account_id == account_id:
             schedule_store.cancel(task.task_id)
@@ -1254,6 +1401,39 @@ async def accounts_rate_limits_save(request: Request, _: None = Depends(_require
     save_rate_limits_overrides(account_id, values)
     if _is_htmx(request):
         return HTMLResponse(_accounts_content_html(saved=True, oob=True))
+    return RedirectResponse(url="/admin/accounts?saved=1", status_code=303)
+
+
+@router.post("/accounts/rate-limits/apply-tier")
+async def accounts_rate_limits_apply_tier(request: Request, _: None = Depends(_require_auth)):
+    """One of the quick-apply buttons in _rate_limits_modal_body_html() —
+    sets the account's rate-limit override to exactly one of
+    ACCOUNT_AGE_TIERS' presets (human_bot/config.py), for when an account
+    ages into the next tier and its limits should loosen a bit without
+    hand-typing 6 numbers. The htmx branch returns just the BODY partial
+    (targets #rate-limits-body, not #modal-root) so repeated clicks don't
+    unmount/remount the whole modal — see
+    _rate_limits_modal_body_html()'s docstring."""
+    form = await request.form()
+    account_id = str(form.get("account_id", "")).strip()
+    age_tier = str(form.get("age_tier", "")).strip()
+    accounts = get_all_accounts()
+    if account_id not in accounts:
+        err = "Không tìm thấy tài khoản này"
+        if _is_htmx(request):
+            return HTMLResponse(_rate_limits_modal_body_html(account_id, RateLimits(), is_override=False, error=err))
+        from urllib.parse import urlencode
+        return RedirectResponse(url=f"/admin/accounts?{urlencode({'error': err})}", status_code=303)
+    if age_tier not in ACCOUNT_AGE_TIERS:
+        err = "Tuổi tài khoản không hợp lệ"
+        if _is_htmx(request):
+            return HTMLResponse(_rate_limits_modal_body_html(account_id, accounts[account_id].rate_limits, is_override=True, error=err))
+        from urllib.parse import urlencode
+        return RedirectResponse(url=f"/admin/accounts?{urlencode({'error': err})}", status_code=303)
+    _, preset = ACCOUNT_AGE_TIERS[age_tier]
+    save_rate_limits_overrides(account_id, dataclasses.asdict(preset))
+    if _is_htmx(request):
+        return HTMLResponse(_rate_limits_modal_body_html(account_id, preset, is_override=True))
     return RedirectResponse(url="/admin/accounts?saved=1", status_code=303)
 
 

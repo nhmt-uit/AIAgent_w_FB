@@ -23,13 +23,15 @@ dinh do.
 import dataclasses
 import json
 import os
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
-from human_bot.humanize import HumanMouseConfig, HumanPacingConfig, HumanTypingConfig
+from human_bot.humanize import HumanMouseConfig, HumanPacingConfig, HumanScrollConfig, HumanTypingConfig
 from human_bot.data_sync_config import DataSyncConfig
 from human_bot.scheduling_config import SchedulingConfig
 from human_bot.media import MediaConfig
+from human_bot.safety_cooldown_config import SafetyCooldownConfig
 
 RUNTIME_CONFIG_PATH = Path(__file__).resolve().parent.parent / "runtime_config.json"
 
@@ -79,12 +81,35 @@ EDITABLE_MOUSE_FIELDS: list[str] = [
     "overshoot_probability",
     "overshoot_ratio",
     "min_distance_for_curve_px",
+    "click_delay_min_ms",
+    "click_delay_max_ms",
+    "jitter_px",
+]
+
+EDITABLE_SCROLL_FIELDS: list[str] = [
+    "enabled",
+    "step_delay_min_ms",
+    "step_delay_max_ms",
+    "max_step_px",
+    "deceleration_ratio",
+    "max_iterations",
 ]
 
 # base_url is deliberately excluded — that's a deployment-level setting
 # (which data-ingestion instance to talk to), not something to flip
 # casually from a web form. Change it via .env (DATA_INGESTION_BASE_URL)
 # if it ever needs to change.
+EDITABLE_SAFETY_COOLDOWN_FIELDS: list[str] = [
+    "enabled",
+    "cooldown_days",
+    "posts_per_day",
+    "comments_per_hour",
+    "comments_per_day",
+    "likes_per_hour",
+    "min_delay_seconds",
+    "max_delay_seconds",
+]
+
 EDITABLE_DATA_SYNC_FIELDS: list[str] = [
     "enabled",
     "poll_interval_minutes",
@@ -185,6 +210,22 @@ def save_mouse_overrides(values: dict[str, Any]) -> None:
     _save_overrides("mouse", EDITABLE_MOUSE_FIELDS, values)
 
 
+# --- Scrolling ----------------------------------------------------------
+
+def get_scroll_overrides() -> dict[str, Any]:
+    return _get_overrides("scroll", EDITABLE_SCROLL_FIELDS)
+
+
+def get_scroll_config() -> HumanScrollConfig:
+    """The config actually used for eased wheel-scroll before a click
+    (human_bot/humanize.py's human_scroll_to(), called from human_click())."""
+    return _get_config(HumanScrollConfig, "scroll", EDITABLE_SCROLL_FIELDS)
+
+
+def save_scroll_overrides(values: dict[str, Any]) -> None:
+    _save_overrides("scroll", EDITABLE_SCROLL_FIELDS, values)
+
+
 # --- Data sync (side-B poller) ---------------------------------------------
 
 def get_data_sync_overrides() -> dict[str, Any]:
@@ -273,6 +314,23 @@ def get_media_config() -> MediaConfig:
 
 def save_media_overrides(values: dict[str, Any]) -> None:
     _save_overrides("media", EDITABLE_MEDIA_FIELDS, values)
+
+
+# --- Safety cooldown (reduced limits right after an account is resumed) -----
+# See human_bot/safety_cooldown_config.py's docstring for the "why" (a real
+# external report of accounts getting re-flagged after resuming full-speed
+# too soon post-restriction).
+
+def get_safety_cooldown_overrides() -> dict[str, Any]:
+    return _get_overrides("safety_cooldown", EDITABLE_SAFETY_COOLDOWN_FIELDS)
+
+
+def get_safety_cooldown_config() -> SafetyCooldownConfig:
+    return _get_config(SafetyCooldownConfig, "safety_cooldown", EDITABLE_SAFETY_COOLDOWN_FIELDS)
+
+
+def save_safety_cooldown_overrides(values: dict[str, Any]) -> None:
+    _save_overrides("safety_cooldown", EDITABLE_SAFETY_COOLDOWN_FIELDS, values)
 
 
 # --- Joined groups (per-account, admin-editable) ----------------------------
@@ -416,27 +474,77 @@ def delete_registered_account(account_id: str) -> None:
 _ACCOUNT_STATUS_KEY = "account_status"
 
 
+def _pause_status(entry: Any) -> str | None:
+    """Each account_status entry is either the legacy bare string "paused"
+    (accounts paused before 2026-09-07) or a dict {"status", "reason",
+    "paused_at"} (added so /admin/accounts can show *why* and *when* an
+    account got paused — a project-owner request after a real Facebook
+    checkpoint incident, so a human deciding when it's safe to resume has
+    actual information instead of a blind guess). Both forms are read
+    transparently; a legacy string is never rewritten in place, only
+    replaced the next time set_account_paused() runs for that account."""
+    if isinstance(entry, str):
+        return entry
+    if isinstance(entry, dict):
+        return entry.get("status")
+    return None
+
+
 def get_paused_account_ids() -> set[str]:
     data = _read_all()
     raw = data.get(_ACCOUNT_STATUS_KEY, {})
     if not isinstance(raw, dict):
         return set()
-    return {aid for aid, status in raw.items() if status == "paused"}
+    return {aid for aid, entry in raw.items() if _pause_status(entry) == "paused"}
 
 
-def set_account_paused(account_id: str, paused: bool) -> None:
+def get_pause_info(account_id: str) -> dict[str, Any] | None:
+    """Returns {"reason": str|None, "paused_at": iso-str|None} if the
+    account is currently paused, else None. Shown at /admin/accounts so a
+    human can judge when it's actually safe to resume, instead of just
+    seeing a bare "⏸ Tạm dừng" badge with no context — see
+    docs/skills/anomaly-detection.md."""
+    data = _read_all()
+    raw = data.get(_ACCOUNT_STATUS_KEY, {})
+    if not isinstance(raw, dict):
+        return None
+    entry = raw.get(account_id)
+    if _pause_status(entry) != "paused":
+        return None
+    if isinstance(entry, dict):
+        return {"reason": entry.get("reason"), "paused_at": entry.get("paused_at")}
+    return {"reason": None, "paused_at": None}  # legacy bare-string entry
+
+
+def set_account_paused(account_id: str, paused: bool, reason: str | None = None) -> None:
     data = _read_all()
     raw = data.get(_ACCOUNT_STATUS_KEY, {})
     if not isinstance(raw, dict):
         raw = {}
     if paused:
-        raw[account_id] = "paused"
+        raw[account_id] = {
+            "status": "paused",
+            "reason": reason,
+            "paused_at": datetime.now(timezone.utc).isoformat(),
+        }
     else:
         raw.pop(account_id, None)
     data[_ACCOUNT_STATUS_KEY] = raw
     RUNTIME_CONFIG_PATH.write_text(
         json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8"
     )
+
+
+def resume_account(account_id: str) -> None:
+    """What /admin/accounts' "▶ Kích hoạt lại" button actually calls —
+    clears the pause AND starts a reduced-rate-limit cooldown period (see
+    human_bot/safety_cooldown_config.py) instead of jumping straight back
+    to full speed. Captures the pause's reason/paused_at (if any) before
+    clearing it, so the cooldown record still has that context even after
+    the account_status entry itself is gone."""
+    info = get_pause_info(account_id) or {"reason": None, "paused_at": None}
+    set_account_paused(account_id, False)
+    _start_resume_cooldown(account_id, reason=info["reason"], paused_at=info["paused_at"])
 
 
 # --- Account removal (applies to ANY account, including code-level ones) ---
@@ -448,11 +556,21 @@ def set_account_paused(account_id: str, paused: bool) -> None:
 # only ones added through /admin/accounts. This list is the same kind of
 # override as account_status above: get_all_accounts() drops any id
 # found here from its result entirely, regardless of where the
-# AccountConfig itself came from. Undo path for a code-level account:
-# just register it again at /admin/accounts with the same account_id —
-# it'll come back with the same effective defaults (rate limits and
-# joined_groups already living in their own overrides, unaffected by
-# this).
+# AccountConfig itself came from.
+#
+# Undo path: register the same account_id again at /admin/accounts. As of
+# 2026-09-07, human_bot/admin.py's accounts_delete() also actively wipes
+# that account's joined_groups, rate_limits override, and resume_cooldown
+# record (via save_joined_groups([]), save_rate_limits_overrides({}), and
+# clear_resume_cooldown() below) SO THAT a later re-registration starts
+# clean instead of silently inheriting whatever was left over from before
+# the delete — a real bug found and fixed that day (a still-running
+# resume_cooldown, in particular, could reach back and overwrite a freshly
+# re-registered account's rate limits once its `until` naturally passed).
+# Only accounts/<id>/storage_state.json (the real Facebook login session),
+# action_log.jsonl/the action_log DB table, and screenshots/<id>/ survive
+# a delete untouched — deliberately, since those are either real login
+# data or historical records worth keeping.
 
 _REMOVED_ACCOUNTS_KEY = "removed_accounts"
 
@@ -504,6 +622,12 @@ EDITABLE_RATE_LIMITS_FIELDS: list[str] = [
 
 
 def get_rate_limits_overrides(account_id: str) -> dict[str, Any]:
+    # Read-time expiry check (same "check and persist-back on read" pattern
+    # as get_joined_groups()'s GroupRef.id migration above) — this is the
+    # one call site human_bot/config.py's get_all_accounts() always goes
+    # through per account, so it's the natural choke point for "has this
+    # account's post-resume cooldown ended?" without a separate poller.
+    _expire_resume_cooldown_if_due(account_id)
     data = _read_all()
     raw = data.get(_RATE_LIMITS_KEY, {})
     if not isinstance(raw, dict):
@@ -528,6 +652,134 @@ def save_rate_limits_overrides(account_id: str, values: dict[str, Any]) -> None:
     else:
         raw.pop(account_id, None)
     data[_RATE_LIMITS_KEY] = raw
+    RUNTIME_CONFIG_PATH.write_text(
+        json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8"
+    )
+
+
+# --- Post-resume cooldown (reduced rate limits right after "Kích hoạt lại") -
+#
+# See human_bot/safety_cooldown_config.py for the "why". resume_account()
+# (above) is the only writer; get_rate_limits_overrides() (above) is the
+# only reader that matters, since human_bot/config.py's get_all_accounts()
+# always goes through it. Not itself an EDITABLE_*_FIELDS-style admin
+# section — this key just records state, the *policy* (cooldown_days, the
+# reduced numbers) lives in SafetyCooldownConfig / "safety_cooldown"
+# instead.
+
+_RESUME_COOLDOWN_KEY = "resume_cooldown"
+
+
+def get_resume_cooldown_info(account_id: str) -> dict[str, Any] | None:
+    """For /admin/accounts to show "🧊 Đang hạ nhiệt tới <ngày>, vì: <lý
+    do>" — None if the account has no active cooldown (never paused, or
+    the cooldown already expired)."""
+    _expire_resume_cooldown_if_due(account_id)
+    data = _read_all()
+    raw = data.get(_RESUME_COOLDOWN_KEY, {})
+    if not isinstance(raw, dict):
+        return None
+    entry = raw.get(account_id)
+    return entry if isinstance(entry, dict) else None
+
+
+def _start_resume_cooldown(account_id: str, reason: str | None, paused_at: str | None) -> None:
+    cfg = get_safety_cooldown_config()
+    if not cfg.enabled:
+        return
+    # Capture whatever rate-limit override (if any) was in effect BEFORE
+    # we overwrite it with the reduced cooldown numbers below, so
+    # _expire_resume_cooldown_if_due() can put it back exactly as it was
+    # once the cooldown period ends.
+    prior_overrides = get_rate_limits_overrides(account_id)
+
+    data = _read_all()
+    raw = data.get(_RESUME_COOLDOWN_KEY, {})
+    if not isinstance(raw, dict):
+        raw = {}
+    now = datetime.now(timezone.utc)
+    raw[account_id] = {
+        "until": (now + timedelta(days=cfg.cooldown_days)).isoformat(),
+        "prior_overrides": prior_overrides or None,
+        "reason": reason,
+        "paused_at": paused_at,
+        "resumed_at": now.isoformat(),
+    }
+    data[_RESUME_COOLDOWN_KEY] = raw
+    RUNTIME_CONFIG_PATH.write_text(
+        json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8"
+    )
+
+    save_rate_limits_overrides(account_id, {
+        "posts_per_day": cfg.posts_per_day,
+        "comments_per_hour": cfg.comments_per_hour,
+        "comments_per_day": cfg.comments_per_day,
+        "likes_per_hour": cfg.likes_per_hour,
+        "min_delay_seconds": cfg.min_delay_seconds,
+        "max_delay_seconds": cfg.max_delay_seconds,
+    })
+
+
+def _expire_resume_cooldown_if_due(account_id: str) -> None:
+    data = _read_all()
+    raw = data.get(_RESUME_COOLDOWN_KEY, {})
+    if not isinstance(raw, dict):
+        return
+    entry = raw.get(account_id)
+    if not isinstance(entry, dict):
+        return
+    until = entry.get("until")
+    try:
+        expired = bool(until) and datetime.fromisoformat(until) <= datetime.now(timezone.utc)
+    except ValueError:
+        expired = True  # malformed timestamp — don't get stuck in cooldown forever
+    if not expired:
+        return
+
+    raw.pop(account_id, None)
+    data[_RESUME_COOLDOWN_KEY] = raw
+    RUNTIME_CONFIG_PATH.write_text(
+        json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8"
+    )
+
+    # Restore whatever rate-limit override existed right before the
+    # cooldown started (possibly none, i.e. back to the code-level
+    # default) — NOT a call to get_rate_limits_overrides() here, that
+    # would immediately re-trigger this same expiry check.
+    prior = entry.get("prior_overrides") or {}
+    rl_data = _read_all()
+    rl_raw = rl_data.get(_RATE_LIMITS_KEY, {})
+    if not isinstance(rl_raw, dict):
+        rl_raw = {}
+    if prior:
+        rl_raw[account_id] = {k: v for k, v in prior.items() if k in EDITABLE_RATE_LIMITS_FIELDS}
+    else:
+        rl_raw.pop(account_id, None)
+    rl_data[_RATE_LIMITS_KEY] = rl_raw
+    RUNTIME_CONFIG_PATH.write_text(
+        json.dumps(rl_data, indent=2, ensure_ascii=False), encoding="utf-8"
+    )
+
+
+def clear_resume_cooldown(account_id: str) -> None:
+    """Drops account_id's resume_cooldown record outright — NO restore of
+    prior_overrides (unlike the normal expiry path in
+    _expire_resume_cooldown_if_due() above). Used by /admin/accounts'
+    "Xoá" (human_bot/admin.py's accounts_delete()): without this, a
+    cooldown still running at delete time would keep sitting in
+    runtime_config.json, and whenever its `until` naturally passed later
+    — even after the account_id was registered again with a fresh
+    rate-limit override (e.g. a different age tier) — the ordinary expiry
+    path would silently overwrite that fresh override with whatever
+    prior_overrides had been captured back before the account was ever
+    deleted. Deletion should leave nothing that can reach back and mutate
+    a future re-registration's config."""
+    data = _read_all()
+    raw = data.get(_RESUME_COOLDOWN_KEY, {})
+    if not isinstance(raw, dict) or account_id not in raw:
+        return
+    raw.pop(account_id, None)
+    data[_RESUME_COOLDOWN_KEY] = raw
     RUNTIME_CONFIG_PATH.write_text(
         json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8"
     )

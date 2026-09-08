@@ -58,10 +58,10 @@ defined in `human_bot/actions.py` — not browser-use's `ActionResult`.
 |---|---|---|
 | `post_to_own_profile(page, content, media_path?)` | Post a status update on the account's own personal profile | No target URL needed — always the account's own timeline. **Implemented** (recorded 2026-09-02). |
 | `post_to_group(page, group_url, content, media_path?)` | Publish a new post inside a specific Facebook group | **Tier 4 (direct URL) implemented and confirmed live 2026-09-04** — no audience/privacy step (unlike `post_to_own_profile`), visibility follows the group's own settings. Pending-approval detection is UNVERIFIED (recorded against a group with approval off). **See `skills/group-targeting.md`** for the 4-tier navigation fallback chain — tiers 1-3 (pinned shortcut, joined-groups list, search) still TODO. |
-| `comment_on_friend_post(page, post_url, content)` | Comment on a friend's post (newsfeed or their profile) | TODO — not yet recorded. |
-| `comment_on_group_post(page, post_url, content)` | Comment on a post inside a group | Group post pages can render differently — verify the comment box found belongs to the right post. TODO — not yet recorded. |
-| `like_post(page, post_url)` | React to a post, friend's or group's | Lowest-risk action; useful for warming up a new account. TODO — not yet recorded. |
-| `read_recent_comments(page, post_url, limit=10)` | Read-only: extract recent comments for context | Used by Content Strategist Agent, not just Executor. TODO — not yet recorded. |
+| `comment_on_friend_post(page, post_url, content)` | Comment on a friend's post (newsfeed or their profile) | **Deprioritized 2026-09-08** — not needed for current use, not yet recorded. Project owner explicitly said stop working on this for now (see this file's git history / the conversation that decided it); not a bug, not blocked on anything. Revisit if/when actually needed. |
+| `comment_on_group_post(page, post_url, content)` | Comment on a post inside a group | **Implemented and confirmed live 2026-09-08** — re-recorded against a group the account is actually a member of ("Việc làm Kỹ Sư Nhật Bản"), comment confirmed visible on the post after a page refresh. (An earlier 2026-09-07 recording, against a group the account hadn't joined yet, ran the same click/type/submit sequence for real but couldn't confirm visibility — same selectors, superseded by this confirmation.) |
+| `like_post(page, post_url)` | React to a post, friend's or group's | **Deprioritized 2026-09-08** — same as `comment_on_friend_post` above: not needed right now, deliberately paused, not yet recorded. |
+| `read_recent_comments(page, post_url, limit=10)` | Read-only: extract recent comments for context | **Deprioritized 2026-09-08** — same as above. Used by Content Strategist Agent, not just Executor, but that consumer isn't blocking on it either right now. |
 
 ## How selectors get filled in
 
@@ -113,12 +113,11 @@ language costs nothing for the *content*, which stays Vietnamese as
 normal.
 
 Practical effect: every selector in `human_bot/actions.py` should be
-written against the **English** UI text going forward. `post_to_own_profile`
-was re-recorded with Codegen against an English-language account
-("tu_iizuki") on 2026-09-03 and its selectors are now confirmed-live, not
-guessed — see the function's docstring. The other four actions
-(`post_to_group`, `comment_on_friend_post`, `comment_on_group_post`,
-`like_post`) are still unrecorded TODOs; record those directly in English
+written against the **English** UI text going forward. `post_to_own_profile`,
+`post_to_group`, and `comment_on_group_post` were recorded/confirmed
+against an English-language account ("tu_iizuki"). `comment_on_friend_post`,
+`like_post`, and `read_recent_comments` are deprioritized (see the table
+above) — whenever they do get picked back up, record directly in English
 from the start (no need to record a Vietnamese pass first).
 
 ## Implementation notes

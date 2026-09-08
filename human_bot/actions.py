@@ -239,6 +239,15 @@ async def post_to_own_profile(
         try:
             await post_button.wait_for(state="hidden", timeout=15000)
         except PlaywrightTimeoutError:
+            # Before assuming this is an ordinary stuck-submit failure,
+            # check whether Facebook actually threw up a checkpoint/anomaly
+            # modal over the composer — that leaves the Post button still
+            # attached to the DOM (only visually covered), so the wait
+            # above times out the same way a real stuck submit would.
+            # Without this re-check the account would silently NOT get
+            # paused despite being flagged mid-action — see
+            # docs/skills/anomaly-detection.md.
+            await _check_anomaly_or_raise(page)
             return ActionResult(success=False, message="post_button_still_visible_after_click")
 
         return ActionResult(success=True, message="posted_to_own_profile")
@@ -545,6 +554,11 @@ async def post_to_group(
         try:
             await post_button.wait_for(state="hidden", timeout=15000)
         except PlaywrightTimeoutError:
+            # Same reasoning as post_to_own_profile's identical check: a
+            # checkpoint/anomaly modal popping up mid-submit leaves the
+            # Post button attached to the DOM (only visually covered), so
+            # re-check before assuming this is an ordinary stuck submit.
+            await _check_anomaly_or_raise(page)
             return ActionResult(success=False, message="post_button_still_visible_after_click")
 
         if await _looks_like_pending_approval(page):
@@ -578,13 +592,62 @@ async def comment_on_group_post(
     post_url: str,
     content: str,
 ) -> ActionResult:
+    """
+    Recorded via Playwright Codegen against account "tu_iizuki" (English
+    UI) commenting on a real post inside a group — see
+    `codegen_comment_group.py` in the repo root for the raw recording.
+    **Confirmed live 2026-09-08**: re-recorded against a group the
+    account is actually a member of ("Việc làm Kỹ Sư Nhật Bản"), comment
+    verified visible on the post after a page refresh. (An earlier
+    2026-09-07 recording, against a group the account hadn't joined yet
+    — see docs/skills/group-targeting.md re: `multi_permalinks` URLs —
+    ran the identical click/type/submit sequence for real but couldn't
+    confirm visibility; same selectors, superseded by this confirmation.)
+
+    `page.goto(post_url)` straight to the post's permalink, same
+    "goto is the guaranteed-to-work path" reasoning as post_to_group's
+    Tier 4. Clicking the post's own body text (role "paragraph") first to
+    reveal the comment textbox, THEN typing into it, mirrors the exact
+    two-step reveal post_to_group's inline composer already uses.
+    """
+    pacing = get_pacing_config()
+    mouse = get_mouse_config()
     try:
         await page.goto(post_url)
         await _check_anomaly_or_raise(page)
+        await pause_after_page_load(pacing)
 
-        # TODO: fill in from a Codegen recording. Group post pages sometimes
-        # render differently from a standalone post view — verify the
-        # comment box found is attached to the right post.
+        await human_click(page, page.get_by_role("paragraph").first, mouse)
+        await pause_between_ui_steps(pacing)
+
+        # Substring match ("comment", not the recording's exact "Write a
+        # public comment…") since a non-public/closed group plausibly
+        # shows different wording ("Write a comment…") — same reasoning
+        # already applied to other context-dependent labels in this file.
+        comment_box = page.get_by_role("textbox", name="comment")
+        await human_click(page, comment_box, mouse)
+        await human_type(page, content, config=get_human_typing_config())
+
+        await reading_pause(content, pacing)
+        post_comment_button = page.get_by_role("button", name="Post comment", exact=True)
+        await human_click(page, post_comment_button, mouse)
+
+        # Verify the comment actually submitted instead of assuming
+        # success — same reasoning/pattern as post_to_own_profile's and
+        # post_to_group's own verification: the button only rendering
+        # while the box has content (per the recording) means it leaving
+        # the DOM is the best generic "it went through" signal without a
+        # live recording of a failed submit to compare against — NEEDS
+        # LIVE CONFIRMATION.
+        try:
+            await post_comment_button.wait_for(state="hidden", timeout=15000)
+        except PlaywrightTimeoutError:
+            # Same reasoning as post_to_own_profile/post_to_group's
+            # identical check: a checkpoint/anomaly modal popping up
+            # mid-submit can leave this button attached to the DOM (only
+            # visually covered) rather than actually removing it.
+            await _check_anomaly_or_raise(page)
+            return ActionResult(success=False, message="comment_button_still_visible_after_click")
 
         return ActionResult(success=True, message="commented_on_group_post")
     except RuntimeError as e:

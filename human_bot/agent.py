@@ -209,7 +209,7 @@ async def run_task(request: TaskRequest) -> TaskResult:
         # human reviews and resumes it at /admin/accounts.
         message = str(e)
         try:
-            set_account_paused(request.account_id, True)
+            set_account_paused(request.account_id, True, reason=message)
         except Exception:  # noqa: BLE001 — the task must still return a result even if this write fails
             pass
     except Exception as e:  # noqa: BLE001 — surfaced to caller as a failed TaskResult
@@ -222,11 +222,11 @@ async def run_task(request: TaskRequest) -> TaskResult:
         # shutdown-only save is not reliable enough on its own.
         if session is not None:
             await session.save_state()
+        # Draws and persists the randomized min_delay_seconds..max_delay_seconds
+        # gap for this account's NEXT action — enforced up front, next time,
+        # by can_proceed()'s _last_action_gap_ok() check above (refuses the
+        # task immediately if too soon, rather than blocking here).
         limiter.record(rate_limit_bucket, success)
-        # Deliberate paced delay before this account's NEXT action — see
-        # docs/skills/rate-limiting-pacing.md. In production this should be
-        # a scheduling delay on the n8n side, not a blocking sleep here.
-        # limiter.jittered_delay()
 
     # Evidence screenshot — success or failure — taken here, not inside
     # each actions.py function, for the same "one choke point" reason as

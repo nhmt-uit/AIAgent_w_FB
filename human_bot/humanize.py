@@ -22,6 +22,43 @@ human_bot/runtime_config.py, without touching .env at all.
 Honesty about limits: this is a best-effort approximation of human
 behavior, not a guarantee against detection.
 
+GIỚI HẠN KHÔNG VÁ ĐƯỢC Ở TẦNG CODE NÀY (ghi lại 2026-09-08, sau khi so sánh
+với một hệ thống automation iOS/Safari khác dùng JS injection —
+`Runtime.evaluate` + tự dựng `new PointerEvent()/new KeyboardEvent()` rồi
+`dispatchEvent()`): mọi hàm trong file này (`human_click`, `human_type`,
+`human_scroll_to`) đều gọi `page.mouse.*`/`page.keyboard.*` của Playwright
+— tức là lệnh CDP cấp thấp (`Input.dispatchMouseEvent`,
+`Input.dispatchKeyEvent`), đi thẳng vào pipeline input THẬT của Chromium,
+KHÔNG PHẢI tự dựng sự kiện DOM bằng JS. Vì vậy, khác với hệ thống
+JS-injection nói trên (nơi mọi sự kiện tự dựng luôn có
+`event.isTrusted === false`, không có cách nào sửa được ở tầng JS), các sự
+kiện ở đây thực sự có `isTrusted: true` — Chromium tự sinh toàn bộ chuỗi
+pointerdown/mousedown/pointerup/mouseup/click một cách tự nhiên từ chính
+input đã nhận, không phải do mình tự ráp từng sự kiện một.
+
+Tuy vậy, vẫn có những giới hạn KHÔNG vá được ở tầng module này, vì chúng
+nằm sâu hơn — trong chính CDP hoặc trong việc Playwright/Puppeteer/
+Selenium đều phải dùng CDP:
+  1. `movementX`/`movementY` của mọi pointer event luôn = 0 khi dispatch
+     qua CDP, dù toạ độ thực sự đổi — chuột thật luôn báo giá trị khác 0.
+  2. CDP chỉ gửi 1 mẫu toạ độ cho mỗi lần gọi `mouse.move()`, trong khi
+     chuột thật gửi nhiều mẫu dồn dập (coalesced events) ở tần số quét cao
+     hơn nhiều — không thể giả lập bằng cách gọi `mouse.move()` nhiều lần
+     hơn, vì đó vẫn là các sự kiện rời rạc, không phải luồng liên tục thật.
+  3. Bản thân việc trình duyệt bị điều khiển qua CDP domain "Runtime" (lệnh
+     `Runtime.enable` mà Playwright/Puppeteer/Selenium đều cần dùng để chạy
+     JS trong trang) là một bề mặt bị dò riêng (Cloudflare/DataDome...) —
+     KHÔNG liên quan gì tới việc mình dùng domain "Input" (mouse/keyboard)
+     đúng cách ở đây; đây là giới hạn của chính việc dùng Playwright, không
+     phải lỗi trong file này. Có bản vá cộng đồng (rebrowser-patches) cho
+     việc này nhưng phải vá thẳng vào lõi Playwright — chưa áp dụng, xem
+     README.md mục "Điểm yếu đã ghi nhận".
+Nói ngắn gọn: code ở đây đã ở phía "khó bị phát hiện hơn" trên đúng trục mà
+nhiều hệ thống automation khác (không dùng Chromium+CDP) buộc phải chấp
+nhận thua — nhưng vẫn có trần giới hạn riêng của CDP mà không có cách nào
+vượt qua nếu không đổi hẳn sang điều khiển chuột/bàn phím THẬT ở tầng hệ
+điều hành (ngoài phạm vi Playwright — xem thảo luận trong README).
+
 Vietnamese typo handling (word-level, not per-character): a word
 containing at least one non-ASCII character (i.e. a Vietnamese diacritic)
 is never given a per-character QWERTY-neighbor typo, because those
@@ -381,6 +418,23 @@ class HumanMouseConfig:
     min_distance_for_curve_px: float = field(
         default_factory=lambda: _env_float("HUMAN_MOUSE_MIN_DISTANCE_PX", 12.0)
     )
+    # Time between mousedown and mouseup (page.mouse.click's own `delay`
+    # param defaults to 0 — an instant down-up that's an easy behavioral
+    # tell; real clicks always have some dwell time). Added 2026-09-08
+    # after researching mouse-dynamics bot detection — see
+    # docs/research/human-behavior-simulation.md.
+    click_delay_min_ms: float = field(
+        default_factory=lambda: _env_float("HUMAN_MOUSE_CLICK_DELAY_MIN_MS", 40.0)
+    )
+    click_delay_max_ms: float = field(
+        default_factory=lambda: _env_float("HUMAN_MOUSE_CLICK_DELAY_MAX_MS", 120.0)
+    )
+    # Small random offset applied to each INTERMEDIATE point along the
+    # curve (never the final landing point) — a real hand has sub-pixel
+    # tremor a pure mathematical Bezier curve doesn't; that "too smooth"
+    # quality is itself a signal mouse-dynamics classifiers look for.
+    # Added 2026-09-08, same research pass as click_delay_* above.
+    jitter_px: float = field(default_factory=lambda: _env_float("HUMAN_MOUSE_JITTER_PX", 1.5))
 
 
 # Last known mouse position per page, keyed by id(page) — Playwright has no
@@ -396,6 +450,19 @@ def _quadratic_bezier(
     x = (1 - t) ** 2 * p0[0] + 2 * (1 - t) * t * p1[0] + t ** 2 * p2[0]
     y = (1 - t) ** 2 * p0[1] + 2 * (1 - t) * t * p1[1] + t ** 2 * p2[1]
     return x, y
+
+
+def _ease_in_out(t: float) -> float:
+    """Smoothstep easing (slow-fast-slow spatial progression) applied to
+    an otherwise-linear, roughly-constant-time step sequence — this is
+    what produces the bell-shaped velocity profile real human mouse
+    movement has (Fitts's law: accelerate, peak speed mid-movement,
+    decelerate into the target), instead of the constant-speed traversal
+    a naive curve-following bot produces. Added 2026-09-08 after
+    researching mouse-dynamics bot detection (constant velocity along an
+    otherwise-plausible curve is itself a classifier signal) — see
+    docs/research/human-behavior-simulation.md."""
+    return t * t * (3 - 2 * t)
 
 
 async def human_mouse_move(
@@ -447,34 +514,128 @@ async def human_mouse_move(
     # 2026-09-07, only on distances short/long enough to actually clamp).
     steps = int(max(cfg.min_steps, min(cfg.max_steps, round(distance / 25))))
     for i in range(1, steps + 1):
-        t = i / steps
+        t = _ease_in_out(i / steps)
         x, y = _quadratic_bezier((start_x, start_y), (control_x, control_y), (end_x, end_y), t)
+        if i < steps and cfg.jitter_px > 0:
+            # Never jitter the final point of this leg — the curve still
+            # has to actually land where it's supposed to (on the target,
+            # or on the overshoot point before correction).
+            x += random.uniform(-cfg.jitter_px, cfg.jitter_px)
+            y += random.uniform(-cfg.jitter_px, cfg.jitter_px)
         await page.mouse.move(x, y)
         await page.wait_for_timeout(random.uniform(cfg.step_delay_min_ms, cfg.step_delay_max_ms))
 
     if will_overshoot:
         # Correct back from the overshoot in a few small steps.
         for i in range(1, 4):
-            t = i / 3
+            t = _ease_in_out(i / 3)
             x = end_x + (target_x - end_x) * t
             y = end_y + (target_y - end_y) * t
+            if i < 3 and cfg.jitter_px > 0:
+                x += random.uniform(-cfg.jitter_px, cfg.jitter_px)
+                y += random.uniform(-cfg.jitter_px, cfg.jitter_px)
             await page.mouse.move(x, y)
             await page.wait_for_timeout(random.uniform(cfg.step_delay_min_ms, cfg.step_delay_max_ms))
 
     _last_mouse_pos[id(page)] = (target_x, target_y)
 
 
-async def human_click(page: Page, locator, mouse_config: HumanMouseConfig | None = None) -> None:
+# =============================================================================
+# Scrolling
+# =============================================================================
+
+@dataclass
+class HumanScrollConfig:
+    """
+    Eased, multi-step scroll toward an element using real wheel-scroll
+    events (page.mouse.wheel — a CDP Input-domain call, same trust level
+    as mouse clicks, see this module's top-of-file note on isTrusted)
+    instead of Playwright's own scroll_into_view_if_needed(), which jumps
+    straight to position in a single instant call — an obvious tell,
+    since real scrolling always takes multiple wheel ticks with the step
+    size shrinking as the target gets closer (physical scroll-wheel
+    inertia). Added 2026-09-08 after comparing notes with another
+    automation codebase's smoothScrollTo() — see this module's top-of-file
+    note and README.md's "Điểm yếu đã ghi nhận" for the full comparison.
+    """
+    enabled: bool = field(default_factory=lambda: _env_bool("HUMAN_SCROLL_ENABLED", True))
+    step_delay_min_ms: float = field(default_factory=lambda: _env_float("HUMAN_SCROLL_STEP_DELAY_MIN_MS", 40.0))
+    step_delay_max_ms: float = field(default_factory=lambda: _env_float("HUMAN_SCROLL_STEP_DELAY_MAX_MS", 90.0))
+    # Cap on any single wheel tick, however far the target still is.
+    max_step_px: float = field(default_factory=lambda: _env_float("HUMAN_SCROLL_MAX_STEP_PX", 400.0))
+    # Fraction of the remaining distance covered per tick — this alone is
+    # what produces the deceleration curve (each tick closes part of the
+    # gap, so the gap — and therefore the next tick — keeps shrinking).
+    deceleration_ratio: float = field(
+        default_factory=lambda: _env_float("HUMAN_SCROLL_DECELERATION_RATIO", 0.5)
+    )
+    # Safety cap so a target that never reports as "in view" (a detached
+    # element, an unexpected layout) can't loop forever — the trailing
+    # scroll_into_view_if_needed() below still guarantees correctness.
+    max_iterations: int = field(default_factory=lambda: int(_env_float("HUMAN_SCROLL_MAX_ITERATIONS", 10)))
+
+
+async def human_scroll_to(page: Page, locator, config: HumanScrollConfig | None = None) -> None:
+    """
+    Scroll the page toward `locator` in several real wheel-scroll steps
+    (page.mouse.wheel) with a shrinking step size, instead of an instant
+    jump. Always finishes with Playwright's own scroll_into_view_if_needed()
+    as a precise correction — the eased loop above only needs to get
+    close; exact positioning still has to be guaranteed for the click that
+    follows.
+    """
+    cfg = config or HumanScrollConfig()
+    if not cfg.enabled:
+        await locator.scroll_into_view_if_needed()
+        return
+    viewport = page.viewport_size
+    if viewport is None:
+        await locator.scroll_into_view_if_needed()
+        return
+    for _ in range(cfg.max_iterations):
+        box = await locator.bounding_box()
+        if box is None:
+            break
+        target_center_y = box["y"] + box["height"] / 2
+        remaining = target_center_y - viewport["height"] / 2
+        if abs(remaining) < 20:
+            break
+        step = max(-cfg.max_step_px, min(cfg.max_step_px, remaining * cfg.deceleration_ratio))
+        await page.mouse.wheel(0, step)
+        await page.wait_for_timeout(random.uniform(cfg.step_delay_min_ms, cfg.step_delay_max_ms))
+    await locator.scroll_into_view_if_needed()
+
+
+async def human_click(
+    page: Page,
+    locator,
+    mouse_config: HumanMouseConfig | None = None,
+    scroll_config: HumanScrollConfig | None = None,
+) -> None:
     """
     Click `locator` (a Playwright Locator) by curving the mouse to a
     random point inside its bounding box (human_mouse_move) instead of
     jumping straight there, then clicking at that exact point. Waits for
-    the element to be visible and scrolls it into view first, mirroring
+    the element to be visible and scrolls it into view first (via
+    human_scroll_to's eased wheel-scroll, not an instant jump), mirroring
     the checks Locator.click() would normally do for us — since we bypass
     its own move+click, we take on that responsibility here.
+
+    scroll_config isn't threaded through actions.py's ~25 call sites the
+    way mouse_config is (there's no case where a caller would want a
+    different scroll behavior than the account's current admin setting,
+    unlike mouse_config which a couple of call sites do override) — when
+    not given, it's fetched live from human_bot/runtime_config.py via a
+    local import here, the same "avoid an import cycle at module load"
+    pattern already used elsewhere in this codebase (e.g.
+    human_bot/data_sync.py's fire_due_tasks()).
     """
+    if scroll_config is None:
+        from human_bot.runtime_config import get_scroll_config  # local import — avoid import cycle at module load
+        scroll_config = get_scroll_config()
+    mouse_cfg = mouse_config or HumanMouseConfig()
     await locator.wait_for(state="visible")
-    await locator.scroll_into_view_if_needed()
+    await human_scroll_to(page, locator, scroll_config)
     box = await locator.bounding_box()
     if box is None:
         # Couldn't read a bounding box (e.g. element became detached) —
@@ -483,5 +644,7 @@ async def human_click(page: Page, locator, mouse_config: HumanMouseConfig | None
         return
     target_x = box["x"] + random.uniform(0.3, 0.7) * box["width"]
     target_y = box["y"] + random.uniform(0.3, 0.7) * box["height"]
-    await human_mouse_move(page, target_x, target_y, mouse_config)
-    await page.mouse.click(target_x, target_y)
+    await human_mouse_move(page, target_x, target_y, mouse_cfg)
+    await page.mouse.click(
+        target_x, target_y, delay=random.uniform(mouse_cfg.click_delay_min_ms, mouse_cfg.click_delay_max_ms)
+    )
