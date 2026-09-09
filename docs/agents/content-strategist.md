@@ -13,7 +13,7 @@ Scope narrowed from the original plan below, per the project owner: only
 wording, since that is the one case where posting identical text more
 than once is a real spam signal. Implemented as
 `human_bot/content_strategist.py`'s `draft_group_post_variants()`, wired
-into `human_bot/data_sync.py`'s `sync_once()`. Calls Anthropic's Messages
+into `human_bot/data_sync.py`'s `sync_all()`. Calls Anthropic's Messages
 API directly over `httpx` — **not** through `human_bot/llm.py`'s
 provider-selection helper (`get_llm()`) mentioned in step 2 below; that
 helper returns a `browser_use.ChatAnthropic`, which pulls in the optional,

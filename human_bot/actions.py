@@ -552,11 +552,20 @@ async def post_to_group(
             # right above.
             await _attach_media(page, page, media_path, mouse, pacing)
 
-        # Confirmed live 2026-09-04: the recording clicked back into the
-        # paragraph once more before submitting — kept as-is rather than
-        # guessed away, it plausibly reflects a real "glance back over
-        # what I wrote" moment.
-        await human_click(page, page.get_by_role("paragraph"), mouse)
+        # A 2026-09-04 recording clicked back into the paragraph once more
+        # here before submitting ("glance back over what I wrote") — kept
+        # for a while as plausible human mimicry, but dropped 2026-09-09
+        # after a real strict-mode-violation crash: `content` is
+        # multi-line for essentially every real job/candidate post, and
+        # Facebook renders each line as its own <p>, so this unscoped
+        # get_by_role("paragraph") matches N elements instead of 1 the
+        # moment content has more than one line (see the two real
+        # failures this caused, task ids bc6a2a13 and 7272343b). The
+        # click added no functional value — content was already fully
+        # typed above — so it's removed rather than scoped to `.first`,
+        # which would have silently clicked whichever line Facebook
+        # happens to render first instead of failing loudly on a future
+        # DOM change.
         await reading_pause(content, pacing)
         post_button = page.get_by_role("button", name="Post", exact=True)
         await human_click(page, post_button, mouse)
@@ -663,21 +672,28 @@ async def comment_on_group_post(
         await human_click(page, post_comment_button, mouse)
 
         # Verify the comment actually submitted instead of assuming
-        # success — same reasoning/pattern as post_to_own_profile's and
-        # post_to_group's own verification: the button only rendering
-        # while the box has content (per the recording) means it leaving
-        # the DOM is the best generic "it went through" signal without a
-        # live recording of a failed submit to compare against — NEEDS
-        # LIVE CONFIRMATION.
+        # success. Originally waited for post_comment_button to leave the
+        # DOM (same pattern as post_to_own_profile/post_to_group's own
+        # "Post" button check) — that assumption was WRONG here,
+        # confirmed live 2026-09-09: unlike those two (which close a
+        # dialog/composer on submit), the group comment box's "Post
+        # comment" button stays attached to the DOM after a genuinely
+        # successful comment. Real signal instead: the comment textbox
+        # clears back to empty once the comment goes through.
         try:
-            await post_comment_button.wait_for(state="hidden", timeout=15000)
+            box_handle = await comment_box.element_handle()
+            await page.wait_for_function(
+                "el => !el.isConnected || (el.innerText || '').trim() === ''",
+                arg=box_handle,
+                timeout=15000,
+            )
         except PlaywrightTimeoutError:
             # Same reasoning as post_to_own_profile/post_to_group's
             # identical check: a checkpoint/anomaly modal popping up
-            # mid-submit can leave this button attached to the DOM (only
-            # visually covered) rather than actually removing it.
+            # mid-submit can leave the typed content sitting in the box
+            # rather than a real stuck submit.
             await _check_anomaly_or_raise(page)
-            return ActionResult(success=False, message="comment_button_still_visible_after_click")
+            return ActionResult(success=False, message="comment_box_still_has_content_after_click")
 
         return ActionResult(success=True, message="commented_on_group_post")
     except RuntimeError as e:

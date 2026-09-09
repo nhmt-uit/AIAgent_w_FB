@@ -255,6 +255,26 @@ async def human_type(page: Page, text: str, config: HumanTypingConfig | None = N
     for token in tokens:
         if token.isspace():
             for ch in token:
+                if ch == "\n":
+                    # Confirmed live 2026-09-09 (real incident, account
+                    # tu_iizuki, posting into a group): Facebook's group
+                    # composer shows an inline member-tag suggestion
+                    # dropdown while typing a word that matches a group
+                    # member's name (e.g. typing "Tokyo" suggested a real
+                    # member named "Tokyo Tran") — keyboard.type("\n")
+                    # below sends an actual Enter keypress, and Facebook
+                    # intercepts Enter while that dropdown is open to
+                    # ACCEPT the highlighted suggestion instead of
+                    # inserting a line break, silently corrupting the
+                    # post (merged lines, injected mention text). A
+                    # plain space closes the dropdown without accepting
+                    # anything, so typing one right before Enter — with a
+                    # short pause for Facebook's JS to actually dismiss
+                    # it — reliably avoids this. The trailing space this
+                    # leaves at the end of the previous line is invisible
+                    # once rendered.
+                    await page.keyboard.type(" ")
+                    await page.wait_for_timeout(random.uniform(150, 350))
                 chars_typed = await _type_one_char(page, ch, cfg, chars_typed)
             continue
 

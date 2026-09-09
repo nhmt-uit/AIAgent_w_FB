@@ -172,10 +172,22 @@ class RateLimiter:
             return False, f"min_delay_seconds gap not elapsed yet, wait ~{wait_s}s"
         return True, "ok"
 
-    def can_proceed(self, action_type: str) -> tuple[bool, str]:
-        gap_ok, gap_reason = self._last_action_gap_ok(action_type)
-        if not gap_ok:
-            return False, gap_reason
+    def can_proceed(self, action_type: str, ignore_gap: bool = False) -> tuple[bool, str]:
+        """`ignore_gap=True` skips ONLY the min/max_delay_seconds pacing
+        check (see _last_action_gap_ok's docstring) — the count-based hard
+        caps below (posts_per_day/comments_per_hour/comments_per_day/
+        likes_per_hour) are never skippable. Used by admin.py's manual
+        "Đăng ngay" override: an admin who explicitly confirms past the
+        pacing warning is a judgment call the system can trust; silently
+        letting them blow through a per-day/per-hour COUNT cap would not
+        be — that count is the strongest signal Facebook itself uses to
+        flag automation, so it stays a hard refusal regardless of this
+        flag. See is_gap_reason() for how callers tell the two apart
+        before deciding whether to offer this override at all."""
+        if not ignore_gap:
+            gap_ok, gap_reason = self._last_action_gap_ok(action_type)
+            if not gap_ok:
+                return False, gap_reason
         limits = self.account.rate_limits
         if action_type == "post":
             count = len([r for r in self._read_recent(timedelta(days=1)) if r["action"] == "post"])
@@ -216,6 +228,14 @@ class RateLimiter:
         }
         with self.log_path.open("a") as f:
             f.write(json.dumps(row) + "\n")
+
+
+def is_gap_reason(reason: str) -> bool:
+    """True if a can_proceed() failure reason is the soft min-gap pacing
+    check (overridable via can_proceed(ignore_gap=True)) rather than one
+    of the hard per-day/per-hour count caps (never overridable). See
+    can_proceed()'s docstring for why the two are treated differently."""
+    return reason.startswith("min_delay_seconds")
 
 
 def rate_limit_wait_message(account: AccountConfig, action_type: str) -> str | None:

@@ -46,6 +46,13 @@ class TaskRequest:
     source: str = "api"  # manual | queue | schedule_manual | schedule_auto | api
     source_kind: str | None = None  # "job" | "candidate" — only set for data-sync-originated tasks
     source_id: str | None = None  # side B's own record id, for traceability
+    # Admin-confirmed override of the min-gap pacing check ONLY (see
+    # human_bot/safety.py's RateLimiter.can_proceed(ignore_gap=...)) — set
+    # by admin.py's schedule_fire_now() after the admin clicks "Vẫn đăng
+    # ngay" on the rate-limit warning modal. Never set by data_sync.py's
+    # auto-fire path. Hard per-day/per-hour count caps still apply
+    # regardless of this flag.
+    force_ignore_gap: bool = False
 
 
 @dataclass
@@ -193,7 +200,7 @@ async def run_task(request: TaskRequest) -> TaskResult:
         request = replace(request, media_path=media.pick_random_meme())
 
     limiter = RateLimiter(account)
-    allowed, reason = limiter.can_proceed(rate_limit_bucket)
+    allowed, reason = limiter.can_proceed(rate_limit_bucket, ignore_gap=request.force_ignore_gap)
     if not allowed:
         message = f"rate_limited:{reason}"
         _log_result(request, False, message)
@@ -235,11 +242,29 @@ async def run_task(request: TaskRequest) -> TaskResult:
         # shutdown-only save is not reliable enough on its own.
         if session is not None:
             await session.save_state()
-        # Draws and persists the randomized min_delay_seconds..max_delay_seconds
-        # gap for this account's NEXT action — enforced up front, next time,
-        # by can_proceed()'s _last_action_gap_ok() check above (refuses the
-        # task immediately if too soon, rather than blocking here).
-        limiter.record(rate_limit_bucket, success)
+        # Only charge this attempt against the account's rate-limit gap
+        # (docs/skills/rate-limiting-pacing.md) when it plausibly sent real
+        # traffic to Facebook. `success` covers the obvious case. Otherwise,
+        # check whether the browser session SURVIVED the failure
+        # (session.is_alive(), human_bot/browser_pool.py) — every action in
+        # actions.py starts with page.goto(...) and never deliberately
+        # closes the page/context/browser on error, so if the session is
+        # still alive right after a failed attempt, that failure happened
+        # DURING a real page load/interaction (selector not found, FB
+        # rejected it, a timeout mid-navigation, ...) — genuine contact was
+        # made, so it counts exactly like before.
+        #
+        # If the session is NOT alive, the failure was an infra problem —
+        # ensure_started() never got a working browser at all, or (the
+        # 2026-09-09 incident) the browser/page died out from under us
+        # between the liveness check and the actual page.goto(), raising
+        # "Target page, context or browser has been closed" before a
+        # single byte reached Facebook's servers. Charging the account's
+        # rate-limit gap for that would throttle it for something it never
+        # actually did — so this case is deliberately NOT recorded here.
+        session_survived = session is not None and session.is_alive()
+        if success or session_survived:
+            limiter.record(rate_limit_bucket, success)
 
     # Evidence screenshot — success or failure — taken here, not inside
     # each actions.py function, for the same "one choke point" reason as

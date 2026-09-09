@@ -42,7 +42,7 @@ class AccountSession:
         self.context: BrowserContext | None = None
         self.page: Page | None = None
 
-    def _is_alive(self) -> bool:
+    def is_alive(self) -> bool:
         """True only if there's a page/context/browser AND it's actually
         still usable — not just non-None. A page can go away without this
         object ever hearing about it (most commonly: HEADLESS=false and a
@@ -51,7 +51,15 @@ class AccountSession:
         ensure_started() saw "not None" and did nothing, so every
         subsequent task failed with the same `Page.goto: Target page,
         context or browser has been closed` until the whole service was
-        restarted (see the incident that prompted this check)."""
+        restarted (see the incident that prompted this check).
+
+        Public (not `_is_alive`) — human_bot/agent.py's run_task() also
+        calls this AFTER a task fails, to tell a genuine attempt (browser
+        still up, so page.goto()/the action really did reach Facebook)
+        apart from an infra failure (browser died before or during the
+        attempt, so nothing was ever sent) — see run_task()'s docstring on
+        why that distinction decides whether the failure counts against
+        the account's rate-limit gap."""
         if self.page is None or self.browser is None:
             return False
         try:
@@ -62,7 +70,7 @@ class AccountSession:
             return False
 
     async def ensure_started(self) -> None:
-        if self._is_alive():
+        if self.is_alive():
             return
         if self.page is not None:
             # Stale session — something (most likely a manually-closed

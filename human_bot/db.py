@@ -286,6 +286,18 @@ def recent_activity(
         conn.close()
 
 
+def get_action_log(log_id: int) -> sqlite3.Row | None:
+    """One action_log row by id — used by /admin/reports' "Đăng lại" button
+    to re-read the account/action/target_url/content of a past attempt so
+    it can be resubmitted as a new task."""
+    conn = _connect()
+    try:
+        cur = conn.execute("SELECT * FROM action_log WHERE id = ?", (log_id,))
+        return cur.fetchone()
+    finally:
+        conn.close()
+
+
 def recent_activity_count(account_id: str | None = None, since: str | None = None) -> int:
     """Total matching rows for `recent_activity`'s filters, so
     /admin/reports can render "Trang X/Y" instead of guessing whether

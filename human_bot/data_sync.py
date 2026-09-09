@@ -13,10 +13,11 @@ human_bot/content_strategist.py's draft_group_post_variants(): genuinely
 different wording per group via an Anthropic call when ANTHROPIC_API_KEY
 is set in .env, silently falling back to a plain rotating-opener template
 otherwise (see that module's docstring for the full fallback design).
-Candidate outreach replies (`_draft_candidate_reply_placeholder` below)
-are still a plain template — each candidate only gets one message, so
-there is nothing to vary against (see the conversation that scoped
-content_strategist.py to just the group-broadcast case). Treat every
+Candidate outreach replies use side B's own GET /api/candidates/{id}/reply
+(`_fetch_candidate_reply`, called from fire_due_tasks() right before a
+candidate comment posts, agreed 2026-09-08) — falling back to the local
+plain template (`_draft_candidate_reply_placeholder`, stashed on the task
+at schedule time) if that call fails or comes back empty. Treat every
 scheduled item this produces as a DRAFT to review/edit in /admin/schedule
 before it fires — this is one of the reasons SchedulingConfig.auto_fire_enabled
 defaults to False (see human_bot/scheduling_config.py).
@@ -72,6 +73,18 @@ def _day_cache_path(day: date) -> Path:
     return CACHE_ROOT / f"{day.isoformat()}.json"
 
 
+def _utc_today() -> date:
+    """`date.today()` reads the SERVER's OS-configured local timezone,
+    inconsistent with every other timestamp in this file (all explicit
+    UTC, e.g. _mark_seen()'s own `seen_at` a few lines down) — if the
+    server's system clock is ever set to something other than UTC (e.g.
+    JST), the dedup cache's day-file boundaries would drift away from the
+    UTC day boundary everything else uses. Used wherever this module
+    needs "today" as a date, so day-file naming/retention stays anchored
+    to UTC no matter how the host OS is configured."""
+    return datetime.now(timezone.utc).date()
+
+
 def _load_seen_ids(retention_days: float) -> dict[str, dict]:
     """Merge every day-file within the retention window into one lookup
     dict. Small-scale by design (this project's data volume) — loading a
@@ -79,7 +92,7 @@ def _load_seen_ids(retention_days: float) -> dict[str, dict]:
     true, this is the function to replace with an index file instead."""
     _ensure_cache_dir()
     seen: dict[str, dict] = {}
-    cutoff = date.today() - timedelta(days=int(retention_days))
+    cutoff = _utc_today() - timedelta(days=int(retention_days))
     for path in CACHE_ROOT.glob("*.json"):
         if path.name.startswith("_"):
             continue  # _state.json, _contacted_contacts.json — not a day file
@@ -100,7 +113,7 @@ def _load_seen_ids(retention_days: float) -> dict[str, dict]:
 
 def _mark_seen(item_id: str, kind: str) -> None:
     _ensure_cache_dir()
-    path = _day_cache_path(date.today())
+    path = _day_cache_path(_utc_today())
     try:
         data = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
     except (OSError, json.JSONDecodeError):
@@ -115,7 +128,7 @@ def prune_old_cache(retention_days: float) -> int:
     record might resurface — see docs/architecture.md section 3c — so
     this is a conservative default, not a guarantee."""
     _ensure_cache_dir()
-    cutoff = date.today() - timedelta(days=int(retention_days))
+    cutoff = _utc_today() - timedelta(days=int(retention_days))
     removed = 0
     for path in CACHE_ROOT.glob("*.json"):
         if path.name.startswith("_"):
@@ -174,15 +187,15 @@ def _save_sync_state(state: dict[str, Any]) -> None:
 
 # --- Last-sync outcome, per account (for /admin visibility) -----------------
 #
-# sync_once() used to return its outcome (or an {"error": ...} dict) purely
+# sync_all() used to return its outcome (or an {"error": ...} dict) purely
 # to its caller — service.py's _data_sync_poll_loop() only wraps the call
 # in try/except and never inspected the return value, so a handled error
 # (e.g. missing DATA_INGESTION_API_TOKEN) vanished silently: no exception,
 # no log, nothing on /admin. This file persists the outcome of every
-# sync_once() call (success or failure, handled or raised) so /admin/config
-# can show "last sync: <time> — ok (N jobs, M candidates) / lỗi: <msg>" per
-# account_id instead of requiring someone to infer it from whether new
-# pending tasks showed up at /admin/schedule.
+# sync_all() call, per account_id (success or failure, handled or raised)
+# so /admin/config can show "last sync: <time> — ok (N jobs, M candidates)
+# / lỗi: <msg>" per account_id instead of requiring someone to infer it
+# from whether new pending tasks showed up at /admin/schedule.
 
 def _load_sync_status() -> dict[str, Any]:
     if not SYNC_STATUS_PATH.exists():
@@ -202,9 +215,9 @@ def _record_sync_status(account_id: str, status: dict[str, Any]) -> None:
 
 
 def get_sync_status(account_id: str) -> dict[str, Any] | None:
-    """Outcome of the most recent sync_once() call for this account_id, or
+    """Outcome of the most recent sync_all() call for this account_id, or
     None if it has never run. Shape: {"last_run_at": iso-str, "status": "ok"
-    | "error", plus either the counts sync_once() normally returns or an
+    | "error", plus either the counts sync_all() normally returns or an
     "error" message}."""
     return _load_sync_status().get(account_id)
 
@@ -244,12 +257,33 @@ def _is_too_old(published_at: str | None, max_age_days: float) -> bool:
 
 # --- Scheduling --------------------------------------------------------------
 
+# Fixed +9h JST offset, not zoneinfo — same reasoning as admin.py's
+# _fmt_jst() and safety.py's rate_limit_wait_message() (Japan has had no
+# DST since 1951, so this is exact, not an approximation). This project's
+# audience/operators are Japan-focused (see docs/architecture.md), so JST
+# is the "local" this quiet-hours window actually means.
+_JST_OFFSET = timedelta(hours=9)
+
+
 def apply_quiet_hours(dt: datetime, cfg: DataSyncConfig) -> datetime:
     """Push a time that falls in the configured quiet window forward to
-    the window's end, same UTC-as-local simplification the rest of this
-    project currently makes (no per-account timezone config yet — see
-    docs/skills/rate-limiting-pacing.md, this is a known limitation, not
-    an oversight). Public (not `_`-prefixed) because human_bot/admin.py's
+    the window's end. `dt` is always UTC (every caller builds it from
+    datetime.now(timezone.utc) or a browser-converted UTC pick — see
+    human_bot/admin.py's _datetime_picker_html()), but
+    quiet_hour_start_local/end_local mean JST wall-clock hours (the
+    operator's actual local time), NOT UTC hours — comparing dt.hour
+    directly against them was the 2026-09-09 bug: an operator in Japan
+    picking 10:00 JST sends 01:00 UTC, which itself falls inside the
+    default 1-6 "quiet" window even though 10am is obviously not the
+    middle of the night — so it got wrongly pushed to ~06:xx UTC, which
+    is 15:xx JST, hours later than intended. Converting to JST first (via
+    _JST_OFFSET above) before comparing/clamping, then converting the
+    clamped result back to UTC, fixes this for both this manual-compose
+    path and the auto side-B scheduler (data_sync.py's own loops, which
+    never go through a browser at all — so a per-request browser
+    timezone couldn't have fixed this on its own; the fix has to live
+    here, applied uniformly to whatever's live in DataSyncConfig).
+    Public (not `_`-prefixed) because human_bot/admin.py's
     manual "compose & schedule" flow (/admin/post) reuses it too — any
     scheduled task, auto or manual, gets the same quiet-hours treatment.
 
@@ -267,28 +301,39 @@ def apply_quiet_hours(dt: datetime, cfg: DataSyncConfig) -> datetime:
     chain has already moved past window's end and later gaps compound on
     top of that corrected point normally, preserving the configured
     spacing between everything that follows."""
-    if cfg.quiet_hour_start_local <= dt.hour < cfg.quiet_hour_end_local:
-        dt = dt.replace(
+    jst = dt + _JST_OFFSET
+    if cfg.quiet_hour_start_local <= jst.hour < cfg.quiet_hour_end_local:
+        # Only hour/minute/second change here, never the date — the
+        # window is always fully within one JST calendar day (e.g. 1-6),
+        # so this can't accidentally jump the shifted "date" across
+        # midnight before converting back below.
+        jst = jst.replace(
             hour=int(cfg.quiet_hour_end_local), minute=random.randint(0, 30),
             second=0, microsecond=0,
         )
+        dt = jst - _JST_OFFSET
     return dt
 
 
-def _count_scheduled_group_posts_by_day(account_id: str) -> dict[date, int]:
-    """How many `post_to_group` tasks this account already has on the
-    books per calendar date (UTC — same simplification apply_quiet_hours
-    makes), counting both PENDING (not fired yet) and already-POSTED
-    ones. Both matter for the daily cap below: posted ones already used
-    up today's quota, and pending ones from an earlier sync_once() call
-    reserve tomorrow's (or later) quota too, so a later call in the same
-    day doesn't schedule right on top of them. Includes every account's
-    tasks in the pending/posted directories, filtered down to this one —
+_COMMENT_ACTIONS = {"comment_on_group_post", "comment_on_friend_post"}
+
+
+def _count_scheduled_actions_by_day(account_id: str, actions: set[str]) -> dict[date, int]:
+    """How many tasks whose `action` is in `actions` this account already
+    has on the books per calendar date (UTC — same simplification
+    apply_quiet_hours makes), counting both PENDING (not fired yet) and
+    already-POSTED ones. Both matter for the daily cap below: posted ones
+    already used up today's quota, and pending ones from an earlier sync
+    reserve tomorrow's (or later) quota too, so a later run the same day
+    doesn't schedule right on top of them. Includes every account's tasks
+    in the pending/posted directories, filtered down to this one —
     small-scale by design, matching this project's other file-based
-    stores (see human_bot/schedule_store.py)."""
+    stores (see human_bot/schedule_store.py). Generalized from a
+    post_to_group-only version (2026-09-10) so the same function backs
+    the capacity check for both post and comment distribution below."""
     counts: dict[date, int] = {}
     for task in schedule_store.list_pending() + schedule_store.list_posted():
-        if task.account_id != account_id or task.action != "post_to_group":
+        if task.account_id != account_id or task.action not in actions:
             continue
         try:
             scheduled = datetime.fromisoformat(task.scheduled_at.replace("Z", "+00:00"))
@@ -297,6 +342,71 @@ def _count_scheduled_group_posts_by_day(account_id: str) -> dict[date, int]:
         d = scheduled.date()
         counts[d] = counts.get(d, 0) + 1
     return counts
+
+
+def _water_fill_distribute(items: list, capacities: dict[str, int]) -> tuple[dict[str, list], list]:
+    """Split `items` across the accounts in `capacities` as evenly as
+    possible WITHOUT ever giving an account more than its own remaining
+    capacity for today (added 2026-09-10, per-project decision — a plain
+    even split is wrong: e.g. 6 new candidates over accounts capped at
+    {A: 2, B: 5} must give A exactly 2, not 3, and let B absorb the rest
+    rather than exceeding A's quota).
+
+    Classic water-filling / max-min fair share: repeatedly compute an
+    equal floor-share among every account still "open" (capacity not yet
+    exhausted), hand that share to ALL of them simultaneously (capped at
+    each one's own remaining room), drop whichever hit their cap, and
+    recompute the share for what's left among the accounts still open.
+    Once fewer items remain than open accounts (share would floor to 0),
+    the last few go one-by-one to whichever open account currently has
+    the MOST remaining room — this is also what naturally reduces to
+    "floor-split evenly, remainder to whoever has more headroom" when
+    every account's capacity is generous enough that it's never actually
+    the bottleneck.
+
+    Returns (assignment, leftover): `leftover` is whatever couldn't be
+    placed because every account's capacity for today is already
+    exhausted — the caller must NOT mark those source items as seen (and
+    must not advance the sync cursor past them), so they're picked up
+    again next sync cycle once quota frees up — same "never drop, only
+    delay" principle as this file's daily posts_per_day rollover."""
+    assignment: dict[str, list] = {aid: [] for aid in capacities}
+    assigned_count = {aid: 0 for aid in capacities}
+    remaining_cap = {aid: max(0, cap) for aid, cap in capacities.items()}
+    active = {aid for aid, cap in remaining_cap.items() if cap > 0}
+    to_place = len(items)
+    while to_place > 0 and active:
+        share = to_place // len(active)
+        if share == 0:
+            ranked = sorted(active, key=lambda a: remaining_cap[a], reverse=True)
+            for aid in ranked[:to_place]:
+                assigned_count[aid] += 1
+                remaining_cap[aid] -= 1
+            to_place = 0
+            break
+        newly_full = []
+        for aid in active:
+            take = min(share, remaining_cap[aid])
+            if take <= 0:
+                continue
+            assigned_count[aid] += take
+            remaining_cap[aid] -= take
+            to_place -= take
+            if remaining_cap[aid] <= 0:
+                newly_full.append(aid)
+        # No stall risk here: `share >= 1` in this branch, and every
+        # account in `active` has remaining_cap > 0 by construction, so
+        # every account above takes at least 1 — to_place strictly
+        # decreases each pass, and the `share == 0` branch above always
+        # finishes off whatever's left once fewer items remain than
+        # open accounts.
+        active -= set(newly_full)
+
+    it = iter(items)
+    for aid, count in assigned_count.items():
+        assignment[aid] = [next(it) for _ in range(count)]
+    leftover = list(it)
+    return assignment, leftover
 
 
 def _effective_gap_minutes(cfg_min: float, cfg_max: float, account: AccountConfig) -> tuple[float, float]:
@@ -324,7 +434,7 @@ def _effective_gap_minutes(cfg_min: float, cfg_max: float, account: AccountConfi
 def _last_scheduled_time_per_group(account_id: str) -> dict[str, datetime]:
     """Most recent scheduled_at (pending or posted) per target group URL
     for this account — seeds the per-group minimum-gap check below so it
-    also respects postings a PREVIOUS sync_once() call already queued,
+    also respects postings a PREVIOUS sync_all() call already queued,
     not only ones decided within the current call."""
     latest: dict[str, datetime] = {}
     for task in schedule_store.list_pending() + schedule_store.list_posted():
@@ -399,240 +509,323 @@ def _format_attr(value: Any) -> str:
     return str(value) if value else ""
 
 
+# 10 variants so the same candidate attributes don't always produce the
+# exact same sentence across different group posts (agreed 2026-09-08 —
+# an identical comment repeated verbatim is a bot tell, same reasoning as
+# the fingerprint-defense work already done for comment_on_group_post).
+# Each template takes `field` (desiredJobField, always non-empty) and
+# `region_clause` (either "" or " ở khu vực X" — built once by the
+# caller so no template needs its own empty-region branch).
+_CANDIDATE_REPLY_TEMPLATES = [
+    "Chào bạn, mình thấy bạn đang tìm {field}{region_clause}, bên mình đang có một số vị trí có thể phù hợp, bạn nhắn tin trao đổi thêm nhé.",
+    "Hii, bên mình đang tuyển {field}{region_clause}, ib mình gửi chi tiết nhé.",
+    "Hi bạn, thấy bạn cần {field}{region_clause}, bên mình có vài vị trí đang tuyển, bạn inbox mình trao đổi thêm nha.",
+    "Alo bạn, bên mình có một số đơn hàng {field}{region_clause} đang cần người, bạn qtam thì nhắn mình nhé.",
+    "Bạn ơi, mình thấy bạn muốn làm {field}{region_clause}, bên mình đang tuyển vị trí tương tự, ib mình tư vấn thêm nhé.",
+    "Nè bạn ơi, bên mình đang cần tuyển {field}{region_clause}, mình nghĩ nó phù hợp với bạn đó, bạn nhắn tin mình nhé.",
+    "Hi bạn, có vị trí {field}{region_clause} đang tuyển bên mình, nt mình liền nha.",
+    "Hi b, mình đang hỗ trợ tuyển {field}{region_clause}, thấy hợp với bạn á, bạn quan tâm thì ib nha",
+    "Bạn ui, bên mình có việc {field}{region_clause} đang cần người gấp, bạn nt mình tư vấn chi tiết nha.",
+    "Chào bạn, mình thấy bạn tìm {field}{region_clause}, bn ib mình trao đổi thêm he.",
+]
+
+
 def _draft_candidate_reply_placeholder(candidate: dict) -> str:
     attrs = candidate.get("attributes") or {}
     field_wanted = _format_attr(attrs.get("desiredJobField")) or "công việc phù hợp"
     region = _format_attr(attrs.get("preferredRegion"))
-    text = f"Chào bạn, mình thấy bạn đang tìm {field_wanted}"
-    if region:
-        text += f" ở khu vực {region}"
-    text += ", bên mình đang có một số vị trí có thể phù hợp, bạn nhắn tin trao đổi thêm nhé."
-    return text
+    region_clause = f" ở khu vực {region}" if region else ""
+    template = random.choice(_CANDIDATE_REPLY_TEMPLATES)
+    return template.format(field=field_wanted, region_clause=region_clause)
 
 
-# TODO(side B contract): "suggestedReply" is a PLACEHOLDER name, agreed
-# 2026-09-08 to keep as a stand-in until side B actually ships this field
-# — NOT YET CONFIRMED in any real response seen so far (checked
-# 2026-09-08 against live /api/candidates, no such field present). Once
-# side B tells us the real field name, update this constant to match —
-# that is the ONLY change needed here; _draft_candidate_reply() below
-# already prefers it over the local template whenever it's a non-empty
-# string. Until then this constant matches nothing, so every candidate
-# keeps falling through to the local template exactly like today.
-SIDE_B_REPLY_FIELD = "suggestedReply"
-
-
-def _draft_candidate_reply(candidate: dict) -> str:
-    """Priority order (agreed 2026-09-08, see the conversation that
-    decided this): (1) side B's own suggested reply, once they actually
-    send SIDE_B_REPLY_FIELD — highest quality, side B has more context on
-    the candidate than we do; (2) TODO — an LLM-drafted reply tailored to
-    this candidate's specific ask (visa type, region, urgency...), still
-    to be researched/designed, not implemented yet; (3) the local
-    template (_draft_candidate_reply_placeholder) as the last-resort
-    fallback, same as the only behavior that existed before this."""
-    side_b_reply = candidate.get(SIDE_B_REPLY_FIELD)
-    if isinstance(side_b_reply, str) and side_b_reply.strip():
-        return side_b_reply.strip()
-    return _draft_candidate_reply_placeholder(candidate)
+async def _fetch_candidate_reply(source_id: str, cfg: DataSyncConfig) -> str | None:
+    """Fetch side B's own Claude-drafted public comment for one candidate
+    (GET /api/candidates/{id}/reply, agreed 2026-09-08) — called from
+    fire_due_tasks() right before a candidate comment actually posts,
+    NOT from the sync loop, because side B only runs its (paid, several-
+    seconds) drafting call when this endpoint is hit. Calling it here
+    still means at most once per candidate: each ScheduledTask fires
+    exactly once — mark_posted()/mark_failed() both move the task out of
+    pending/, so schedule_store.due_tasks() never returns it again: no
+    separate dedup cache needed. Returns None on any failure or an empty/
+    missing "reply" field, so the caller falls back to the local
+    template already stored on the task from schedule time."""
+    token = os.environ.get("DATA_INGESTION_API_TOKEN", "")
+    if not token or not source_id:
+        return None
+    try:
+        async with httpx.AsyncClient(
+            base_url=cfg.base_url,
+            headers={"Authorization": f"Bearer {token}"},
+            timeout=30,
+        ) as client:
+            resp = await client.get(f"/api/candidates/{source_id}/reply")
+            resp.raise_for_status()
+            data = resp.json()
+    except Exception:
+        return None
+    reply = data.get("reply")
+    return reply.strip() if isinstance(reply, str) and reply.strip() else None
 
 
 # --- Main entry point ---------------------------------------------------------
 
-async def sync_once(account_id: str, cfg: DataSyncConfig | None = None) -> dict[str, Any]:
-    """Fetch new jobs/candidates for one account, dedupe, and write new
-    ScheduledTask entries — then always records the outcome via
-    _record_sync_status(), success or failure, BEFORE returning/re-raising,
-    so /admin/config can show it. This wraps _sync_once_inner() rather than
-    recording inline at every return point, so no future edit to that
-    function's body can accidentally add a new return path that skips
-    recording (a real gap before this: the "missing API token" case used to
-    return an {"error": ...} dict that service.py's poll loop never
-    inspected, so it vanished with no trace anywhere)."""
-    now_iso = datetime.now(timezone.utc).isoformat()
-    try:
-        result = await _sync_once_inner(account_id, cfg)
-    except Exception as exc:
-        _record_sync_status(account_id, {"last_run_at": now_iso, "status": "error", "error": str(exc)})
-        raise
-    if "error" in result:
-        _record_sync_status(account_id, {"last_run_at": now_iso, "status": "error", "error": result["error"]})
-    elif "skipped" not in result:
-        _record_sync_status(account_id, {"last_run_at": now_iso, "status": "ok", **result})
-    return result
+async def sync_all(account_ids: list[str], cfg: DataSyncConfig | None = None) -> dict[str, dict[str, Any]]:
+    """Fetch new jobs/candidates from side B ONCE for the whole poll
+    cycle, then FAIR-DISTRIBUTE each genuinely-new item across
+    `account_ids` (every currently-active, sync-enabled account) instead
+    of each account independently re-fetching and racing to claim items
+    first.
 
+    Replaces the old per-account `sync_once(account_id, cfg)` (removed
+    2026-09-10) — that design called this whole fetch+dedupe+schedule
+    pipeline once PER ACCOUNT, in a loop, sharing one global "seen" id
+    cache across every call. The first account processed each poll cycle
+    would fetch a new job, schedule it to broadcast across its OWN
+    joined groups, and mark the job's id "seen" globally — so every
+    OTHER account's own sync_once() call, running moments later in the
+    same loop, would see that id already in `seen` and silently skip it
+    forever. With 2+ accounts, only whichever ran first ever got
+    anything; every other account was starved with no error anywhere
+    (the bug a real multi-account conversation surfaced). Fetching once
+    and explicitly distributing here fixes that at the root.
 
-async def _sync_once_inner(account_id: str, cfg: DataSyncConfig | None) -> dict[str, Any]:
-    """Fetch new jobs/candidates for one account, dedupe, and write new
-    ScheduledTask entries. Never calls run_task() itself — see
-    human_bot/data_sync.py's fire_due_tasks() / human_bot/service.py for
-    the separate, safety-gated step that actually posts. Safe to call
-    repeatedly (idempotent aside from the randomized schedule times for
-    genuinely-new items)."""
+    Distribution uses _water_fill_distribute(): each new job/candidate
+    goes to whichever account(s) still have room today, split as evenly
+    as capacity allows — never exceeding an account's own
+    posts_per_day/comments_per_day headroom for today. Whatever can't be
+    placed because EVERY account is already at capacity is left
+    unmarked (not "seen") and the sync cursor is held back to their
+    timestamp, so they're retried next cycle instead of being dropped.
+
+    Never calls run_task() itself — see fire_due_tasks() / service.py
+    for the separate, safety-gated step that actually posts. Safe to
+    call repeatedly (idempotent aside from the randomized schedule times
+    for genuinely-new items)."""
     cfg = cfg or get_data_sync_config()
     if not cfg.enabled:
-        return {"skipped": "disabled"}
+        return {aid: {"skipped": "disabled"} for aid in account_ids}
+    if not account_ids:
+        return {}
 
-    account: AccountConfig = get_account(account_id)
+    now_iso = datetime.now(timezone.utc).isoformat()
     token = os.environ.get("DATA_INGESTION_API_TOKEN", "")
     if not token:
-        return {"error": "DATA_INGESTION_API_TOKEN not set in .env"}
+        error = "DATA_INGESTION_API_TOKEN not set in .env"
+        for aid in account_ids:
+            _record_sync_status(aid, {"last_run_at": now_iso, "status": "error", "error": error})
+        return {aid: {"error": error} for aid in account_ids}
+
+    accounts: dict[str, AccountConfig] = {aid: get_account(aid) for aid in account_ids}
 
     state = _load_sync_state()
-    jobs_since = state.get(f"{account_id}_jobs_since")
-    candidates_since = state.get(f"{account_id}_candidates_since")
+    jobs_since = state.get("jobs_since")
+    candidates_since = state.get("candidates_since")
 
-    async with httpx.AsyncClient(
-        base_url=cfg.base_url,
-        headers={"Authorization": f"Bearer {token}"},
-        timeout=30,
-    ) as client:
-        jobs_params = {"limit": 200}
-        if jobs_since:
-            jobs_params["since"] = jobs_since
-        candidates_params = {"limit": 200}
-        if candidates_since:
-            candidates_params["since"] = candidates_since
+    try:
+        async with httpx.AsyncClient(
+            base_url=cfg.base_url,
+            headers={"Authorization": f"Bearer {token}"},
+            timeout=30,
+        ) as client:
+            jobs_params = {"limit": 200}
+            if jobs_since:
+                jobs_params["since"] = jobs_since
+            candidates_params = {"limit": 200}
+            if candidates_since:
+                candidates_params["since"] = candidates_since
 
-        jobs = await _fetch_all_pages(client, "/api/jobs", jobs_params)
-        candidates = await _fetch_all_pages(client, "/api/candidates", candidates_params)
+            jobs = await _fetch_all_pages(client, "/api/jobs", jobs_params)
+            candidates = await _fetch_all_pages(client, "/api/candidates", candidates_params)
+    except Exception as exc:
+        for aid in account_ids:
+            _record_sync_status(aid, {"last_run_at": now_iso, "status": "error", "error": str(exc)})
+        raise
 
     seen = _load_seen_ids(cfg.cache_retention_days)
     contacted = _load_contacted_contacts()
+    today = _utc_today()
 
-    now = datetime.now(timezone.utc)
-    post_gap_min, post_gap_max = _effective_gap_minutes(cfg.post_gap_min_minutes, cfg.post_gap_max_minutes, account)
-    comment_gap_min, comment_gap_max = _effective_gap_minutes(
-        cfg.comment_gap_min_minutes, cfg.comment_gap_max_minutes, account
-    )
-    next_post_time = now + timedelta(minutes=random.uniform(post_gap_min, post_gap_max))
-    next_comment_time = now + timedelta(minutes=random.uniform(comment_gap_min, comment_gap_max))
-
-    scheduled_posts = 0
-    scheduled_comments = 0
+    # --- Jobs: figure out each account's remaining posts_per_day room today,
+    # filter to genuinely-new jobs, then hand them out via water-filling.
+    new_jobs = []
     latest_job_ts = jobs_since
-    latest_candidate_ts = candidates_since
-
-    # Daily posts_per_day cap + per-group minimum gap (agreed 2026-09-08 —
-    # broadcasting every new job to every joined group could otherwise
-    # pile up far more posts on one account in one day than a real person
-    # would ever make, regardless of how generous post_gap_min/max is).
-    # Seeded from what's ALREADY on the books (other pending/posted
-    # tasks) so a second sync_once() call the same day doesn't ignore
-    # what the first one already committed.
-    daily_post_limit = account.rate_limits.posts_per_day
-    day_post_counts = _count_scheduled_group_posts_by_day(account_id)
-    last_group_post_at = _last_scheduled_time_per_group(account_id)
-
     for job in jobs:
-        jid = str(job.get("id") or "")
         job_ts = job.get("last_seen_at") or job.get("published_at")
         if job_ts and (latest_job_ts is None or job_ts > latest_job_ts):
             latest_job_ts = job_ts
-        if not jid or jid in seen:
-            continue
-        groups = get_joined_groups(account.account_id)
-        # One drafting call for ALL of this job's groups at once (not one
-        # per group) — content_strategist.draft_group_post_variants() needs
-        # the full group list up front to guarantee the variants it returns
-        # are actually different from each other, not just independently
-        # generated and coincidentally similar.
-        variants = await content_strategist.draft_group_post_variants(job, groups)
-        for group, content in zip(groups, variants):
-            # Clamp the CHAIN variable itself (not a throwaway copy) — see
-            # apply_quiet_hours()'s docstring for why this matters. Also
-            # enforces the daily posts_per_day cap (overflow rolls to the
-            # next day) and a minimum gap since this same group's last
-            # scheduled post — see _next_available_post_slot()'s docstring.
-            next_post_time = _next_available_post_slot(
-                next_post_time, cfg, daily_post_limit, day_post_counts, group.url, last_group_post_at,
-            )
-            scheduled_at = next_post_time
-            day_post_counts[scheduled_at.date()] = day_post_counts.get(scheduled_at.date(), 0) + 1
-            last_group_post_at[group.url] = scheduled_at
-            task = schedule_store.ScheduledTask(
-                task_id=schedule_store.new_task_id(scheduled_at.isoformat()),
-                action="post_to_group",
-                account_id=account_id,
-                scheduled_at=scheduled_at.isoformat(),
-                content=content,
-                target_url=group.url,
-                # media_path intentionally left unset here (TODO 2026-09-04):
-                # once side B's job JSON schema is confirmed to carry its own
-                # image (field name not yet known — nothing in the docs/
-                # sample payloads seen so far), map it here, e.g.
-                # media_path=job.get("image_url"). An explicit media_path set
-                # here always wins over the random-meme default — see
-                # human_bot/agent.py's run_task() — so this is the one place
-                # to change; no other file needs to know about it.
-                reasoning=f"auto: new job {jid} broadcast to joined group '{group.name}'" if group.name
-                else f"auto: new job {jid} broadcast to joined group",
-                source_kind="job",
-                source_id=jid,
-            )
-            schedule_store.add(task)
-            scheduled_posts += 1
-            next_post_time = next_post_time + timedelta(minutes=random.uniform(post_gap_min, post_gap_max))
-        _mark_seen(jid, "job")
+        jid = str(job.get("id") or "")
+        if jid and jid not in seen:
+            new_jobs.append(job)
 
+    job_capacities = {
+        aid: acc.rate_limits.posts_per_day
+        - _count_scheduled_actions_by_day(aid, {"post_to_group"}).get(today, 0)
+        for aid, acc in accounts.items()
+    }
+    job_assignment, deferred_jobs = _water_fill_distribute(new_jobs, job_capacities)
+
+    # --- Candidates: same idea, but the confidence/age/contact skip check
+    # is account-independent, so it's applied ONCE up front — a candidate
+    # that fails it is fully handled (marked seen right away, exactly like
+    # before) and never enters the distributable pool at all.
+    distributable_candidates = []
+    latest_candidate_ts = candidates_since
     for cand in candidates:
-        cid = str(cand.get("id") or "")
         cand_ts = cand.get("last_seen_at") or cand.get("published_at")
         if cand_ts and (latest_candidate_ts is None or cand_ts > latest_candidate_ts):
             latest_candidate_ts = cand_ts
+        cid = str(cand.get("id") or "")
         if not cid or cid in seen:
             continue
-
         attrs = cand.get("attributes") or {}
         confidence = attrs.get("confidence")
-        url = cand.get("url")
         contact = attrs.get("contact")
-
         skip = (
             (confidence is not None and confidence < cfg.candidate_min_confidence)
             or _is_too_old(cand.get("published_at"), cfg.candidate_max_age_days)
-            or not url
+            or not cand.get("url")
             or (contact and contact in contacted)
         )
-        _mark_seen(cid, "candidate")  # mark seen either way — never re-evaluate the same id again
         if skip:
+            _mark_seen(cid, "candidate")  # fully handled — never re-evaluate
             continue
+        distributable_candidates.append(cand)
 
-        action = "comment_on_group_post" if "/groups/" in url else "comment_on_friend_post"
-        # Clamp the CHAIN variable itself (not a throwaway copy) — see
-        # apply_quiet_hours()'s docstring for why this matters.
-        next_comment_time = apply_quiet_hours(next_comment_time, cfg)
-        scheduled_at = next_comment_time
-        task = schedule_store.ScheduledTask(
-            task_id=schedule_store.new_task_id(scheduled_at.isoformat()),
-            action=action,
-            account_id=account_id,
-            scheduled_at=scheduled_at.isoformat(),
-            content=_draft_candidate_reply(cand),
-            target_url=url,
-            reasoning=f"auto: reply to candidate {cid}",
-            source_kind="candidate",
-            source_id=cid,
+    comment_capacities = {
+        aid: acc.rate_limits.comments_per_day
+        - _count_scheduled_actions_by_day(aid, _COMMENT_ACTIONS).get(today, 0)
+        for aid, acc in accounts.items()
+    }
+    candidate_assignment, deferred_candidates = _water_fill_distribute(distributable_candidates, comment_capacities)
+
+    # --- Actually schedule each account's assigned share, using THAT
+    # account's own joined groups / gap settings / existing day-so-far
+    # state — same per-account logic as before, just fed a subset of
+    # items instead of the full new-jobs/new-candidates list.
+    results: dict[str, dict[str, Any]] = {}
+    now = datetime.now(timezone.utc)
+    for aid, account in accounts.items():
+        post_gap_min, post_gap_max = _effective_gap_minutes(cfg.post_gap_min_minutes, cfg.post_gap_max_minutes, account)
+        comment_gap_min, comment_gap_max = _effective_gap_minutes(
+            cfg.comment_gap_min_minutes, cfg.comment_gap_max_minutes, account
         )
-        schedule_store.add(task)
-        scheduled_comments += 1
-        next_comment_time = next_comment_time + timedelta(minutes=random.uniform(comment_gap_min, comment_gap_max))
-        if contact:
-            _mark_contacted(contact)
+        next_post_time = now + timedelta(minutes=random.uniform(post_gap_min, post_gap_max))
+        next_comment_time = now + timedelta(minutes=random.uniform(comment_gap_min, comment_gap_max))
+        scheduled_posts = 0
+        scheduled_comments = 0
 
-    if latest_job_ts:
-        state[f"{account_id}_jobs_since"] = latest_job_ts
-    if latest_candidate_ts:
-        state[f"{account_id}_candidates_since"] = latest_candidate_ts
+        daily_post_limit = account.rate_limits.posts_per_day
+        day_post_counts = _count_scheduled_actions_by_day(aid, {"post_to_group"})
+        last_group_post_at = _last_scheduled_time_per_group(aid)
+
+        for job in job_assignment.get(aid, []):
+            jid = str(job.get("id") or "")
+            groups = get_joined_groups(aid)
+            # One drafting call for ALL of this job's groups at once (not
+            # one per group) — content_strategist.draft_group_post_variants()
+            # needs the full group list up front to guarantee the variants
+            # it returns are actually different from each other, not just
+            # independently generated and coincidentally similar.
+            variants = await content_strategist.draft_group_post_variants(job, groups)
+            for group, content in zip(groups, variants):
+                # Clamp the CHAIN variable itself (not a throwaway copy) —
+                # see apply_quiet_hours()'s docstring for why this matters.
+                # Also enforces the daily posts_per_day cap (overflow rolls
+                # to the next day) and a minimum gap since this same
+                # group's last scheduled post — see
+                # _next_available_post_slot()'s docstring.
+                next_post_time = _next_available_post_slot(
+                    next_post_time, cfg, daily_post_limit, day_post_counts, group.url, last_group_post_at,
+                )
+                scheduled_at = next_post_time
+                day_post_counts[scheduled_at.date()] = day_post_counts.get(scheduled_at.date(), 0) + 1
+                last_group_post_at[group.url] = scheduled_at
+                task = schedule_store.ScheduledTask(
+                    task_id=schedule_store.new_task_id(scheduled_at.isoformat()),
+                    action="post_to_group",
+                    account_id=aid,
+                    scheduled_at=scheduled_at.isoformat(),
+                    content=content,
+                    target_url=group.url,
+                    # media_path intentionally left unset here (TODO 2026-09-04):
+                    # once side B's job JSON schema is confirmed to carry its own
+                    # image (field name not yet known — nothing in the docs/
+                    # sample payloads seen so far), map it here, e.g.
+                    # media_path=job.get("image_url"). An explicit media_path set
+                    # here always wins over the random-meme default — see
+                    # human_bot/agent.py's run_task() — so this is the one place
+                    # to change; no other file needs to know about it.
+                    reasoning=f"auto: new job {jid} broadcast to joined group '{group.name}'" if group.name
+                    else f"auto: new job {jid} broadcast to joined group",
+                    source_kind="job",
+                    source_id=jid,
+                )
+                schedule_store.add(task)
+                scheduled_posts += 1
+                next_post_time = next_post_time + timedelta(minutes=random.uniform(post_gap_min, post_gap_max))
+            _mark_seen(jid, "job")
+
+        for cand in candidate_assignment.get(aid, []):
+            cid = str(cand.get("id") or "")
+            attrs = cand.get("attributes") or {}
+            url = cand.get("url")
+            contact = attrs.get("contact")
+            action = "comment_on_group_post" if "/groups/" in url else "comment_on_friend_post"
+            # Clamp the CHAIN variable itself (not a throwaway copy) — see
+            # apply_quiet_hours()'s docstring for why this matters.
+            next_comment_time = apply_quiet_hours(next_comment_time, cfg)
+            scheduled_at = next_comment_time
+            task = schedule_store.ScheduledTask(
+                task_id=schedule_store.new_task_id(scheduled_at.isoformat()),
+                action=action,
+                account_id=aid,
+                scheduled_at=scheduled_at.isoformat(),
+                content=_draft_candidate_reply_placeholder(cand),
+                target_url=url,
+                reasoning=f"auto: reply to candidate {cid}",
+                source_kind="candidate",
+                source_id=cid,
+            )
+            schedule_store.add(task)
+            scheduled_comments += 1
+            next_comment_time = next_comment_time + timedelta(minutes=random.uniform(comment_gap_min, comment_gap_max))
+            _mark_seen(cid, "candidate")
+            if contact:
+                _mark_contacted(contact)
+
+        result = {
+            "jobs_fetched": len(jobs),
+            "candidates_fetched": len(candidates),
+            "scheduled_posts": scheduled_posts,
+            "scheduled_comments": scheduled_comments,
+        }
+        results[aid] = result
+        _record_sync_status(aid, {"last_run_at": now_iso, "status": "ok", **result})
+
+    # Hold the cursor back to the earliest DEFERRED item's own timestamp
+    # (capacity-exhausted, not yet marked seen) so it's re-fetched next
+    # cycle instead of falling permanently out of the `since` window —
+    # only safe to advance all the way to the latest fetched timestamp
+    # when nothing was deferred.
+    def _cursor(latest_ts, deferred_items):
+        if not deferred_items:
+            return latest_ts
+        deferred_ts = [d.get("last_seen_at") or d.get("published_at") for d in deferred_items]
+        deferred_ts = [t for t in deferred_ts if t]
+        return min(deferred_ts) if deferred_ts else latest_ts
+
+    jobs_cursor = _cursor(latest_job_ts, deferred_jobs)
+    candidates_cursor = _cursor(latest_candidate_ts, deferred_candidates)
+    if jobs_cursor:
+        state["jobs_since"] = jobs_cursor
+    if candidates_cursor:
+        state["candidates_since"] = candidates_cursor
     _save_sync_state(state)
     prune_old_cache(cfg.cache_retention_days)
 
-    return {
-        "jobs_fetched": len(jobs),
-        "candidates_fetched": len(candidates),
-        "scheduled_posts": scheduled_posts,
-        "scheduled_comments": scheduled_comments,
-    }
+    return results
 
 
 async def fire_due_tasks(cfg: SchedulingConfig | None = None) -> dict[str, Any]:
@@ -681,11 +874,22 @@ async def fire_due_tasks(cfg: SchedulingConfig | None = None) -> dict[str, Any]:
             schedule_store.update(task.task_id, last_warning=warning)
             continue
 
+        content = task.content
+        if task.source_kind == "candidate" and task.action in ("comment_on_group_post", "comment_on_friend_post"):
+            # Fetch side B's fresh, Claude-drafted reply right before this
+            # actually posts — see _fetch_candidate_reply()'s docstring
+            # for why here (not the sync loop) is the one-call-per-
+            # candidate point. Falls back to task.content (the local
+            # template stashed at schedule time) on any failure.
+            fresh_reply = await _fetch_candidate_reply(task.source_id, get_data_sync_config())
+            if fresh_reply:
+                content = fresh_reply
+
         request = TaskRequest(
             action=task.action,
             account_id=task.account_id,
             target_url=task.target_url,
-            content=task.content,
+            content=content,
             media_path=task.media_path,
             reasoning=task.reasoning,
             source="schedule_auto",

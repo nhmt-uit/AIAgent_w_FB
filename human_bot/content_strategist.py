@@ -1,7 +1,7 @@
 """
 Purpose of this file / Muc dich cua file nay:
 EN: Drafts the actual wording for a job post broadcast to MULTIPLE Facebook
-groups (human_bot/data_sync.py's sync_once()) — the one place in this
+groups (human_bot/data_sync.py's sync_all()) — the one place in this
 project's pipeline where the same source material genuinely needs to read
 differently more than once, since posting identical text into several
 groups an account belongs to is the clearest spam signal there is (see
@@ -27,7 +27,7 @@ review before it fires (DataSyncConfig.auto_fire_enabled defaults False) —
 this file only changes what the drafted text says, not the safety gate
 around actually posting it.
 VI: Soan noi dung that cho tin tuyen dung duoc dang vao NHIEU nhom Facebook
-cung luc (sync_once() trong human_bot/data_sync.py) — noi duy nhat trong
+cung luc (sync_all() trong human_bot/data_sync.py) — noi duy nhat trong
 pipeline nay thuc su can noi dung khac nhau nhieu lan, vi dang y het chu
 vao nhieu nhom cung tai khoan la dau hieu spam ro nhat (xem
 docs/agents/content-strategist.md, Guardrail 2). Dang len tuong ca nhan

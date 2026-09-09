@@ -61,6 +61,8 @@ from human_bot.runtime_config import (  # noqa: E402
 
 configure_logging()
 
+logger = logging.getLogger(__name__)
+
 SCHEDULE_CLEANUP_INTERVAL_SECONDS = 24 * 60 * 60
 
 
@@ -117,11 +119,18 @@ async def _data_sync_poll_loop() -> None:
                 a for a in get_all_accounts().values()
                 if a.status == AccountStatus.ACTIVE and a.account_id not in sync_disabled
             ]
-            for account in active_accounts:
-                try:
-                    await data_sync.sync_once(account.account_id, cfg)
-                except Exception:  # noqa: BLE001 - one account's failure must not stop the others
-                    logger.exception("data_sync.sync_once failed for account_id=%s", account.account_id)
+            # ONE call for every active account, not one call per account
+            # in a loop — data_sync.sync_all() fetches side B's jobs/
+            # candidates once and fair-distributes them across whichever
+            # accounts are passed in here. Looping sync_once() per account
+            # (removed 2026-09-10) used to make every account after the
+            # first silently get nothing, since they'd all share one
+            # global "seen" cache and the first account to run each cycle
+            # claimed every new item for itself.
+            try:
+                await data_sync.sync_all([a.account_id for a in active_accounts], cfg)
+            except Exception:  # noqa: BLE001 - a bad sync cycle must not kill this loop
+                logger.exception("data_sync.sync_all failed")
             await _wait_until_due(interval_seconds)
         else:
             remaining = interval_seconds if elapsed is None else interval_seconds - elapsed

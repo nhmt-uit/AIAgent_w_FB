@@ -315,19 +315,29 @@ built, not just planned:
 - `human_bot/schedule_store.py` — `ScheduledTask`, file-based
   (`scheduled/pending|posted|failed|cancelled/`), same directory-as-status
   pattern as `content_queue.py`.
-- `human_bot/data_sync.py` — the poller itself: `sync_once(account_id)`
-  fetches `GET /api/jobs` and `GET /api/candidates` (keyset pagination,
-  incremental `since=`), dedupes (day-partitioned id cache under
-  `data_sync_cache/`, plus a separate flat index on
-  `attributes.contact` so the same person isn't re-contacted across
-  multiple posts), and writes `ScheduledTask`s — job posts broadcast
-  across every group in the posting account's joined-groups list
-  (`GroupRef(name, url)` — name kept alongside the URL so a human can
-  tell which group is which; see `human_bot/config.py` and
-  `/admin/groups`), candidate replies filtered by
-  `candidate_min_confidence`/`candidate_max_age_days` and routed to
-  `comment_on_group_post` or `comment_on_friend_post` by whether the
-  candidate's `url` contains `/groups/`. `fire_due_tasks()` checks for due
+- `human_bot/data_sync.py` — the poller itself: `sync_all(account_ids)`
+  fetches `GET /api/jobs` and `GET /api/candidates` ONCE per poll cycle
+  for the whole set of active accounts (keyset pagination, incremental
+  `since=`), dedupes (day-partitioned id cache under `data_sync_cache/`,
+  plus a separate flat index on `attributes.contact` so the same person
+  isn't re-contacted across multiple posts), then FAIR-DISTRIBUTES each
+  genuinely-new job/candidate across the given accounts via
+  `_water_fill_distribute()` — split as evenly as each account's own
+  remaining `posts_per_day`/`comments_per_day` room for today allows,
+  never exceeding any single account's quota; whatever doesn't fit
+  anywhere today is left unmarked and the sync cursor held back to it,
+  so it's retried next cycle instead of dropped (fixed 2026-09-10 — an
+  earlier per-account `sync_once(account_id)`, called once per account in
+  a loop sharing one global "seen" cache, meant only the FIRST account
+  processed each cycle ever got anything; every other active account was
+  silently starved). Each assigned job posts broadcast across every
+  group in that posting account's OWN joined-groups list (`GroupRef(name,
+  url)` — name kept alongside the URL so a human can tell which group is
+  which; see `human_bot/config.py` and `/admin/groups`), assigned
+  candidate replies filtered by `candidate_min_confidence`/
+  `candidate_max_age_days` and routed to `comment_on_group_post` or
+  `comment_on_friend_post` by whether the candidate's `url` contains
+  `/groups/`. `fire_due_tasks()` checks for due
   tasks and — **only if `auto_fire_enabled` is `True`** — calls
   `run_task()` to actually post; left `False` by default, matching this
   project's standing rule of never auto-triggering live Facebook actions
@@ -336,8 +346,9 @@ built, not just planned:
   While the gate is off, everything up through scheduling still runs
   normally, so `/admin/schedule` shows exactly what *would* be posted.
 - `human_bot/service.py` — two background loops added to the existing
-  FastAPI `lifespan` (no new process): one calls `sync_once()` per active
-  account every `poll_interval_minutes`, the other calls `fire_due_tasks()`
+  FastAPI `lifespan` (no new process): one calls `sync_all()` ONCE per
+  `poll_interval_minutes` with the full list of active accounts (not
+  once per account — see `sync_all()`'s docstring), the other calls `fire_due_tasks()`
   every `due_check_interval_seconds`. Each iteration is wrapped so one
   failure (side B unreachable, one bad record) never kills the loop.
 - `human_bot/admin.py` — new `/admin/schedule` page: list pending tasks

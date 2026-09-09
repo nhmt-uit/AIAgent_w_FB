@@ -44,6 +44,7 @@ import os
 import random
 import re
 import secrets
+import sqlite3
 from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile, status
@@ -719,6 +720,24 @@ _PAGE_STYLE = """
     });
   }
 
+  // Rewrites a server-rendered "<span data-local-dt data-utc=...>" (see
+  // admin.py's _local_dt_html()) from its fallback JST text to the
+  // VIEWER's OWN browser-local time — plain Date getters (getHours(),
+  // getDate(), ...) already read in whatever timezone the browser/OS is
+  // set to, no library needed. Left as the server-rendered JST fallback
+  // if this never runs (JS disabled) — still a correct absolute instant,
+  // just a different, fixed label in that case.
+  function initLocalDateTime(el) {
+    if (el.dataset.localDtInit) return;
+    el.dataset.localDtInit = "1";
+    var iso = el.getAttribute("data-utc");
+    var d = iso ? new Date(iso) : null;
+    if (!d || isNaN(d.getTime())) return;
+    function pad(n) { return String(n).padStart(2, "0"); }
+    el.textContent = pad(d.getHours()) + ":" + pad(d.getMinutes()) + " " +
+      pad(d.getDate()) + "-" + pad(d.getMonth() + 1) + "-" + d.getFullYear();
+  }
+
   function setHidden(form, name, value) {
     var el = form.querySelector('input[type=hidden][name="' + name + '"]');
     if (!el) {
@@ -734,6 +753,7 @@ _PAGE_STYLE = """
     root.querySelectorAll("[data-cselect]").forEach(initCSelect);
     root.querySelectorAll("[data-repeatable-blocks]").forEach(initRepeatableBlocks);
     root.querySelectorAll("[data-schedule-field]").forEach(initScheduleField);
+    root.querySelectorAll("[data-local-dt]").forEach(initLocalDateTime);
     root.querySelectorAll("[data-preserve-post-form]").forEach(initPreservePostForm);
     root.querySelectorAll("[data-tabs]").forEach(initTabs);
   }
@@ -1173,7 +1193,7 @@ def _rate_limits_modal_html(account_id: str, limits: RateLimits, is_override: bo
 def _sync_content_html(saved: bool = False, oob: bool = False) -> str:
     """Everything about the side-B sync that's per-account: the Bật/Tắt
     toggle (human_bot/runtime_config.py's get_sync_disabled_account_ids()/
-    set_account_sync_enabled()) AND the last sync_once() outcome
+    set_account_sync_enabled()) AND the last sync_all() outcome
     (human_bot/data_sync.py's get_all_sync_statuses()) — both moved here
     from the "Tài khoản" tab/the old /admin/config page respectively
     (2026-09-08) so everything sync-related lives under one "Đồng bộ" tab
@@ -1990,6 +2010,25 @@ def _fmt_jst(iso: str | None) -> str:
         return iso
 
 
+def _local_dt_html(iso: str | None) -> str:
+    """Same instant as `iso`, rendered in the VIEWER's OWN browser
+    timezone — via initLocalDateTime() in this module's page script,
+    which overwrites the element's text using JS `Date` (its getHours()/
+    getDate()/etc. read in the browser's local timezone automatically).
+    Unlike _fmt_jst() (fixed JST, meant for "when does this reach the
+    Japan-based audience"), this is for a value a live admin is looking
+    at right now on /admin/schedule — "what time is this for ME" — which
+    should track wherever THEY happen to have their browser open (added
+    2026-09-10 after a request to stop hard-coding JST for this one).
+    Server-renders the JST text as a fallback (same as _fmt_jst()) for
+    when JS never runs — always a correct absolute instant either way,
+    just labeled differently once JS replaces it."""
+    if not iso:
+        return "—"
+    fallback = f"{_fmt_jst(iso)} (giờ Nhật Bản)"
+    return f'<span data-local-dt data-utc="{html.escape(iso)}">{fallback}</span>'
+
+
 _SCHEDULE_PAGE_SIZE = 20
 
 
@@ -2073,7 +2112,7 @@ def _schedule_content_html(
 <div class="queue-item">
   <div class="queue-filename">{_action_badge_html(t.action)} · {html.escape(_account_label(t.account_id, accounts))}</div>
   <div class="field-key">id: {html.escape(t.task_id)}</div>
-  <div class="field-key">Ngày giờ thực hiện: {_fmt_jst(t.scheduled_at)} (giờ Nhật Bản)</div>
+  <div class="field-key">Ngày giờ thực hiện: {_local_dt_html(t.scheduled_at)}</div>
   {url_row_html}
   {warning_html}
   <form method="post" action="/admin/schedule/update"
@@ -2194,20 +2233,99 @@ async def schedule_cancel(request: Request, _: None = Depends(_require_auth)):
     return _schedule_redirect(account_id, page, saved=1)
 
 
+# Closes the "Vẫn đăng ngay?" rate-limit modal (see
+# _fire_now_confirm_modal_html()) via an out-of-band swap tacked onto
+# every htmx response from schedule_fire_now() — harmless when no modal
+# is open (an empty #modal-root swapped for an empty #modal-root).
+_MODAL_CLOSE_OOB = '<div id="modal-root" hx-swap-oob="true"></div>'
+
+
+def _fire_now_confirm_modal_html(task_id: str, account_id: str | None, page: int, warning: str) -> str:
+    """Renders the #modal-root swap for schedule_fire_now()'s rate-limit
+    confirmation prompt — shown ONLY when the sole thing blocking the
+    post is the soft min-gap pacing check (human_bot/safety.py's
+    is_gap_reason()), never for a hard per-day/per-hour count cap (those
+    stay a flat refusal — see can_proceed(ignore_gap=...)'s docstring for
+    why). "Vẫn đăng ngay" resubmits the same fire-now form with
+    force=1, which schedule_fire_now() passes through as
+    TaskRequest.force_ignore_gap."""
+    filter_fields = (
+        f'<input type="hidden" name="account_id" value="{html.escape(account_id or "")}">'
+        f'<input type="hidden" name="page" value="{page}">'
+    )
+    return f"""
+<div class="modal-backdrop" onclick="if(event.target===this) this.remove()">
+  <div class="modal-box">
+    <div class="modal-header">
+      <h2>⚠️ Đang bị rate-limit</h2>
+      <button type="button" class="modal-close" onclick="this.closest('.modal-backdrop').remove()">✕</button>
+    </div>
+    <p>{html.escape(warning)}</p>
+    <p class="muted">Bạn có thể đợi đến thời gian gợi ý ở trên, hoặc đăng ngay bây giờ — chỉ bỏ qua khoảng nghỉ tối thiểu giữa 2 hành động, các giới hạn số lượng/ngày và /giờ vẫn được giữ nguyên.</p>
+    <div class="form-actions">
+      <button type="button" class="btn-secondary" style="margin-right:8px;" onclick="this.closest('.modal-backdrop').remove()">Đợi đến giờ gợi ý</button>
+      <form method="post" action="/admin/schedule/fire-now"
+            hx-post="/admin/schedule/fire-now" hx-target="#schedule-content" hx-swap="outerHTML"
+            style="display:inline;">
+        <input type="hidden" name="task_id" value="{html.escape(task_id)}">
+        {filter_fields}
+        <input type="hidden" name="force" value="1">
+        <button type="submit">🚀 Vẫn đăng ngay</button>
+      </form>
+    </div>
+  </div>
+</div>"""
+
+
 @router.post("/schedule/fire-now")
 async def schedule_fire_now(request: Request, _: None = Depends(_require_auth)):
     """Post a scheduled task immediately, bypassing auto_fire_enabled — this
     button is the manual override for when that safety gate is (correctly)
-    left off. See docs/architecture.md section 3c."""
+    left off. See docs/architecture.md section 3c.
+
+    Still goes through RateLimiter — "Đăng ngay" only skips
+    auto_fire_enabled, not rate-limiting. If the sole reason it's blocked
+    is the soft min-gap pacing check, the admin gets a confirmation modal
+    (_fire_now_confirm_modal_html()) offering to override just that gap;
+    a hard per-day/per-hour count cap is never offered an override — see
+    human_bot/safety.py's can_proceed(ignore_gap=...) docstring for why
+    the two are treated differently. Requested 2026-09-09."""
     form = await request.form()
     account_id, page = _schedule_form_filter(form)
     task_id = str(form.get("task_id", ""))
+    force = str(form.get("force", "")) == "1"
     task = schedule_store.get(task_id)
     if task is None:
         err = "Không tìm thấy mục này"
         if _is_htmx(request):
-            return HTMLResponse(_schedule_content_html(account_id=account_id, page=page, error=err))
+            return HTMLResponse(_schedule_content_html(account_id=account_id, page=page, error=err) + _MODAL_CLOSE_OOB)
         return _schedule_redirect(account_id, page, error=err)
+
+    from human_bot.agent import rate_limit_bucket_for
+    from human_bot.safety import RateLimiter, is_gap_reason, rate_limit_wait_message
+    account = get_all_accounts().get(task.account_id)
+    bucket = rate_limit_bucket_for(task.action)
+    if account and bucket and not force:
+        allowed, reason = RateLimiter(account).can_proceed(bucket)
+        if not allowed and is_gap_reason(reason):
+            # Soft pacing gap only — offer the override modal instead of
+            # failing outright. Doesn't record an attempt (can_proceed()
+            # is read-only).
+            warning = rate_limit_wait_message(account, bucket) or reason
+            if _is_htmx(request):
+                # The triggering "🚀 Đăng ngay" form's hx-target is
+                # #schedule-content (outerHTML) — returning ONLY the modal
+                # here would swap the modal itself into #schedule-content,
+                # deleting that id from the DOM and leaving the modal's
+                # own "Vẫn đăng ngay" form (hx-target="#schedule-content")
+                # with nothing to swap into (silently does nothing on
+                # click — the bug reported 2026-09-09). #schedule-content
+                # must stay present as the primary swap; the modal goes in
+                # separately via an OOB swap into #modal-root.
+                modal_oob = f'<div id="modal-root" hx-swap-oob="true">{_fire_now_confirm_modal_html(task_id, account_id, page, warning)}</div>'
+                return HTMLResponse(_schedule_content_html(account_id=account_id, page=page) + modal_oob)
+            return _schedule_redirect(account_id, page, error=warning)
+
     result = await run_task(TaskRequest(
         action=task.action,
         account_id=task.account_id,
@@ -2218,29 +2336,27 @@ async def schedule_fire_now(request: Request, _: None = Depends(_require_auth)):
         source="schedule_manual",
         source_kind=task.source_kind,
         source_id=task.source_id,
+        force_ignore_gap=force,
     ))
     if result.success:
         schedule_store.mark_posted(task_id, result.message)
         if _is_htmx(request):
-            return HTMLResponse(_schedule_content_html(account_id=account_id, page=page, saved=True))
+            return HTMLResponse(_schedule_content_html(account_id=account_id, page=page, saved=True) + _MODAL_CLOSE_OOB)
         return _schedule_redirect(account_id, page, saved=1)
     if result.message.startswith("rate_limited:"):
         # Same reasoning as data_sync.py's fire_due_tasks(): this isn't a
         # real failure of the post, it just fired too soon after the
-        # account's last action — keep it in pending/ with a warning
-        # instead of failed/.
-        from human_bot.agent import rate_limit_bucket_for
-        from human_bot.safety import rate_limit_wait_message
-        account = get_all_accounts().get(task.account_id)
-        bucket = rate_limit_bucket_for(task.action)
+        # account's last action (or hit a hard count cap — never
+        # overridable) — keep it in pending/ with a warning instead of
+        # failed/.
         warning = rate_limit_wait_message(account, bucket) if account and bucket else None
         schedule_store.update(task_id, last_warning=warning or result.message)
         if _is_htmx(request):
-            return HTMLResponse(_schedule_content_html(account_id=account_id, page=page, error=warning or result.message))
+            return HTMLResponse(_schedule_content_html(account_id=account_id, page=page, error=warning or result.message) + _MODAL_CLOSE_OOB)
         return _schedule_redirect(account_id, page, error=warning or result.message)
     schedule_store.mark_failed(task_id, result.message)
     if _is_htmx(request):
-        return HTMLResponse(_schedule_content_html(account_id=account_id, page=page, error=f"Đăng thất bại: {result.message}"))
+        return HTMLResponse(_schedule_content_html(account_id=account_id, page=page, error=f"Đăng thất bại: {result.message}") + _MODAL_CLOSE_OOB)
     return _schedule_redirect(account_id, page, error=f"Đăng thất bại: {result.message}")
 
 
@@ -2542,6 +2658,19 @@ _REPORTS_DAYS_LABELS: dict[str, str] = {
 }
 _REPORTS_RECENT_PAGE_SIZE = 15
 
+# Actions "Đăng lại" (repost) can resubmit from a past action_log row —
+# the ones that post free-form `content` somewhere (own profile / a group)
+# plus group comments (added on request — comment_on_friend_post stays out
+# since that action is intentionally deprioritized/paused, see
+# docs/architecture.md or ask before re-enabling it). Like/read actions
+# have no standalone "content" to repost, and media_path is never stored in
+# action_log (see docstring on the "Đăng lại" button below), so a repost is
+# always text-only regardless of whether the original post had an image
+# attached. Only offered for FAILED rows — a successful attempt doesn't
+# need retrying, and resubmitting a successful comment/post would just be
+# posting a duplicate (per-project decision, 2026-09-09).
+_REPOSTABLE_ACTIONS = {"post_to_own_profile", "post_to_group", "comment_on_group_post"}
+
 
 def _reports_since(days: str | None) -> str | None:
     """`days` (from the "Khoảng thời gian" filter, e.g. "30") to an ISO
@@ -2556,9 +2685,14 @@ def _reports_since(days: str | None) -> str | None:
     return (datetime.now(timezone.utc) - timedelta(days=n)).isoformat()
 
 
-def _reports_content_html(account_id: str | None = None, days: str | None = None, page: int = 1) -> str:
+def _reports_content_html(
+    account_id: str | None = None, days: str | None = None, page: int = 1,
+    posted: str | None = None, error: str | None = None,
+) -> str:
     accounts = get_all_accounts()
     since = _reports_since(days)
+    flash = f'<p class="flash">✅ {html.escape(posted)}</p>' if posted else ""
+    err = f'<p class="error">⚠️ {html.escape(error)}</p>' if error else ""
 
     account_options = '<option value="">— Tất cả tài khoản —</option>' + "".join(
         f'<option value="{html.escape(aid)}"{" selected" if aid == account_id else ""}>{html.escape(a.display_name)} ({html.escape(aid)})</option>'
@@ -2656,6 +2790,34 @@ def _reports_content_html(account_id: str | None = None, days: str | None = None
         account_id=account_id,
         since=since,
     )
+    def _repost_button_html(r: sqlite3.Row) -> str:
+        # Only offer "Đăng lại" for actions that post free-form `content`
+        # somewhere, only when that content survived into the log row, and
+        # only for FAILED attempts — a successful one doesn't need
+        # retrying, and resubmitting it would just post/comment a
+        # duplicate (per-project decision, 2026-09-09). A repost resubmits
+        # via run_task() exactly like /admin/schedule's "Đăng ngay", but
+        # built from action_log instead of a pending schedule_store task.
+        # media_path is never in action_log (not captured by agent.py's
+        # _log_result()), so a repost is always text-only even if the
+        # original attempt had an image attached.
+        if r['action'] not in _REPOSTABLE_ACTIONS or r['success'] or not (r['content'] or '').strip():
+            return ""
+        is_comment = r['action'] in ("comment_on_group_post", "comment_on_friend_post")
+        confirm_msg = "Đăng lại comment này ngay bây giờ?" if is_comment else "Đăng lại bài viết này ngay bây giờ?"
+        filter_fields = (
+            f'<input type="hidden" name="account_id" value="{html.escape(account_id or "")}">'
+            f'<input type="hidden" name="days" value="{html.escape(days or "")}">'
+            f'<input type="hidden" name="page" value="{page}">'
+            f'<input type="hidden" name="log_id" value="{r["id"]}">'
+        )
+        return f"""<form method="post" action="/admin/reports/repost" style="display:inline;"
+        hx-post="/admin/reports/repost" hx-target="#reports-content" hx-swap="outerHTML"
+        hx-confirm="{confirm_msg}">
+  {filter_fields}
+  <button type="submit" class="btn-secondary btn-small" title="Đăng lại">↻</button>
+</form>"""
+
     if recent_rows:
         recent_html = "".join(
             f"""<tr>
@@ -2667,11 +2829,12 @@ def _reports_content_html(account_id: str | None = None, days: str | None = None
   <td>{html.escape(_SOURCE_LABELS.get(r['source'], r['source']))}</td>
   <td>{_screenshot_link_html(r['screenshot_path'] if 'screenshot_path' in r.keys() else None)}</td>
   <td class="muted">{_expandable_text(r['message'])}</td>
+  <td>{_repost_button_html(r)}</td>
 </tr>""" for r in recent_rows
         )
         recent_table = f"""
 <div class="table-scroll" style="max-height:420px; overflow-y:auto;"><table class="data-table">
-  <thead><tr><th>Thời gian (UTC)</th><th>Tài khoản</th><th>Hành động</th><th>Đích</th><th>KQ</th><th>Nguồn</th><th>Ảnh</th><th>Ghi chú</th></tr></thead>
+  <thead><tr><th>Thời gian (UTC)</th><th>Tài khoản</th><th>Hành động</th><th>Đích</th><th>KQ</th><th>Nguồn</th><th>Ảnh</th><th>Ghi chú</th><th>Thao tác</th></tr></thead>
   <tbody>{recent_html}</tbody>
 </table></div>"""
     else:
@@ -2698,6 +2861,8 @@ def _reports_content_html(account_id: str | None = None, days: str | None = None
 </div>"""
 
     return f"""<div id="reports-content">
+{flash}
+{err}
 {filter_html}
 {summary_html}
 
@@ -2747,9 +2912,11 @@ async def reports_page(
     account_id: str | None = None,
     days: str | None = None,
     page: int = 1,
+    posted: str | None = None,
+    error: str | None = None,
     _: None = Depends(_require_auth),
 ) -> str:
-    content = _reports_content_html(account_id=account_id, days=days, page=page)
+    content = _reports_content_html(account_id=account_id, days=days, page=page, posted=posted, error=error)
     if _is_htmx(request):
         return content
     return _layout(f"""
@@ -2757,3 +2924,67 @@ async def reports_page(
 <p class="page-desc">Thống kê từ toàn bộ hành động human_bot đã thử thực hiện (thành công lẫn thất bại) — ghi tự động mỗi lần qua human_bot/agent.py's run_task(), không phân biệt đăng thủ công, từ hàng đợi, đặt lịch, hay tự động từ bộ đồng bộ bên B.</p>
 {content}
 """, active="reports")
+
+
+def _reports_redirect(account_id: str | None, days: str | None, page: int, **params) -> RedirectResponse:
+    from urllib.parse import urlencode
+    query = {"account_id": account_id, "days": days, "page": page, **params}
+    query = {k: v for k, v in query.items() if v not in (None, "", 0)}
+    return RedirectResponse(url=f"/admin/reports?{urlencode(query)}", status_code=303)
+
+
+@router.post("/reports/repost")
+async def reports_repost(request: Request, _: None = Depends(_require_auth)):
+    """"Đăng lại" — resubmit a past action_log row as a brand-new task via
+    run_task(), fired immediately (same as /admin/schedule's "Đăng ngay").
+    Only ever text-only: media_path is never captured in action_log (see
+    _repost_button_html's docstring in _reports_content_html), so an
+    original post that had an image attached reposts without it."""
+    form = await request.form()
+    account_id = str(form.get("account_id", "")).strip() or None
+    days = str(form.get("days", "")).strip() or None
+    try:
+        page = int(str(form.get("page", "1")))
+    except ValueError:
+        page = 1
+    try:
+        log_id = int(str(form.get("log_id", "")))
+    except ValueError:
+        return _reports_redirect(account_id, days, page, error="Thiếu id bản ghi")
+
+    row = db.get_action_log(log_id)
+    if row is None:
+        err = "Không tìm thấy bản ghi này"
+        if _is_htmx(request):
+            return HTMLResponse(_reports_content_html(account_id=account_id, days=days, page=page, error=err))
+        return _reports_redirect(account_id, days, page, error=err)
+    if row["action"] not in _REPOSTABLE_ACTIONS or row["success"] or not (row["content"] or "").strip():
+        err = "Hành động này không thể đăng lại"
+        if _is_htmx(request):
+            return HTMLResponse(_reports_content_html(account_id=account_id, days=days, page=page, error=err))
+        return _reports_redirect(account_id, days, page, error=err)
+
+    try:
+        result = await run_task(TaskRequest(
+            action=row["action"],
+            account_id=row["account_id"],
+            target_url=row["target_url"],
+            content=row["content"],
+            reasoning=f"repost: từ báo cáo (bản ghi #{log_id})",
+            source="manual",
+        ))
+    except ValueError as exc:
+        err = str(exc)
+        if _is_htmx(request):
+            return HTMLResponse(_reports_content_html(account_id=account_id, days=days, page=page, error=err))
+        return _reports_redirect(account_id, days, page, error=err)
+
+    if result.success:
+        msg = "Đã đăng lại."
+        if _is_htmx(request):
+            return HTMLResponse(_reports_content_html(account_id=account_id, days=days, page=page, posted=msg))
+        return _reports_redirect(account_id, days, page, posted=msg)
+    err = f"Đăng lại thất bại: {result.message}"
+    if _is_htmx(request):
+        return HTMLResponse(_reports_content_html(account_id=account_id, days=days, page=page, error=err))
+    return _reports_redirect(account_id, days, page, error=err)
