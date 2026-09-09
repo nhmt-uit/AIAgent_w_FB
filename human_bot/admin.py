@@ -4,8 +4,7 @@ EN: Local-only web admin UI, mounted into human_bot/service.py's FastAPI
 app under /admin. Two things it replaces: (1) editing HUMAN_TYPING_* values
 in .env and restarting the process — now a form that writes
 runtime_config.json and takes effect on the very next post; (2) typing
-post content as a terminal command-line argument — now a textarea, or a
-.txt file dropped into content_queue/pending/. This page has real
+post content as a terminal command-line argument — now a textarea. This page has real
 Facebook-posting power (it calls the exact same run_task() as the /tasks
 API n8n uses), so it is protected with HTTP Basic Auth when ADMIN_USERNAME
 and ADMIN_PASSWORD are set in .env, and should never be exposed to the
@@ -15,8 +14,7 @@ cua human_bot/service.py duoi duong dan /admin. No thay the hai viec:
 (1) sua cac gia tri HUMAN_TYPING_* trong .env roi khoi dong lai tien
 trinh — gio la mot form ghi vao runtime_config.json va co hieu luc ngay
 tu lan dang bai tiep theo; (2) go noi dung bai dang truc tiep trong tham
-so dong lenh terminal — gio la mot o textarea, hoac tha mot file .txt vao
-content_queue/pending/. Trang nay co quyen dang bai that len Facebook (no
+so dong lenh terminal — gio la mot o textarea. Trang nay co quyen dang bai that len Facebook (no
 goi dung ham run_task() giong het API /tasks ma n8n dung), nen duoc bao
 ve bang HTTP Basic Auth khi ADMIN_USERNAME va ADMIN_PASSWORD duoc dat
 trong .env, va khong duoc phep mo ra internet cong khai — xem
@@ -47,12 +45,12 @@ import secrets
 import sqlite3
 from datetime import datetime, timedelta, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from pathlib import Path
 
-from human_bot import content_queue, db, schedule_store, screenshots
+from human_bot import db, schedule_store, screenshots
 from human_bot.agent import TaskRequest, run_task
 from human_bot.config import (
     ACCOUNT_AGE_TIERS,
@@ -115,8 +113,6 @@ from human_bot.safety_cooldown_config import SafetyCooldownConfig
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 _security = HTTPBasic(auto_error=False)
-
-_POSTABLE_ACTIONS = ["post_to_own_profile"]
 
 # Human-readable Vietnamese labels for internal snake_case keys shown
 # anywhere in the admin UI (dropdowns, tables) — the raw key (e.g.
@@ -698,10 +694,10 @@ _PAGE_STYLE = """
     });
   }
 
-  // Plain tab switcher for /admin/post's Tường cá nhân / Đăng vào nhóm /
-  // Hàng đợi sections — added because the page got long enough that
-  // having all 3 always visible at once was more scrolling than
-  // scanning. No routing/state beyond which panel is showing; the
+  // Plain tab switcher for /admin/post's Tường cá nhân / Đăng vào nhóm
+  // sections — added because the page got long enough that having both
+  // always visible at once was more scrolling than scanning. No
+  // routing/state beyond which panel is showing; the
   // initial active tab is decided server-side (post_form()'s `tab` query
   // param — set on a validation-error redirect so the right panel is
   // already open when the page comes back).
@@ -1789,23 +1785,7 @@ async def post_form(
   <div class="empty-state">Tài khoản này chưa có nhóm nào — thêm ở <a href="/admin/groups?account_id={html.escape(account_id)}">/admin/groups</a> trước.</div>
 </div>"""
 
-    queue_items = content_queue.list_pending()
-    if queue_items:
-        queue_html = "".join(f"""
-<div class="queue-item">
-  <div class="queue-filename">{html.escape(item['filename'])}</div>
-  <div class="queue-preview">{html.escape(item['preview'])}</div>
-  <form method="post" action="/admin/post/queue">
-    <input type="hidden" name="filename" value="{html.escape(item['filename'])}">
-    {_custom_select("account_id", account_ids, labels=account_labels)}
-    {_custom_select("action", _POSTABLE_ACTIONS, labels=_ACTION_LABELS)}
-    <button type="submit" class="btn-small">Đăng mục này</button>
-  </form>
-</div>""" for item in queue_items)
-    else:
-        queue_html = '<div class="empty-state">Hàng đợi trống. Thả file .txt vào content_queue/pending/, hoặc tải lên bên dưới.</div>'
-
-    active_tab = tab if tab in ("profile", "group", "queue") else "profile"
+    active_tab = tab if tab in ("profile", "group") else "profile"
 
     def tab_btn(key: str, label: str) -> str:
         cls = "tab-btn active" if key == active_tab else "tab-btn"
@@ -1826,7 +1806,6 @@ async def post_form(
   <div class="tab-bar">
     {tab_btn("profile", "👤 Tường cá nhân")}
     {tab_btn("group", "👥 Đăng vào nhóm")}
-    {tab_btn("queue", "📥 Hàng đợi nội dung")}
   </div>
 
   <div class="tab-panel" id="tab-profile"{panel_attrs("profile")}>
@@ -1846,20 +1825,6 @@ async def post_form(
 
   <div class="tab-panel" id="tab-group"{panel_attrs("group")}>
     {group_post_card}
-  </div>
-
-  <div class="tab-panel" id="tab-queue"{panel_attrs("queue")}>
-    <div class="card">
-      <h2>📥 Hàng đợi nội dung (content_queue/pending/)</h2>
-      {queue_html}
-    </div>
-    <div class="card">
-      <h2>⬆️ Tải lên file .txt mới vào hàng đợi</h2>
-      <form method="post" action="/admin/post/upload" enctype="multipart/form-data" style="display:flex; gap:10px; align-items:center;">
-        <input type="file" name="file" accept=".txt" required style="width:auto; flex:1;">
-        <button type="submit" class="btn-secondary">Thêm vào hàng đợi</button>
-      </form>
-    </div>
   </div>
 </div>
 """, active="post")
@@ -1943,32 +1908,6 @@ async def post_schedule_groups(request: Request, _: None = Depends(_require_auth
             )
 
     return RedirectResponse(url=f"/admin/post?account_id={account_id}&tab=group&scheduled={scheduled_count}", status_code=303)
-
-
-@router.post("/post/queue")
-async def post_from_queue(request: Request, _: None = Depends(_require_auth)) -> RedirectResponse:
-    form = await request.form()
-    filename = str(form.get("filename", ""))
-    account_id = str(form.get("account_id", ""))
-    action = str(form.get("action", ""))
-    try:
-        content = content_queue.read_pending(filename)
-    except FileNotFoundError:
-        return RedirectResponse(url="/admin/post?tab=queue&error=File+không+còn+trong+hàng+đợi", status_code=303)
-    result = await run_task(TaskRequest(action=action, account_id=account_id, content=content, source="queue"))
-    if result.success:
-        content_queue.mark_posted(filename)
-        return RedirectResponse(url=f"/admin/post?tab=queue&posted=Đã đăng {filename}: {result.message}", status_code=303)
-    content_queue.mark_failed(filename, result.message)
-    return RedirectResponse(url=f"/admin/post?tab=queue&error=Đăng {filename} thất bại: {result.message}", status_code=303)
-
-
-@router.post("/post/upload")
-async def post_upload(file: UploadFile, _: None = Depends(_require_auth)) -> RedirectResponse:
-    raw = await file.read()
-    text = raw.decode("utf-8", errors="replace")
-    saved_name = content_queue.add_pending(file.filename or "post.txt", text)
-    return RedirectResponse(url=f"/admin/post?tab=queue&posted=Đã thêm vào hàng đợi: {saved_name}", status_code=303)
 
 
 # --- Schedule (side-B data-sync poller output) ------------------------------
