@@ -82,18 +82,23 @@ class AccountSession:
             await self.close()
         self._playwright = await async_playwright().start()
         self.browser = await self._playwright.chromium.launch(headless=self.headless)
-        self.context = await self.browser.new_context(
-            storage_state=str(self.account.storage_state_path),
-            # All recorded selectors in human_bot/actions.py are written
-            # against Facebook's ENGLISH UI (decided 2026-09-03 — see
-            # docs/skills/facebook-custom-actions.md, "Facebook UI
-            # language"). Forcing it here means the bot doesn't depend on
-            # the machine's own locale or Facebook's guess from IP/device
-            # — but the FACEBOOK ACCOUNT ITSELF must also have its display
-            # language set to English in its own settings, since an
-            # account-level language preference can still override this.
-            locale="en-US",
-        )
+        # storage_state is only passed when the file actually exists —
+        # Playwright's new_context(storage_state=...) treats a str as a
+        # file PATH it reads itself and raises FileNotFoundError if it's
+        # missing (not "start logged out"), which used to crash the whole
+        # service at startup (warm_up() below) the moment any registered
+        # account had never completed a login (e.g. registered at
+        # /admin/accounts before running bootstrap_login.py, or before
+        # confirming human_bot/bootstrap_login_sessions.py's web flow).
+        # Falling back to no storage_state just means this context starts
+        # logged out, same as a brand-new Chrome profile — every real
+        # action against it will simply fail/redirect to login until the
+        # account actually logs in and saves a session, instead of taking
+        # the whole process down.
+        context_kwargs: dict = {"locale": "en-US"}
+        if self.account.storage_state_path.exists():
+            context_kwargs["storage_state"] = str(self.account.storage_state_path)
+        self.context = await self.browser.new_context(**context_kwargs)
         self.page = await self.context.new_page()
 
     async def restart_session(self) -> None:
@@ -158,9 +163,18 @@ def get_session(account: AccountConfig) -> AccountSession:
 
 
 async def warm_up(accounts: list[AccountConfig]) -> None:
-    """Pre-launch browsers for the given accounts (call at service startup)."""
+    """Pre-launch browsers for the given accounts (call at service startup).
+    One account failing to start (bad/corrupt storage_state.json, a
+    launch-time Playwright error, etc.) must never take the other accounts
+    — or the whole service — down with it; ensure_started() is called
+    lazily again before every real task anyway (see human_bot/agent.py's
+    run_task()), so a failure here just means that account starts cold
+    instead of pre-warmed."""
     for account in accounts:
-        await get_session(account).ensure_started()
+        try:
+            await get_session(account).ensure_started()
+        except Exception as e:  # noqa: BLE001 — see docstring
+            print(f"[browser_pool] warning: warm_up failed for {account.account_id!r}: {e}")
 
 
 async def close_all() -> None:

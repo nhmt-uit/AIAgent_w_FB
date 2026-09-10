@@ -35,6 +35,7 @@ giu nguyen va duoc dinh nghia lai bang Tailwind @apply trong _PAGE_STYLE,
 nen phan lon HTML sinh ra o duoi khong doi — chi doi cach cac class do
 duoc ve.
 """
+import asyncio
 import dataclasses
 import html
 import json
@@ -50,7 +51,7 @@ from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from pathlib import Path
 
-from human_bot import db, schedule_store, screenshots
+from human_bot import bootstrap_login_sessions, db, schedule_store, screenshots
 from human_bot.agent import TaskRequest, run_task
 from human_bot.config import (
     ACCOUNT_AGE_TIERS,
@@ -1098,6 +1099,142 @@ def _account_modal_html(account_id: str = "", display_name: str = "", error: str
 </div>"""
 
 
+def _bootstrap_login_status_html(account_id: str) -> str:
+    """The part of the "Đăng nhập & lưu phiên" modal that changes as the
+    background login session (human_bot/bootstrap_login_sessions.py)
+    progresses — polled by htmx every 2s while "opening"/"waiting_confirm"
+    so an operator watching /admin sees the real state (in particular:
+    when it's finally safe to click "Đã đăng nhập xong") without needing
+    to guess or refresh."""
+    state, error = bootstrap_login_sessions.status(account_id)
+    aid_html = html.escape(account_id)
+    if state in ("none", "opening"):
+        return f"""
+<div id="bootstrap-login-status" hx-get="/admin/accounts/bootstrap-login/status?account_id={aid_html}"
+     hx-trigger="load delay:2s" hx-target="this" hx-swap="outerHTML">
+  <p class="page-desc">⏳ Đang mở trình duyệt cho <code>{aid_html}</code>... Cửa sổ Chrome sẽ hiện trên MÁY ĐANG CHẠY human_bot (không phải máy bạn đang xem trang này).</p>
+</div>"""
+    if state == "waiting_confirm":
+        return f"""
+<div id="bootstrap-login-status">
+  <p class="page-desc">🌐 Cửa sổ trình duyệt đã mở tới trang đăng nhập Facebook. Đăng nhập thủ công (kể cả 2FA nếu có) tới khi vào được trang chủ Facebook bình thường, rồi bấm nút bên dưới.</p>
+  <div class="form-actions">
+    <button type="button" class="btn-secondary" style="margin-right:8px;"
+      hx-post="/admin/accounts/bootstrap-login/cancel" hx-vals='{{"account_id": "{aid_html}"}}'
+      hx-target="#bootstrap-login-status" hx-swap="outerHTML">✕ Huỷ, đóng trình duyệt</button>
+    <button type="button"
+      hx-post="/admin/accounts/bootstrap-login/confirm" hx-vals='{{"account_id": "{aid_html}"}}'
+      hx-target="#bootstrap-login-status" hx-swap="outerHTML">✅ Đã đăng nhập xong, lưu phiên</button>
+  </div>
+</div>"""
+    if state == "saved":
+        # Not actually reachable via polling — accounts_bootstrap_login_
+        # confirm() (the only path that reaches "saved") pops the session
+        # right after, so the next status() call sees "none" again. Kept
+        # as a defensive fallback rendering, not dead-code cleanup bait.
+        return f"""
+<div id="bootstrap-login-status">
+  <p class="flash">✅ Đã lưu phiên đăng nhập cho <code>{aid_html}</code>. Có thể đóng cửa sổ này.</p>
+</div>"""
+    # "error"
+    err_html = html.escape(error or "lỗi không rõ")
+    return f"""
+<div id="bootstrap-login-status">
+  <p class="error">⚠️ Không mở được trình duyệt cho <code>{aid_html}</code>: {err_html}</p>
+  <div class="form-actions">
+    <button type="button"
+      hx-post="/admin/accounts/bootstrap-login/start" hx-vals='{{"account_id": "{aid_html}"}}'
+      hx-target="#bootstrap-login-status" hx-swap="outerHTML">🔁 Thử lại</button>
+  </div>
+</div>"""
+
+
+def _bootstrap_login_modal_html(account_id: str) -> str:
+    aid_html = html.escape(account_id)
+    return f"""
+<div class="modal-backdrop" onclick="if(event.target===this) this.remove()">
+  <div class="modal-box">
+    <div class="modal-header">
+      <h2>🌐 Đăng nhập &amp; lưu phiên — {aid_html}</h2>
+      <button type="button" class="modal-close" onclick="this.closest('.modal-backdrop').remove()">✕</button>
+    </div>
+    <p class="page-desc">Thay cho việc tự chạy <code>python3 human_bot/bootstrap_login.py {aid_html}</code> trong terminal — chỉ dùng được khi human_bot đang chạy trên máy có màn hình (không phải server từ xa/không màn hình), vì trình duyệt mở ra nằm trên máy đó, không phải máy bạn đang xem trang admin này.</p>
+    <div class="form-actions">
+      <button type="button"
+        hx-post="/admin/accounts/bootstrap-login/start" hx-vals='{{"account_id": "{aid_html}"}}'
+        hx-target="#bootstrap-login-status" hx-swap="outerHTML">🌐 Mở trình duyệt đăng nhập</button>
+    </div>
+    <div id="bootstrap-login-status"></div>
+  </div>
+</div>"""
+
+
+@router.get("/accounts/bootstrap-login-modal", response_class=HTMLResponse)
+async def accounts_bootstrap_login_modal(account_id: str, _: None = Depends(_require_auth)) -> str:
+    return _bootstrap_login_modal_html(account_id)
+
+
+@router.post("/accounts/bootstrap-login/start", response_class=HTMLResponse)
+async def accounts_bootstrap_login_start(request: Request, _: None = Depends(_require_auth)) -> str:
+    form = await request.form()
+    account_id = str(form.get("account_id", "")).strip()
+    if not re.fullmatch(r"[a-z0-9_]+", account_id or ""):
+        return '<div id="bootstrap-login-status"><p class="error">⚠️ account_id không hợp lệ</p></div>'
+    # Fire-and-forget: bootstrap_login_sessions.start() opens the (headed)
+    # browser and awaits page.goto() itself, which can take a couple
+    # seconds — the request handler returns immediately with a polling
+    # panel instead of making the operator's browser tab hang waiting on
+    # it. See that module's docstring for the full state machine.
+    asyncio.create_task(bootstrap_login_sessions.start(account_id))
+    return _bootstrap_login_status_html(account_id)
+
+
+@router.get("/accounts/bootstrap-login/status", response_class=HTMLResponse)
+async def accounts_bootstrap_login_status(account_id: str, _: None = Depends(_require_auth)) -> str:
+    return _bootstrap_login_status_html(account_id)
+
+
+@router.post("/accounts/bootstrap-login/confirm", response_class=HTMLResponse)
+async def accounts_bootstrap_login_confirm(request: Request, _: None = Depends(_require_auth)) -> str:
+    form = await request.form()
+    account_id = str(form.get("account_id", "")).strip()
+    ok, error = await bootstrap_login_sessions.confirm(account_id)
+    aid_html = html.escape(account_id)
+    if not ok:
+        # bootstrap_login_sessions.confirm() already dropped the dead
+        # session on failure (browser/context closed either way) — offer
+        # a way back in instead of a dead-end message with no button.
+        err_html = html.escape(error or "lỗi không rõ")
+        return f"""
+<div id="bootstrap-login-status">
+  <p class="error">⚠️ {err_html}</p>
+  <div class="form-actions">
+    <button type="button"
+      hx-post="/admin/accounts/bootstrap-login/start" hx-vals='{{"account_id": "{aid_html}"}}'
+      hx-target="#bootstrap-login-status" hx-swap="outerHTML">🔁 Mở lại trình duyệt</button>
+  </div>
+</div>"""
+    # confirm() already popped the in-memory session on success, so
+    # _bootstrap_login_status_html(account_id) would now read back "none"
+    # (nothing in flight) and render the wrong ("still opening") panel —
+    # build the success message directly instead of going through it.
+    # Also refresh the accounts table out-of-band so the "chưa có
+    # storage_state.json" badge/button for this row flips to "phiên OK"
+    # without the operator needing to close the modal and reload.
+    return f"""
+<div id="bootstrap-login-status">
+  <p class="flash">✅ Đã lưu phiên đăng nhập cho <code>{aid_html}</code>. Có thể đóng cửa sổ này.</p>
+</div>{_accounts_content_html(oob=True)}"""
+
+
+@router.post("/accounts/bootstrap-login/cancel", response_class=HTMLResponse)
+async def accounts_bootstrap_login_cancel(request: Request, _: None = Depends(_require_auth)) -> str:
+    form = await request.form()
+    account_id = str(form.get("account_id", "")).strip()
+    await bootstrap_login_sessions.cancel(account_id)
+    return '<div id="bootstrap-login-status"><p class="page-desc">Đã đóng trình duyệt, chưa lưu phiên đăng nhập.</p></div>'
+
+
 _RATE_LIMITS_LABELS: dict[str, str] = {
     "posts_per_day": "Số bài đăng tối đa / ngày",
     "comments_per_hour": "Số comment tối đa / giờ",
@@ -1282,7 +1419,12 @@ def _accounts_content_html(saved: bool = False, error: str | None = None, oob: b
         session_badge = (
             '<span class="badge" style="background:#ecfdf5;color:#059669;">phiên OK</span>'
             if has_session
-            else '<span class="badge" style="background:#fef2f2;color:#dc2626;">chưa có storage_state.json</span>'
+            else (
+                '<span class="badge" style="background:#fef2f2;color:#dc2626;">chưa có storage_state.json</span> '
+                f'<button type="button" class="btn-small btn-secondary" '
+                f'hx-get="/admin/accounts/bootstrap-login-modal?account_id={html.escape(aid)}" '
+                f'hx-target="#modal-root" hx-swap="innerHTML">🌐 Đăng nhập &amp; lưu phiên</button>'
+            )
         )
         is_paused = a.status == AccountStatus.PAUSED
         status_badge = (
