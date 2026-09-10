@@ -22,6 +22,7 @@ import os
 from playwright.async_api import Browser, BrowserContext, Page, Playwright, async_playwright
 
 from human_bot.config import AccountConfig
+from human_bot.fingerprint import get_fingerprint
 
 _pool: dict[str, "AccountSession"] = {}
 
@@ -98,6 +99,12 @@ class AccountSession:
         context_kwargs: dict = {"locale": "en-US"}
         if self.account.storage_state_path.exists():
             context_kwargs["storage_state"] = str(self.account.storage_state_path)
+        # Per-account (not per-launch) viewport/DPI — see
+        # human_bot/fingerprint.py's docstring for what this does and does
+        # NOT cover, and why.
+        fp = get_fingerprint(self.account.account_id)
+        context_kwargs["viewport"] = fp.viewport
+        context_kwargs["device_scale_factor"] = fp.device_scale_factor
         self.context = await self.browser.new_context(**context_kwargs)
         self.page = await self.context.new_page()
 

@@ -35,6 +35,8 @@ from pathlib import Path
 
 from playwright.async_api import Browser, BrowserContext, Page, Playwright, async_playwright
 
+from human_bot.fingerprint import get_fingerprint
+
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 ACCOUNTS_DIR = PROJECT_ROOT / "accounts"
 
@@ -95,7 +97,14 @@ async def start(account_id: str) -> None:
         # docs/skills/facebook-custom-actions.md, "Facebook UI language").
         # The Facebook account's OWN language setting still has to be
         # English too; this only forces the browser side.
-        session.context = await session.browser.new_context(locale="en-US")
+        # Same per-account viewport/DPI browser_pool.py's production
+        # sessions use — see human_bot/fingerprint.py's docstring. Matters
+        # here too so the fingerprint an account logs in under is the same
+        # one it's actually used under afterward.
+        fp = get_fingerprint(account_id)
+        session.context = await session.browser.new_context(
+            locale="en-US", viewport=fp.viewport, device_scale_factor=fp.device_scale_factor,
+        )
         session.page = await session.context.new_page()
         await session.page.goto("https://www.facebook.com/login", wait_until="domcontentloaded")
         session.status = "waiting_confirm"
