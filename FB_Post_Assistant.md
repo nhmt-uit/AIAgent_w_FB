@@ -47,7 +47,7 @@ Dự án xây dựng một hệ thống tự động thực hiện các hành đ
 | Đồng bộ dữ liệu tự động từ bên B (tin tuyển dụng → đăng nhóm, ứng viên → comment) | Hoàn thành, cổng an toàn tắt mặc định |
 | Xác thực API cho `POST /tasks` (X-API-Key) và Admin UI (HTTP Basic Auth) | Hoàn thành |
 | Ghi log & báo cáo lịch sử hành động (SQLite) | Hoàn thành |
-| Content Strategist Agent (AI soạn/viết lại nội dung job đăng nhóm + reply ứng viên, gọi đúng lúc đến giờ đăng, có bật/tắt riêng) | Hoàn thành, **chưa xác nhận sống với AI thật** (hết credit test) — xem mục 4.10 |
+| Content Strategist Agent (AI soạn/viết lại nội dung job đăng nhóm + reply ứng viên, gọi đúng lúc đến giờ đăng, có bật/tắt riêng, đa nhà cung cấp) | Hoàn thành, **đã xác nhận sống với Anthropic**; OpenAI/Gemini/custom chưa test end-to-end — xem mục 4.10 |
 | Đăng nhập tài khoản mới qua web `/admin/accounts` (thay cho chạy lệnh tay) | Hoàn thành — xem mục 4.15 |
 | Cơ chế dự phòng khi 1 selector bị Facebook đổi giao diện làm gãy | Đã thiết kế (dùng AI/LLM "nhìn" trang), **chưa nối vào luồng chạy thật** |
 | Thiết lập môi trường vận hành thật (proxy/IP riêng theo tài khoản, khoá API bên B thật) | Chưa làm — cần trước khi chạy ngoài phạm vi máy cá nhân |
@@ -172,11 +172,76 @@ Tự động đính kèm 1 ảnh cho mỗi bài đăng (cả tường cá nhân 
 
 **Mẫu (template) không-AI cũng được viết lại kỹ hơn nhiều** — trước chỉ có 3 câu mở đầu cố định và 1 lỗi thật (thuộc tính dạng danh sách của bên B bị in thẳng ra bài đăng dưới dạng `['Shizuoka']`, lộ cả dấu ngoặc vuông của Python): giờ có pool 8 câu mở đầu ngẫu nhiên, nhãn địa điểm/visa/lương đều có nhiều cách gọi khác nhau (random mỗi lần), tên visa (mã thô bên B như `gijinkoku`) được map sang tên tiếng Việt/kanji thông dụng, lương tháng/năm bằng yên được đổi qua đơn vị dân gian "man"/tiếng lóng Việt "lá"/"tờ", và **không bao giờ chèn link vào bài** — link được thay bằng câu mời nhắn tin/inbox.
 
-**Mở rộng sang cả nội dung trả lời ứng viên (trước đây chưa làm):** giờ có pipeline 3 tầng — mẫu cố định → gọi API `/reply` của bên B (bên B tự chạy AI riêng của họ) → AI (Anthropic) của chính hệ thống viết lại từ mẫu, tối đa khoảng 200 ký tự. **Hai bước gọi AI (bên B và của mình) không bao giờ chạy cùng lúc cho 1 ứng viên** — nếu AI của mình đang bật và có API key thì bỏ hẳn bước gọi bên B, tránh trả tiền cho 2 lượt soạn AI cho cùng 1 câu trả lời.
+3 ví dụ thật (chạy trực tiếp `content_strategist._draft_job_post_placeholder()` với dữ liệu mẫu khác nhau, để thấy rõ mức độ biến tấu):
+
+```
+TÌM NHÂN SỰ - Kỹ sư cơ khí
+Công ty: Công ty ABC Corp
+Địa chỉ: Shizuoka
+Visa Gijinkoku
+Yêu cầu JLPT: N3
+Lương: dao động 22-28 lá/tháng
+Inbox mình để được tư vấn kỹ hơn
+```
+
+```
+TUYỂN GẤP - Nhân viên chế biến thực phẩm
+Công ty: Nihon Food Co.
+Địa điểm làm việc: Aichi
+Visa Kỹ Năng Đặc Định
+Thông tin lương — ib để biết thêm
+Nhắn tin mình để mình gửi thêm thông tin
+```
+*(ví dụ trên: thiếu lương trong dữ liệu bên B → tự thêm câu mời nhắn tin hỏi thêm thay vì bỏ trống im lặng)*
+
+```
+CƠ HỘI VIỆC LÀM - Phụ bếp nhà hàng Nhật
+Công ty: Sushi Taro
+Vị trí: Osaka
+Yêu cầu JLPT: N4
+Đãi ngộ: 1300-1500 JPY/giờ
+Thông tin visa — nhắn mình để rõ hơn
+Ai quan tâm nhắn tin mình nhé
+```
+*(ví dụ trên: lương theo GIỜ nên giữ nguyên số yên gốc, không đổi qua man/lá/tờ — quy tắc đó chỉ áp dụng cho lương tháng/năm)*
+
+**Mở rộng sang cả nội dung trả lời ứng viên (trước đây chưa làm):** giờ có pipeline 3 tầng — mẫu cố định → gọi API `/reply` của bên B (bên B tự chạy AI riêng của họ) → AI (nhà cung cấp đang chọn ở `/admin/config`) của chính hệ thống viết lại từ mẫu, tối đa khoảng 200 ký tự. **Hai bước gọi AI (bên B và của mình) không bao giờ chạy cùng lúc cho 1 ứng viên** — nếu AI của mình đang bật và có API key thì bỏ hẳn bước gọi bên B, tránh trả tiền cho 2 lượt soạn AI cho cùng 1 câu trả lời.
+
+3 ví dụ thật (mỗi lần random chọn 1 trong 10 mẫu cố định ở `data_sync._CANDIDATE_REPLY_TEMPLATES`, `data_sync._draft_candidate_reply_placeholder()`):
+
+```
+Chào bạn, mình thấy bạn đang tìm kỹ sư cơ khí ở khu vực Shizuoka, bên mình đang có một số vị trí có thể phù hợp, bạn nhắn tin trao đổi thêm nhé.
+```
+
+```
+Alo bạn, bên mình có một số đơn hàng điều dưỡng ở khu vực Tokyo đang cần người, bạn qtam thì nhắn mình nhé.
+```
+
+```
+Hii, bên mình đang tuyển lắp ráp linh kiện điện tử, ib mình gửi chi tiết nhé.
+```
+*(ví dụ trên: ứng viên không có "khu vực mong muốn" trong dữ liệu → cụm "ở khu vực ..." tự động bỏ hẳn, không để trống/lỗi câu)*
 
 **Cả hai nhánh AI (job và reply ứng viên) đều có công tắc bật/tắt riêng ở `/admin/config`**, độc lập với việc có cấu hình API key hay không — tắt được ngay không cần sửa `.env`/khởi động lại service, phòng khi cần kiểm soát chi phí hoặc muốn quay lại dùng mẫu cố định tạm thời.
 
-**Chưa xác nhận sống với AI thật sau khi đổi:** tài khoản Anthropic dùng để test đang hết credit (`400 — credit balance too low`) — mọi lần test sau khi đổi kiến trúc đều rơi về mẫu/bên B đúng như thiết kế an toàn (không văng lỗi), nhưng chưa có lần nào thấy AI thật viết ra bài theo đúng luật mới (man/lá/tờ, tên visa, không chèn link). Cần nạp lại credit và chạy thử lại trước khi tin tưởng hoàn toàn.
+**Đã xác nhận sống với AI thật (Anthropic, sau khi nạp lại credit) — 2 ví dụ thật, cùng 1 tin tuyển dụng (Kỹ sư đóng tàu/Cơ khí, Ehime, visa Gijinkoku, lương khởi điểm 22 man/tháng, không yêu cầu JLPT) nhưng đăng vào 2 nhóm khác nhau:**
+
+```
+Anh chị nào đang tìm hướng chuyển việc mới thì để ý nhé!
+Bên mình đang tuyển vị trí Kỹ sư đóng tàu/Cơ khí tại Ehime. Lương khởi điểm 22 man/tháng, visa Gijinkoku (技術・人文知識・国際業務). Không yêu cầu JLPT nên phù hợp với bạn nào tiếng chưa mạnh lắm nhưng có tay nghề vững.
+Ehime là tỉnh ven biển miền Tây Nhật, môi trường làm việc ngành tàu thuyền khá ổn định. Nếu quan tâm thì inbox mình trao đổi thêm chi tiết nhé!
+```
+
+```
+Chào cả nhóm! Có tin tuyển cho anh em làm cơ khí muốn sang Nhật ổn định nè.
+Vị trí: Kỹ sư đóng tàu/Cơ khí
+Địa điểm: Ehime (vùng Shikoku)
+Mức lương: từ 220,000 yên/tháng
+Visa: Kỹ sư (技人国) - không cần chứng chỉ tiếng
+Ngành đóng tàu ở Nhật khá thiếu người nên cơ hội thăng tiến tốt. Bạn nào đã có kinh nghiệm cơ khí/hàn xì/lắp ráp thì rất hợp. Muốn biết thêm về công ty và quy trình thì nhắn tin cho mình nha!
+```
+
+Đúng đủ các luật đã đặt ra trong `_SYSTEM_PROMPT`: hai bài đọc hoàn toàn khác nhau (mở đầu, giọng văn, thậm chí khác cả cách trình bày — bài 1 viết văn xuôi liền mạch, bài 2 tách gạch đầu dòng theo từng trường thông tin), lương đổi đúng qua "man" lẫn giữ nguyên số yên gốc tuỳ bài, tên visa gọi theo 2 cách khác nhau (kanji đầy đủ vs. viết tắt "技人国"), không bài nào chèn link, và không bài nào bịa thêm thông tin ngoài dữ liệu tin tuyển dụng gốc.
 
 **Đa nhà cung cấp AI, chọn được ngay trên Admin UI (2026-09-10, thêm sau khi phát hiện giới hạn trên):** ban đầu hệ thống gọi cứng Anthropic Messages API — dán API key của OpenAI hay bất kỳ hãng nào khác vào ô cấu hình cũ không có tác dụng gì, vì request vẫn được gửi thẳng tới `api.anthropic.com` với key sai định dạng (kết quả: lỗi xác thực 401, tự động rơi về mẫu cố định, không báo lỗi rõ cho người quản trị). Theo yêu cầu owner muốn "linh hoạt đổi qua lại nhiều model", đã tách phần **gọi API** (khác nhau giữa các hãng: URL, header xác thực, cấu trúc request/response) ra khỏi phần **soạn nội dung/kiểm tra kết quả** (giống nhau dù dùng hãng nào) — file mới `human_bot/ai_client.py` chỉ lo phần đầu, `content_strategist.py` giữ nguyên toàn bộ prompt tiếng Việt và luật kiểm tra (đếm ký tự, đúng số bài, không rỗng...) như cũ. 4 nhà cung cấp hỗ trợ sẵn: **Anthropic (Claude), OpenAI (GPT), Google Gemini, và một lựa chọn "Tuỳ chỉnh"** (endpoint bất kỳ nói được chuẩn OpenAI Chat Completions — dùng được cho DeepSeek/Groq/OpenRouter/LLM chạy nội bộ...). Mỗi nhà cung cấp có ô key + tên model riêng, không dùng chung 1 ô như trước — đổi qua lại không cần nhập lại key đã lưu cho hãng cũ. **Lưu ý quan trọng đã báo owner:** tên model là định danh kỹ thuật của API (ví dụ `gpt-4o-mini`, `gemini-2.5-flash`), phải gõ đúng chính xác từng ký tự kể cả chữ hoa/thường — gõ sai không làm sập hệ thống, chỉ khiến lệnh gọi AI thất bại và tự động rơi về mẫu cố định (có ghi log lỗi thật để dò). **Chưa test end-to-end với key thật của OpenAI/Gemini/custom** — mới kiểm tra logic lưu/đọc cấu hình bằng script nội bộ, chưa có key thật của các hãng này để xác nhận nội dung AI trả về đúng định dạng mong đợi.
 
@@ -227,7 +292,7 @@ Phần này liệt kê để cho thấy mức độ test thực tế của dự 
 
 # 6\. Đang triển khai / chưa hoàn thiện
 
-* **Content Strategist Agent — đã mở rộng sang cả job đăng nhóm và trả lời ứng viên (2026-09-10), nhưng chưa xác nhận sống với AI thật** — tài khoản Anthropic dùng test đang hết credit; vẫn thiếu guardrail chống trùng lặp/từ cấm bằng code (chỉ mới trong prompt gửi AI, riêng độ dài đầu ra thì đã chặn cứng bằng code).
+* **Content Strategist Agent — đã mở rộng sang cả job đăng nhóm và trả lời ứng viên, đa nhà cung cấp AI (2026-09-10), đã xác nhận sống với Anthropic** (2 ví dụ thật ở mục 4.10) — OpenAI/Gemini/custom vẫn chưa test end-to-end với key thật; vẫn thiếu guardrail chống trùng lặp/từ cấm bằng code (chỉ mới trong prompt gửi AI, riêng độ dài đầu ra thì đã chặn cứng bằng code).
 * **Safety Monitor — hành vi #2/#3:** chưa có throttle sớm khi sắp chạm giới hạn, chưa có báo động tự động ra kênh ngoài (Slack/email/Telegram) khi một tài khoản bị tạm dừng.
 * **Cơ chế dự phòng khi selector bị Facebook đổi giao diện làm gãy:** mỗi bước hiện chỉ dùng đúng 1 selector đã ghi sẵn — nếu Facebook đổi UI, hành động đó sẽ fail hoàn toàn cho tới khi ghi lại. Phương án dùng AI/LLM "nhìn" trang khi selector gãy đã thiết kế (`human_bot/llm.py`) nhưng **chưa được nối vào luồng chạy thật** ở bất kỳ đâu — cần quyết định có làm hay không, và áp dụng cho hành động nào trước.
 * **Chống fingerprint đầy đủ hơn:** user-agent/Client Hints đồng bộ, múi giờ khớp IP thật, và quan trọng nhất — proxy/IP riêng theo từng tài khoản (mục 4.5) — đều chưa làm, chờ quyết định khi cần mở rộng quy mô.

@@ -458,15 +458,12 @@
       làm:** 2 checkbox này lúc đầu hiện ra thành `<input type="number">`
       thay vì checkbox — do thiếu trong allowlist `_BOOL_FIELDS` ở
       `admin.py`, đã bổ sung.
-- [ ] **Chưa test sống với AI thật** — tài khoản Anthropic Console của chủ
-      dự án đang **hết credit** (`400 Bad Request: credit balance too
-      low`), mọi lần gọi AI trong lúc test đều rơi về fallback template/
-      bên B đúng như thiết kế (không crash), nhưng chưa có lần nào thực sự
-      thấy AI viết ra nội dung cuối cùng cho job **theo template mới**
-      (chỉ có 1 lần test job AI thành công TRƯỚC khi sửa template, dùng
-      định dạng cũ). Cần chạy lại `test_run_task`/chờ sync thật sau khi
-      nạp thêm credit để xác nhận cả 2 nhánh AI (job + candidate) hoạt
-      động đúng luật mới khi có key thật.
+- [x] **Đã test sống với AI thật (Anthropic), sau khi nạp lại credit** —
+      owner xác nhận đã đăng 1 tin tuyển dụng (Kỹ sư đóng tàu/Cơ khí,
+      Ehime) vào 2 nhóm khác nhau, cả 2 bài đều do AI soạn thật (không
+      phải fallback template), đúng luật hệ thống prompt (không trùng
+      chữ giữa 2 bài, không chèn link, tên visa/lương đúng định dạng) —
+      xem 2 ví dụ nguyên văn ở `FB_Post_Assistant.md` mục 4.10.
 
 ## Đợt làm việc 2026-09-10 (tiếp) — Switch thay checkbox, đa nhà cung cấp AI
 
@@ -535,6 +532,15 @@
          chuẩn): chỉ còn 1 ô input duy nhất, bấm vào hiện gợi ý thả xuống
          để chọn nhanh, nhưng vẫn gõ/sửa tự do bình thường — không khoá
          giá trị, không cần JS riêng để đồng bộ 2 control.
+- [x] **Bổ sung ví dụ mẫu thật vào `FB_Post_Assistant.md` mục 4.10** — trước
+      đó chỉ mô tả luật/cơ chế của template (pool câu mở đầu, cách đổi
+      lương, cách gọi tên visa...), chưa có đoạn text mẫu cụ thể. Đã chạy
+      trực tiếp `content_strategist._draft_job_post_placeholder()` (3 ví
+      dụ: đủ thông tin, thiếu lương, lương theo giờ) và
+      `data_sync._draft_candidate_reply_placeholder()` (3 ví dụ: có/không
+      khu vực mong muốn, mẫu câu khác nhau trong pool 10 mẫu) để có ví dụ
+      thật (không tự bịa), chèn vào ngay dưới đoạn mô tả tương ứng — mỗi ví
+      dụ đều kèm chú thích ngắn giải thích quy tắc nào đang được minh hoạ.
 
 ## Còn lại (chưa tới lượt ngay, nhưng đã ghi nhận — xem đánh giá 2026-09-03)
 
