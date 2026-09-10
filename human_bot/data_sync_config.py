@@ -88,11 +88,12 @@ class DataSyncConfig:
     )
 
     # Avoid scheduling into implausible waking hours (local time) — see
-    # docs/skills/rate-limiting-pacing.md, "avoid 1am-6am". A time that
-    # lands inside this window gets pushed forward to the window's end
-    # instead, rather than skipped.
+    # docs/skills/rate-limiting-pacing.md, "avoid 2am-6am" (was 1am-6am
+    # until 2026-09-10, per the project owner's explicit request). A time
+    # that lands inside this window gets pushed forward to the window's
+    # end instead, rather than skipped.
     quiet_hour_start_local: float = field(
-        default_factory=lambda: _env_float("DATA_SYNC_QUIET_HOUR_START", 1.0)
+        default_factory=lambda: _env_float("DATA_SYNC_QUIET_HOUR_START", 2.0)
     )
     quiet_hour_end_local: float = field(
         default_factory=lambda: _env_float("DATA_SYNC_QUIET_HOUR_END", 6.0)

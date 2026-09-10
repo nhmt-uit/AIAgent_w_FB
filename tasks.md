@@ -915,3 +915,78 @@
       thiếu; xác nhận y/n — không hỏi khi không thiếu gì, không hỏi khi
       không phải tty, tiếp tục khi gõ "y", dừng khi gõ khác "y", dừng khi
       EOF) — tổng bộ test giờ là 75.
+
+## Đợt làm việc 2026-09-10 (tiếp) — Tách riêng giãn cách post/comment, cấu hình lại 5 mức tuổi tài khoản
+
+- [x] **Phát hiện nguyên nhân gốc vì sao backlog job/candidate của
+      `tu_iizuki` không bao giờ giảm** (56 job/14 candidate cứ lấy đi lấy
+      lại, chỉ ~8 bài/lượt được lên lịch) — soát kỹ số liệu thật
+      (`scheduled/pending/`, `data_sync_cache/`) cùng owner qua nhiều bước
+      hỏi đáp: `RateLimits.min_delay_seconds/max_delay_seconds` là **1
+      cặp số dùng chung cho MỌI loại hành động** (post/comment/like), dù
+      `comments_per_day` luôn được đặt CAO HƠN `posts_per_day` ở mọi mức —
+      nên giãn cách dùng chung khiến comment về mặt toán học không thể
+      nào nhét đủ số lượng vào 1 ngày, kể cả khi post thì vừa.
+- [x] **Tách `min_delay_seconds`/`max_delay_seconds` thành 2 cặp riêng —
+      `post_min/max_delay_seconds` và `comment_min/max_delay_seconds`**
+      (`human_bot/config.py`'s `RateLimits`). `like` dùng chung cặp
+      comment (dự án chưa có lịch/số riêng cho like). Cập nhật dây
+      chuyền:
+      1. `human_bot/safety.py` — thêm `_gap_bounds(limits, action_type)`,
+         `RateLimiter.record()` gọi hàm này thay vì đọc thẳng
+         `limits.min_delay_seconds`.
+      2. `human_bot/data_sync.py` — `_effective_gap_minutes()` nhận thêm
+         tham số `kind` ("post"/"comment") để đọc đúng cặp field, 2 nơi
+         gọi (post_gap/comment_gap) truyền đúng kind của mình.
+      3. `human_bot/runtime_config.py` — `EDITABLE_RATE_LIMITS_FIELDS`
+         đổi tên field; `_start_resume_cooldown()` (áp dụng cấu hình hạ
+         nhiệt sau khi kích hoạt lại tài khoản) set CẢ 2 cặp mới bằng
+         đúng 1 cặp số của `SafetyCooldownConfig` — cooldown giữ nguyên
+         không tách riêng vì vốn đã là mức thận trọng nhất.
+      4. `human_bot/admin.py` — modal "⏱️ Giới hạn" ở `/admin/accounts`
+         đổi 2 ô nhập giãn cách thành 4 ô (2 cho post, 2 cho comment);
+         validate riêng từng cặp min ≤ max.
+      5. `tests/test_safety.py` — cập nhật toàn bộ field name, thêm 1
+         test mới xác nhận post và comment dùng đúng cặp giãn cách độc
+         lập (min==max để loại ngẫu nhiên, assert chính xác từng giá trị)
+         — tổng bộ test giờ là 76.
+- [x] **Cấu hình lại cả 5 mức tuổi tài khoản theo số owner tự tính toán,
+      sau khi kiểm tra tính khả thi** (owner đưa số ban đầu, tôi tính
+      xem (số lượng - 1) × giãn cách tối đa có nhét vừa 1 ngày hoạt động
+      hay không — quiet hours 2h-6h sáng = 20 tiếng hoạt động, trừ thêm
+      10% đệm an toàn = ngân sách 18 tiếng — hầu hết các mức đều VƯỢT
+      ngân sách này ở phần comment, một số mức còn vượt cả phần post):
+
+      | Mức | Bài/ngày | Comment/ngày | Giãn cách post | Giãn cách comment |
+      |---|---|---|---|---|
+      | Dưới 1 tháng | 5 | 7 | 2–3.5h | 1.5–3h |
+      | Dưới 3 tháng | 8 | 10 | 1.75–2.5h | 1–2h |
+      | Dưới 6 tháng | 12 | 15 | 1.25–1.6h | 0.6–1.25h |
+      | Dưới 12 tháng | 20 | 25 | 0.75–0.95h | 0.35–0.75h |
+      | Trên 12 tháng | 30 | 35 | 0.5–0.62h | 0.25–0.5h |
+
+      Giữ nguyên số bài/comment mỗi ngày và mức min của giãn cách owner
+      đưa ra; chỉ hạ trần (max) giãn cách ở 3 mức cao hơn cho vừa ngân
+      sách 18h. `comments_per_hour`/`likes_per_hour` (owner không đưa số)
+      vẫn suy theo tỉ lệ như cách bảng cũ đã làm — dễ chỉnh lại sau qua
+      quick-apply nếu sai. `RateLimits()` mặc định (không tier/override)
+      = đúng hàng "Trên 12 tháng".
+- [x] **Đổi quiet hours mặc định từ 1h-6h sáng thành 2h-6h sáng**
+      (`DataSyncConfig.quiet_hour_start_local`, theo yêu cầu owner) —
+      `human_bot/data_sync_config.py`.
+- [x] **Migrate dữ liệu thật đang chạy** — `tu_iizuki` đang có override
+      rate-limit lưu sẵn theo TÊN FIELD CŨ trong `runtime_config.json`;
+      sau khi đổi tên field, override cũ sẽ bị lọc bỏ âm thầm (không
+      match `EDITABLE_RATE_LIMITS_FIELDS` mới) → tài khoản sẽ vô tình rơi
+      về mức LỎNG NHẤT (Trên 12 tháng) thay vì giữ đúng ý "Dưới 1
+      tháng". Đã áp lại tier "Dưới 1 tháng" (số mới) cho `tu_iizuki`
+      bằng đúng hàm `save_rate_limits_overrides()` admin UI dùng.
+      **Sự cố thật xảy ra trong lúc làm:** khi cập nhật
+      `quiet_hour_start_local`, gọi nhầm `save_data_sync_overrides()`
+      với chỉ 1 field — hàm này THAY THẾ TOÀN BỘ section thay vì merge,
+      xoá mất mọi override `data_sync` khác đã lưu trước đó (poll
+      interval, gap minutes, 2 công tắc AI...). Phát hiện ngay lập tức
+      (kiểm tra lại sau khi gọi), khôi phục đủ nguyên trạng bằng giá trị
+      đã ghi nhớ trong hội thoại trước đó, không có dữ liệu nào mất vĩnh
+      viễn — nhưng là lời nhắc: `save_*_overrides()` luôn cần đọc giá trị
+      hiện tại trước rồi merge tay, không được gọi với chỉ 1 field.

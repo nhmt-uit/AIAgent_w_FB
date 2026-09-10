@@ -1,6 +1,21 @@
 ---
 skill: Rate Limiting & Human-like Pacing
 used_by: [human-bot-executor, safety-monitor]
+sources:
+  # Re-found 2026-09-10 after the project owner asked where the numbers
+  # below actually came from — the 2026-09-07 "external reports" note was
+  # never pinned to real URLs at the time. All of these are marketing
+  # blogs from companies selling Facebook auto-posting tools, NOT Meta's
+  # own policy — Facebook has never published real limits. Treat every
+  # number below as a rough, self-interested estimate, not a verified
+  # fact. multiplegroupposter.com is the one overlap with
+  # docs/skills/group-targeting.md's own sources.
+  - https://www.lilachbullock.com/how-many-facebook-groups-can-you-post-in-each-day/
+  - https://fbgroupbulkposter.com/blog/facebook-group-posting-limits-2026
+  - https://multiplegroupposter.com/blog/facebook-group-posting-limits/
+  - https://www.pilotposter.com/blog/facebook-group-posting-limits/
+  - https://blog.jarveepro.com/Facebook-Marketing-Tips/How-Many-Facebook-Groups-Can-You-Post-to-in-One-Day-Real-Numbers,-Safe-Limits,-and-AI-Automation-Tips-(2026-Guide)/16039
+  - https://multiplegroupposter.com/blog/facebook-auto-poster-safe-settings/
 ---
 
 > **Purpose of this file / Mục đích của file này:**
@@ -30,24 +45,64 @@ behavior look paced like a person, not to guarantee undetectability.
 These are conservative starting points, not guarantees — tune down further
 for new/low-trust accounts and up only gradually for old, established ones.
 
-**Implemented (2026-09-07):** `human_bot/config.py`'s `ACCOUNT_AGE_TIERS`
-gives 5 ready-made `RateLimits` presets by Facebook-account age (dưới 1 /
-3 / 6 / 12 tháng, trên 12 tháng), so "tune down for new accounts" is a
-dropdown/button instead of hand-typing 6 numbers per account. Picked when
-registering an account at `/admin/accounts`, or applied later via a
-quick-apply button in that account's "⏱️ Giới hạn" modal (for when it
-ages into the next tier). `RateLimits()`'s own class default equals the
-"trên 12 tháng" preset. Every field besides `posts_per_day` (the numbers
-the project owner specified directly) is derived by scaling the
-established-tier ratios (comments/likes relative to posts) and widening
-`min_delay_seconds`/`max_delay_seconds` further for younger tiers —
-see `ACCOUNT_AGE_TIERS`'s docstring for the exact numbers and reasoning.
+**What the sources above actually say (2026-09-10 re-check, numbers vary a
+lot between them — self-interested marketing content, not Meta policy):**
+brand-new accounts "should stay below 10 groups/day", cautious estimate
+3–7/day; accounts under 6 months "20–40 posts/day"; 6–12 months
+"40–80/day"; 12+ months "50–100+/day". Gap between individual actions:
+"10–15 minutes" per post is called safe by one source, "30–60 seconds
+randomized" for likes/shares by another. **These are all far more
+permissive than `ACCOUNT_AGE_TIERS` below (5–22 posts/day, 1–6 hour gaps)
+— see that table's own note for why the project hasn't adopted them.**
+
+**Implemented (2026-09-07, retuned 2026-09-10):** `human_bot/config.py`'s
+`ACCOUNT_AGE_TIERS` gives 5 ready-made `RateLimits` presets by
+Facebook-account age (dưới 1 / 3 / 6 / 12 tháng, trên 12 tháng), so "tune
+down for new accounts" is a dropdown/button instead of hand-typing
+numbers per account. Picked when registering an account at
+`/admin/accounts`, or applied later via a quick-apply button in that
+account's "⏱️ Giới hạn" modal (for when it ages into the next tier).
+`RateLimits()`'s own class default equals the "trên 12 tháng" preset.
+
+| Tier | posts/day | comments/day | post gap | comment gap |
+|---|---|---|---|---|
+| Dưới 1 tháng | 5 | 7 | 2–3.5h | 1.5–3h |
+| Dưới 3 tháng | 8 | 10 | 1.75–2.5h | 1–2h |
+| Dưới 6 tháng | 12 | 15 | 1.25–1.6h | 0.6–1.25h |
+| Dưới 12 tháng | 20 | 25 | 0.75–0.95h | 0.35–0.75h |
+| Trên 12 tháng | 30 | 35 | 0.5–0.62h | 0.25–0.5h |
+
+`posts_per_day`/`comments_per_day` and both gap columns are numbers the
+project owner specified directly (2026-09-10); `comments_per_hour`/
+`likes_per_hour` (not shown above) are still derived by scaling ratios,
+same as before. **`min_delay_seconds`/`max_delay_seconds` split into
+separate `post_*`/`comment_*` pairs this same day** — found while
+debugging why a real account's job/candidate sync backlog never drained:
+`comments_per_day` has always been set higher than `posts_per_day` at
+every tier, but a single shared gap for both made the comment count
+mathematically unable to fit inside a day (e.g. 35 comments needing a
+shared 1-2h gap would need up to 68 hours). Each tier's post/comment max
+gap above was also trimmed down from the owner's own first draft, just
+enough that its target daily count fits inside an 18-hour active window
+(quiet hours are 2am-6am = 20h awake, minus a 10% safety margin) — see
+`ACCOUNT_AGE_TIERS`'s docstring for the exact reasoning. `like` reuses
+the `comment_*` pair (no separate schedule/numbers exist for it).
+
+**Deliberately more conservative than the blog sources above** (which
+suggest far higher daily volumes and much shorter gaps) — those sources
+are written by companies selling automation tools, have no visibility
+into Meta's real detection thresholds, and openly contradict each other
+by 2-10x. Until there's a real incident (or a more trustworthy source)
+pointing the other way, this project treats the *narrowest* published
+"safe" number as a ceiling, not the widest.
 
 ## Pacing rules
 
 1. Delay between actions is **randomized**, not fixed — draw from a range
-   (`RateLimits.min_delay_seconds`/`max_delay_seconds`, default 1-2 hours
-   as of 2026-09-07) rather than sleeping a constant duration. **This is
+   (`RateLimits.post_min/max_delay_seconds` for posts, `comment_min/max_
+   delay_seconds` for comments/likes — split into separate pairs
+   2026-09-10, see the tier table above) rather than sleeping a constant
+   duration. **This is
    now actually enforced** by `human_bot/safety.py`'s `RateLimiter`
    (`_last_action_gap_ok()`, checked inside `can_proceed()`) — before
    2026-09-07 these two fields existed but were never wired up anywhere
@@ -64,7 +119,8 @@ see `ACCOUNT_AGE_TIERS`'s docstring for the exact numbers and reasoning.
    reads as automated to its abuse systems.
 2. Concentrate activity within plausible waking hours for the account's
    apparent timezone; avoid scheduling dense activity between roughly
-   1am–6am local time.
+   2am–6am local time (`DataSyncConfig.quiet_hour_start/end_local`,
+   changed from 1am to 2am start on 2026-09-10 per the project owner).
 3. Never schedule action batches that repeat at an exact fixed cadence
    (e.g. "every exactly 30 minutes") — jitter the schedule itself, not just
    the action delay.

@@ -137,7 +137,23 @@ Cũng chưa dùng thư viện `playwright-stealth` hay tương đương.
 
 Khoảng nghỉ này được tính **riêng theo từng loại hành động** (đăng bài / comment / thả cảm xúc) — trước đó dùng chung 1 đồng hồ cho cả tài khoản, nghĩa là 1 comment vừa chạy xong sẽ vô tình chặn luôn 1 bài đăng ngay sau đó dù chúng thuộc 2 hạn mức hoàn toàn khác nhau.
 
-**5 mức giới hạn theo "tuổi" tài khoản Facebook** (dưới 1 / 3 / 6 / 12 tháng, trên 12 tháng) — chọn được ngay khi đăng ký tài khoản, hoặc áp dụng sau bằng nút "quick-apply" khi tài khoản đã "lớn tuổi" hơn — thay vì phải gõ tay 6 con số cho từng tài khoản mỗi lần cần nới/siết.
+**5 mức giới hạn theo "tuổi" tài khoản Facebook** (dưới 1 / 3 / 6 / 12 tháng, trên 12 tháng) — chọn được ngay khi đăng ký tài khoản, hoặc áp dụng sau bằng nút "quick-apply" khi tài khoản đã "lớn tuổi" hơn — thay vì phải gõ tay từng con số cho mỗi tài khoản mỗi lần cần nới/siết.
+
+**Phát hiện + sửa lỗi thật (2026-09-10):** trong lúc điều tra vì sao backlog job/candidate của một tài khoản thật không bao giờ giảm dù đồng bộ liên tục (56 job/14 candidate cứ lấy đi lấy lại, chỉ ~8 bài/lượt thật sự được lên lịch), phát hiện ra khoảng nghỉ tối thiểu giữa 2 hành động (`min_delay_seconds`/`max_delay_seconds`) tuy đã tách riêng theo LOẠI hành động (đăng bài không còn bị comment chặn nhầm — mục ngay trên) nhưng vẫn dùng **chung 1 cặp con số cho cả đăng bài lẫn comment**. Vì hạn mức comment/ngày ở mọi mức tuổi luôn được đặt CAO HƠN hạn mức bài đăng/ngày, dùng chung 1 khoảng nghỉ khiến việc nhét đủ số comment vào 1 ngày là bất khả thi về mặt toán học — dù bài đăng có khi vẫn nhét vừa.
+
+**Đã tách hẳn thành 2 cặp khoảng nghỉ độc lập — riêng cho bài đăng, riêng cho comment** — và người dùng tự tính toán lại cả 5 mức tuổi theo đúng nhu cầu thực tế, sau khi tôi kiểm tra tính khả thi (số lượng cần đăng × khoảng nghỉ tối đa có nhét vừa một ngày hoạt động ~18 tiếng hay không, sau khi trừ giờ ngủ 2h-6h sáng) và hạ bớt trần khoảng nghỉ ở 3 mức cao cho khớp:
+
+| Mức tuổi | Bài/ngày | Comment/ngày | Giãn cách bài đăng | Giãn cách comment |
+|---|---|---|---|---|
+| Dưới 1 tháng | 5 | 7 | 2–3.5 giờ | 1.5–3 giờ |
+| Dưới 3 tháng | 8 | 10 | 1.75–2.5 giờ | 1–2 giờ |
+| Dưới 6 tháng | 12 | 15 | 1.25–1.6 giờ | 0.6–1.25 giờ |
+| Dưới 12 tháng | 20 | 25 | 0.75–0.95 giờ | 0.35–0.75 giờ |
+| Trên 12 tháng | 30 | 35 | 0.5–0.62 giờ | 0.25–0.5 giờ |
+
+Đồng thời đổi giờ yên tĩnh mặc định từ 1h-6h sáng thành **2h-6h sáng**, theo yêu cầu chủ dự án.
+
+**Sự cố thật xảy ra trong lúc thao tác migrate cấu hình:** khi cập nhật giờ yên tĩnh cho cấu hình thật đang chạy, gọi nhầm hàm lưu cấu hình chỉ với 1 field duy nhất — hàm này **thay thế toàn bộ phần cấu hình đồng bộ dữ liệu thay vì merge**, xoá mất toàn bộ override khác đã lưu trước đó (chu kỳ đồng bộ, khoảng cách đăng bài/comment, 2 công tắc AI...). Phát hiện ngay lập tức khi đọc lại, khôi phục đủ nguyên trạng bằng giá trị đã ghi nhớ được trong hội thoại — không mất dữ liệu vĩnh viễn, nhưng là bài học: mọi hàm lưu cấu hình dạng này đều cần đọc giá trị hiện tại rồi merge tay trước khi ghi, không được gọi với chỉ một phần dữ liệu.
 
 **"Hạ nhiệt" tự động sau khi kích hoạt lại một tài khoản bị tạm dừng** — bổ sung sau khi tham khảo một báo cáo thực tế được chia sẻ trong một nhóm về vận hành Facebook: một người vận hành cố tình im lặng thêm 1 tuần sau khi hạn chế được gỡ, báo cáo 3 tháng sạch sẽ tiếp theo; một người khác đăng chéo bài ngay khi hạn chế vừa gỡ thì bị hạn chế lại ngay lập tức. Vì vậy, bấm "Kích hoạt lại" không đưa tài khoản về tốc độ đầy đủ ngay, mà chạy ở giới hạn thấp hơn trong một số ngày cấu hình được, rồi mới tự phục hồi về mức trước khi bị tạm dừng.
 

@@ -411,23 +411,26 @@ def _water_fill_distribute(items: list, capacities: dict[str, int]) -> tuple[dic
     return assignment, leftover
 
 
-def _effective_gap_minutes(cfg_min: float, cfg_max: float, account: AccountConfig) -> tuple[float, float]:
+def _effective_gap_minutes(cfg_min: float, cfg_max: float, account: AccountConfig, kind: str) -> tuple[float, float]:
     """Widen (cfg_min, cfg_max) if needed so the auto-scheduler's gap
     between two tasks never lands under this account's real RateLimiter
-    floor (RateLimits.min_delay_seconds/max_delay_seconds — enforced
-    across EVERY action type on the account, not just within one chain;
-    see safety.py's RateLimiter._last_action_gap_ok()). Without this,
-    DataSyncConfig.comment_gap_min/max_minutes (default 10-45min) is
-    routinely tighter than an account's real min_delay_seconds (1-2h+,
-    raised 2026-09-07 — see RateLimits' own docstring), so nearly every
+    floor for `kind` ("post" or "comment" — RateLimits.post_min/max_
+    delay_seconds or comment_min/max_delay_seconds, split 2026-09-10; see
+    safety.py's RateLimiter._last_action_gap_ok()). Without this,
+    DataSyncConfig.comment_gap_min/max_minutes (default 10-45min) could
+    be tighter than an account's real comment gap floor, so nearly every
     auto-scheduled batch would land tasks that fire, hit
     rate_limited:min_delay_seconds, and sit waiting anyway (harmless
     since 2026-09-08's auto-retry-with-warning fix, but pointless —
     spacing them out up front avoids the wait entirely). Never narrows
     cfg's own values, only raises the floor — a deliberately more
     generous cfg gap is left untouched."""
-    rl_min = account.rate_limits.min_delay_seconds / 60
-    rl_max = account.rate_limits.max_delay_seconds / 60
+    if kind == "post":
+        rl_min = account.rate_limits.post_min_delay_seconds / 60
+        rl_max = account.rate_limits.post_max_delay_seconds / 60
+    else:
+        rl_min = account.rate_limits.comment_min_delay_seconds / 60
+        rl_max = account.rate_limits.comment_max_delay_seconds / 60
     eff_min = max(cfg_min, rl_min)
     eff_max = max(cfg_max, rl_max, eff_min)
     return eff_min, eff_max
@@ -718,9 +721,11 @@ async def sync_all(account_ids: list[str], cfg: DataSyncConfig | None = None) ->
     results: dict[str, dict[str, Any]] = {}
     now = datetime.now(timezone.utc)
     for aid, account in accounts.items():
-        post_gap_min, post_gap_max = _effective_gap_minutes(cfg.post_gap_min_minutes, cfg.post_gap_max_minutes, account)
+        post_gap_min, post_gap_max = _effective_gap_minutes(
+            cfg.post_gap_min_minutes, cfg.post_gap_max_minutes, account, "post"
+        )
         comment_gap_min, comment_gap_max = _effective_gap_minutes(
-            cfg.comment_gap_min_minutes, cfg.comment_gap_max_minutes, account
+            cfg.comment_gap_min_minutes, cfg.comment_gap_max_minutes, account, "comment"
         )
         next_post_time = now + timedelta(minutes=random.uniform(post_gap_min, post_gap_max))
         next_comment_time = now + timedelta(minutes=random.uniform(comment_gap_min, comment_gap_max))

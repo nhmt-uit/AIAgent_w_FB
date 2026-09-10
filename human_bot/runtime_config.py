@@ -735,8 +735,10 @@ EDITABLE_RATE_LIMITS_FIELDS: list[str] = [
     "comments_per_hour",
     "comments_per_day",
     "likes_per_hour",
-    "min_delay_seconds",
-    "max_delay_seconds",
+    "post_min_delay_seconds",
+    "post_max_delay_seconds",
+    "comment_min_delay_seconds",
+    "comment_max_delay_seconds",
 ]
 
 
@@ -829,13 +831,19 @@ def _start_resume_cooldown(account_id: str, reason: str | None, paused_at: str |
         json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8"
     )
 
+    # SafetyCooldownConfig keeps its own single min/max_delay_seconds pair
+    # (not split into post_*/comment_* like RateLimits — cooldown is
+    # deliberately more conservative than either already, so applying the
+    # same one gap to both action types during cooldown stays safe).
     save_rate_limits_overrides(account_id, {
         "posts_per_day": cfg.posts_per_day,
         "comments_per_hour": cfg.comments_per_hour,
         "comments_per_day": cfg.comments_per_day,
         "likes_per_hour": cfg.likes_per_hour,
-        "min_delay_seconds": cfg.min_delay_seconds,
-        "max_delay_seconds": cfg.max_delay_seconds,
+        "post_min_delay_seconds": cfg.min_delay_seconds,
+        "post_max_delay_seconds": cfg.max_delay_seconds,
+        "comment_min_delay_seconds": cfg.min_delay_seconds,
+        "comment_max_delay_seconds": cfg.max_delay_seconds,
     })
 
 

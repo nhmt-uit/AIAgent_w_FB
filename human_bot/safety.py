@@ -12,7 +12,7 @@ import random
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from human_bot.config import AccountConfig
+from human_bot.config import AccountConfig, RateLimits
 
 # Text signals indicating Facebook has restricted/challenged the account.
 # Keep this list in sync with docs/skills/anomaly-detection.md.
@@ -83,6 +83,17 @@ def is_content_unavailable(page_text: str) -> bool:
     AnomalyDetected/account-pause."""
     haystack = page_text.lower()
     return any(signal in haystack for signal in CONTENT_UNAVAILABLE_TEXT_SIGNALS)
+
+
+def _gap_bounds(limits: RateLimits, action_type: str) -> tuple[int, int]:
+    """Which (min, max) delay-seconds pair applies to `action_type` —
+    "post" gets its own, everything else ("comment", "like") gets the
+    comment pair (added 2026-09-10; this project has no separate
+    schedule/numbers for likes, and comments/likes are both much
+    lower-effort than a full post)."""
+    if action_type == "post":
+        return limits.post_min_delay_seconds, limits.post_max_delay_seconds
+    return limits.comment_min_delay_seconds, limits.comment_max_delay_seconds
 
 
 class RateLimiter:
@@ -215,10 +226,10 @@ class RateLimiter:
         # last row of this SAME action_type (see next_allowed_at()'s
         # docstring) — so this next_allowed_at only ever gets compared
         # against a future action of the same type.
-        limits = self.account.rate_limits
+        gap_min, gap_max = _gap_bounds(self.account.rate_limits, action_type)
         next_allowed_at = (
             datetime.utcnow()
-            + timedelta(seconds=random.uniform(limits.min_delay_seconds, limits.max_delay_seconds))
+            + timedelta(seconds=random.uniform(gap_min, gap_max))
         ).isoformat()
         row = {
             "timestamp": datetime.utcnow().isoformat(),

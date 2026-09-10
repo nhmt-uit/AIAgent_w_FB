@@ -58,69 +58,81 @@ def new_group_id(existing_ids: Iterable[str] = ()) -> str:
 
 @dataclass
 class RateLimits:
-    # 22/day = the "trên 12 tháng" (established, 12+ months old) tier in
+    # 30/day = the "trên 12 tháng" (established, 12+ months old) tier in
     # ACCOUNT_AGE_TIERS below — this class default IS that tier's preset,
     # so an account with no explicit tier/override picked defaults to the
-    # most-established assumption. Was 20 (raised from 5, 2026-09-04); set
-    # to 22 on 2026-09-07 to align with the age-tier table the project
-    # owner defined that day — see ACCOUNT_AGE_TIERS.
-    posts_per_day: int = 22
-    comments_per_hour: int = 5
-    comments_per_day: int = 20
-    likes_per_hour: int = 15
+    # most-established assumption. Retuned 2026-09-10 (was 22) alongside
+    # the post/comment gap split just below — see ACCOUNT_AGE_TIERS.
+    posts_per_day: int = 30
+    comments_per_hour: int = 9
+    comments_per_day: int = 35
+    likes_per_hour: int = 20
     # Minimum gap enforced between two consecutive actions of the SAME
     # kind on this account — post-to-post, comment-to-comment, each
     # tracked independently (see human_bot/safety.py's
     # RateLimiter._last_action_gap_ok()/next_allowed_at(), scoped per
-    # action_type bucket 2026-09-08 — a comment no longer waits on a
-    # post's gap or vice versa, same as posts_per_day/comments_per_hour
-    # above already only count same-type actions) — refuses a task
-    # outright rather than sleeping/blocking. Raised from 90-400s (which,
-    # until 2026-09-07, was defined but never actually enforced anywhere
-    # — see docs/skills/anomaly-detection.md's git history) to 1-2 hours
-    # per the project owner's explicit request, after cross-referencing
-    # external reports suggesting even 10-20 minutes between actions
-    # reads as automated to Facebook's abuse systems.
-    min_delay_seconds: int = 3600
-    max_delay_seconds: int = 7200
+    # action_type bucket 2026-09-08) — refuses a task outright rather
+    # than sleeping/blocking.
+    #
+    # Split into separate post_*/comment_* pairs 2026-09-10 (previously
+    # one shared min_delay_seconds/max_delay_seconds for every action
+    # type) — found while debugging why a real account's job/candidate
+    # backlog never drained: comments_per_day has always been set HIGHER
+    # than posts_per_day at every tier, but forcing both to wait the same
+    # gap between same-type actions makes comments/day mathematically
+    # impossible to reach in a day (e.g. 35 comments needing a shared
+    # 1-2h gap would need up to 68 hours). `like` reuses comment_* below
+    # (human_bot/safety.py) — no separate schedule/numbers for it exist
+    # in this project.
+    post_min_delay_seconds: int = 1800  # 0.5h
+    post_max_delay_seconds: int = 2232  # 0.62h
+    comment_min_delay_seconds: int = 900  # 0.25h
+    comment_max_delay_seconds: int = 1800  # 0.5h
 
 
 # --- Account-age rate-limit presets -----------------------------------------
 #
-# The project owner gave posts_per_day numbers per account-age tier
-# (2026-09-07, after noticing the test account "tu_iizuki" — under a week
-# old at the time — was running under the same limits as a fully
-# established account). Every other field here (comments_per_hour/day,
-# likes_per_hour, min/max_delay_seconds) is derived from that posts/day
-# number, scaled by the same ratios the RateLimits() class default already
-# implies at its own tier (over_12_months: posts=22 -> comments_hour=5,
-# comments_day=20, likes_hour=15 — i.e. over_12_months below is IDENTICAL
-# to RateLimits(), by construction) — and min/max_delay_seconds widens for
-# younger tiers instead (a newer/less-trusted account should space actions
-# out MORE, not just post less often). Applied at /admin/accounts, both
-# when registering a new account (a dropdown) and per-account afterward
-# (a quick-apply button in the "⏱️ Giới hạn" modal, for when an account
-# ages into the next tier) — see human_bot/admin.py.
+# The project owner gave posts_per_day/comments_per_day numbers AND a gap
+# range per account-age tier directly (2026-09-10, after the post/comment
+# gap-split decision above) — comments_per_hour/likes_per_hour aren't
+# something the owner specified; kept derived the same way this table
+# always has been, scaled proportionally off the owner's own numbers
+# (comments_per_hour from comments_per_day, likes_per_hour from
+# posts_per_day) rather than independently sourced. Every tier's max gap
+# was trimmed down from the owner's own first draft just enough that its
+# target daily count actually fits inside a ~18-hour active window (20h
+# awake per the 2am-6am quiet-hours default, minus a 10% safety margin) —
+# see docs/skills/rate-limiting-pacing.md for the full reasoning and the
+# (unreliable, marketing-blog) external sources that originally informed
+# this general area. Applied at /admin/accounts, both when registering a
+# new account (a dropdown) and per-account afterward (a quick-apply
+# button in the "⏱️ Giới hạn" modal, for when an account ages into the
+# next tier) — see human_bot/admin.py.
 ACCOUNT_AGE_TIERS: dict[str, tuple[str, RateLimits]] = {
     "under_1_month": ("Dưới 1 tháng", RateLimits(
-        posts_per_day=5, comments_per_hour=1, comments_per_day=5, likes_per_hour=4,
-        min_delay_seconds=10800, max_delay_seconds=21600,  # 3-6h
+        posts_per_day=5, comments_per_hour=2, comments_per_day=7, likes_per_hour=4,
+        post_min_delay_seconds=7200, post_max_delay_seconds=12600,  # 2-3.5h
+        comment_min_delay_seconds=5400, comment_max_delay_seconds=10800,  # 1.5-3h
     )),
     "under_3_months": ("Dưới 3 tháng", RateLimits(
-        posts_per_day=8, comments_per_hour=2, comments_per_day=7, likes_per_hour=6,
-        min_delay_seconds=7200, max_delay_seconds=14400,  # 2-4h
+        posts_per_day=8, comments_per_hour=3, comments_per_day=10, likes_per_hour=6,
+        post_min_delay_seconds=6300, post_max_delay_seconds=9000,  # 1.75-2.5h
+        comment_min_delay_seconds=3600, comment_max_delay_seconds=7200,  # 1-2h
     )),
     "under_6_months": ("Dưới 6 tháng", RateLimits(
-        posts_per_day=11, comments_per_hour=3, comments_per_day=10, likes_per_hour=8,
-        min_delay_seconds=5400, max_delay_seconds=10800,  # 1.5-3h
+        posts_per_day=12, comments_per_hour=4, comments_per_day=15, likes_per_hour=9,
+        post_min_delay_seconds=4500, post_max_delay_seconds=5760,  # 1.25-1.6h
+        comment_min_delay_seconds=2160, comment_max_delay_seconds=4500,  # 0.6-1.25h
     )),
     "under_12_months": ("Dưới 12 tháng", RateLimits(
-        posts_per_day=18, comments_per_hour=4, comments_per_day=16, likes_per_hour=12,
-        min_delay_seconds=4500, max_delay_seconds=9000,  # 1.25-2.5h
+        posts_per_day=20, comments_per_hour=6, comments_per_day=25, likes_per_hour=13,
+        post_min_delay_seconds=2700, post_max_delay_seconds=3420,  # 0.75-0.95h
+        comment_min_delay_seconds=1260, comment_max_delay_seconds=2700,  # 0.35-0.75h
     )),
     "over_12_months": ("Trên 12 tháng", RateLimits(
-        posts_per_day=22, comments_per_hour=5, comments_per_day=20, likes_per_hour=15,
-        min_delay_seconds=3600, max_delay_seconds=7200,  # 1-2h — same as RateLimits()
+        posts_per_day=30, comments_per_hour=9, comments_per_day=35, likes_per_hour=20,
+        post_min_delay_seconds=1800, post_max_delay_seconds=2232,  # 0.5-0.62h — same as RateLimits()
+        comment_min_delay_seconds=900, comment_max_delay_seconds=1800,  # 0.25-0.5h — same as RateLimits()
     )),
 }
 

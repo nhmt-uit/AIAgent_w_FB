@@ -1529,8 +1529,10 @@ _RATE_LIMITS_LABELS: dict[str, str] = {
     "comments_per_hour": "Số comment tối đa / giờ",
     "comments_per_day": "Số comment tối đa / ngày",
     "likes_per_hour": "Số like tối đa / giờ",
-    "min_delay_seconds": "Khoảng chờ tối thiểu giữa 2 hành động (giây)",
-    "max_delay_seconds": "Khoảng chờ tối đa giữa 2 hành động (giây)",
+    "post_min_delay_seconds": "Khoảng chờ tối thiểu giữa 2 BÀI ĐĂNG (giây)",
+    "post_max_delay_seconds": "Khoảng chờ tối đa giữa 2 BÀI ĐĂNG (giây)",
+    "comment_min_delay_seconds": "Khoảng chờ tối thiểu giữa 2 COMMENT (giây)",
+    "comment_max_delay_seconds": "Khoảng chờ tối đa giữa 2 COMMENT (giây)",
 }
 
 
@@ -2034,8 +2036,10 @@ async def accounts_rate_limits_save(request: Request, _: None = Depends(_require
         if n < 0:
             return _fail(f"Giá trị '{field}' phải >= 0", current)
         values[field] = n
-    if values["min_delay_seconds"] > values["max_delay_seconds"]:
-        return _fail("Khoảng chờ tối thiểu phải nhỏ hơn hoặc bằng khoảng chờ tối đa", RateLimits(**values))
+    if values["post_min_delay_seconds"] > values["post_max_delay_seconds"]:
+        return _fail("Khoảng chờ tối thiểu giữa 2 bài đăng phải nhỏ hơn hoặc bằng khoảng chờ tối đa", RateLimits(**values))
+    if values["comment_min_delay_seconds"] > values["comment_max_delay_seconds"]:
+        return _fail("Khoảng chờ tối thiểu giữa 2 comment phải nhỏ hơn hoặc bằng khoảng chờ tối đa", RateLimits(**values))
 
     save_rate_limits_overrides(account_id, values)
     if _is_htmx(request):
