@@ -43,6 +43,8 @@ class ScheduledTask:
     content: str | None = None
     target_url: str | None = None
     media_path: str | None = None
+    # post_to_own_profile only — see human_bot.agent.TaskRequest.audience.
+    audience: str = "public"
     reasoning: str = ""
     source_kind: str = ""  # "job" | "candidate" — which side-B endpoint this came from
     source_id: str = ""  # side-B's own record id, for traceability/debugging

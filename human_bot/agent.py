@@ -36,6 +36,10 @@ class TaskRequest:
     target_url: str | None = None  # group/post URL; not needed for post_to_own_profile
     content: str | None = None
     media_path: str | None = None
+    # post_to_own_profile only — "public" (default) | "friends" | "only_me".
+    # See actions.post_to_own_profile's docstring. Ignored by every other
+    # action.
+    audience: str = "public"
     reasoning: str = ""
     # Where this task originated — recorded alongside every action in
     # human_bot/db.py's action_log so /admin/reports can tell manual clicks
@@ -69,7 +73,7 @@ class TaskResult:
 _ACTION_DISPATCH: dict[str, tuple[str, Callable[[Page, TaskRequest], Awaitable[ActionResult]]]] = {
     "post_to_own_profile": (
         "post",
-        lambda page, req: actions.post_to_own_profile(page, req.content, req.media_path),
+        lambda page, req: actions.post_to_own_profile(page, req.content, req.media_path, req.audience),
     ),
     "post_to_group": (
         "post",

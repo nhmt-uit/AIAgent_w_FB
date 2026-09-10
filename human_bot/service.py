@@ -233,6 +233,7 @@ class TaskIn(BaseModel):
     target_url: str | None = None
     content: str | None = None
     media_path: str | None = None
+    audience: str = "public"
     reasoning: str = ""
 
 

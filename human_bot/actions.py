@@ -151,10 +151,18 @@ async def _attach_media(page: Page, scope, media_path: str, mouse, pacing) -> No
         raise RuntimeError("media_attach_failed: khong thay anh xuat hien trong khung soan sau khi dinh kem")
 
 
+_AUDIENCE_LABELS: dict[str, str] = {
+    "public": "Public",
+    "friends": "Friends",
+    "only_me": "Only me",
+}
+
+
 async def post_to_own_profile(
     page: Page,
     content: str,
     media_path: str | None = None,
+    audience: str = "public",
 ) -> ActionResult:
     """
     Recorded via Playwright Codegen against account "troy" on 2026-09-02
@@ -163,11 +171,27 @@ async def post_to_own_profile(
     ENGLISH Facebook UI (see docs/skills/facebook-custom-actions.md,
     "Facebook UI language") — every selector below is taken close to
     verbatim from that second, English-locale recording, not guessed.
-    Sets the post's audience to "Only me" every time — this matches the
-    safe default used while testing (see docs/skills/rate-limiting-pacing.md
-    for why a new/low-trust account should start conservative). If a wider
-    audience is ever needed, this needs a new `audience` parameter and a
-    branch here — not a silent behavior change.
+
+    `audience` picks the post's visibility: "public" (default), "friends",
+    or "only_me". Requested 2026-09-09 — the original version of this
+    function always hardcoded "Only me" as a safe default while testing
+    (see docs/skills/rate-limiting-pacing.md for why a new/low-trust
+    account should start conservative); that safe-default behavior is now
+    the "only_me" branch below, opt-in per task instead of forced on every
+    post. "public" is the new default and deliberately skips the
+    edit-privacy dialog entirely (requested behavior, not a verified fact
+    about Facebook's own default) — the composer's audience selector is
+    STICKY per Facebook account, remembering whatever was chosen last, so
+    skipping this step means "public" actually posts under whatever
+    audience the account already had selected on Facebook's side, not
+    necessarily Public. For any account this bot already ran against
+    before 2026-09-09 (when every post hardcoded "Only me"), that means
+    the FIRST "public" post will likely still land as "Only me" until the
+    account's audience is explicitly changed once — either manually on
+    facebook.com, or by running one post with audience="only_me" then one
+    with a real explicit selection. Only truly brand-new accounts (never
+    posted through this bot) can be expected to default to Facebook's own
+    normal default (usually Public) on the very first "public" post.
 
     Standing rule (docs/skills/group-targeting.md): `page.goto(
     "https://www.facebook.com/")` below stays a direct goto — going to
@@ -178,6 +202,9 @@ async def post_to_own_profile(
     `_go_home` in this module), so every subsequent navigation in this
     function starts from a real click rather than from the goto alone.
     """
+    if audience not in _AUDIENCE_LABELS:
+        raise ValueError(f"unknown audience: {audience!r} (expected one of {sorted(_AUDIENCE_LABELS)})")
+
     pacing = get_pacing_config()
     mouse = get_mouse_config()
     try:
@@ -200,24 +227,31 @@ async def post_to_own_profile(
         ), mouse)
         await pause_after_composer_open(pacing)
 
-        # --- Set audience to "Only me" ---
-        # Confirmed live 2026-09-03 (see docstring above) — the privacy list
-        # item is a plain text node ("Only me"), no CSS-position hack
-        # needed anymore. If this stops matching after a Facebook UI
-        # change, re-record with Codegen — see docs/skills/
+        # --- Set audience (skipped for "public", the default) ---
+        # Confirmed live 2026-09-03 for the "Only me" case (see docstring
+        # above) — the privacy list item is a plain text node, no
+        # CSS-position hack needed. Generalized 2026-09-09 to also select
+        # "Friends"; that text match is UNVERIFIED live (only "Only me" was
+        # ever actually recorded) — re-check the first time audience=
+        # "friends" runs for real. If any of this stops matching after a
+        # Facebook UI change, re-record with Codegen — see docs/skills/
         # facebook-custom-actions.md, "How selectors get filled in".
-        await human_click(page, page.get_by_role(
-            "button", name=re.compile("edit privacy", re.IGNORECASE)
-        ), mouse)
-        await pause_between_ui_steps(pacing)
-        await human_click(page, page.get_by_text(re.compile("^only me$", re.IGNORECASE)), mouse)
-        await pause_between_ui_steps(pacing)
-        await human_click(page, page.get_by_role(
-            "button", name=re.compile("done with privacy audience", re.IGNORECASE)
-        ), mouse)
-        await pause_between_ui_steps(pacing)
-        await human_click(page, page.get_by_role("paragraph"), mouse)
-        await pause_between_ui_steps(pacing)
+        if audience != "public":
+            target_label = _AUDIENCE_LABELS[audience]
+            await human_click(page, page.get_by_role(
+                "button", name=re.compile("edit privacy", re.IGNORECASE)
+            ), mouse)
+            await pause_between_ui_steps(pacing)
+            await human_click(page, page.get_by_text(
+                re.compile(f"^{re.escape(target_label)}$", re.IGNORECASE)
+            ), mouse)
+            await pause_between_ui_steps(pacing)
+            await human_click(page, page.get_by_role(
+                "button", name=re.compile("done with privacy audience", re.IGNORECASE)
+            ), mouse)
+            await pause_between_ui_steps(pacing)
+            await human_click(page, page.get_by_role("paragraph"), mouse)
+            await pause_between_ui_steps(pacing)
 
         # --- Type and submit the post ---
         # human_type() sends real keystrokes with human-like timing/typos

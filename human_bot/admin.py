@@ -1815,6 +1815,16 @@ async def post_form(
         <input type="hidden" name="account_id" value="{html.escape(account_id)}">
         <textarea name="content" placeholder="Nội dung bài đăng..." required data-preserve-profile-content>{html.escape(profile_content or "")}</textarea>
         <div class="field-stack" style="margin-top:14px;">
+          <div class="field-label">Đối tượng xem</div>
+          <div class="field-input">
+            <select name="audience">
+              <option value="public" selected>🌍 Công khai (Public)</option>
+              <option value="friends">👥 Bạn bè (Friends)</option>
+              <option value="only_me">🔒 Chỉ mình tôi (Only me)</option>
+            </select>
+          </div>
+        </div>
+        <div class="field-stack" style="margin-top:14px;">
           <div class="field-label">Đăng lúc</div>
           <div class="field-input" data-preserve-profile-schedule>{_datetime_picker_html("scheduled_at", current_value=profile_scheduled_at or "")}</div>
         </div>
@@ -1840,12 +1850,16 @@ async def post_schedule_profile(request: Request, _: None = Depends(_require_aut
     scheduled_at = _parse_scheduled_at(str(form.get("scheduled_at", "")))
     if scheduled_at is None:
         return RedirectResponse(url=f"/admin/post?account_id={account_id}&tab=profile&error=Giờ+đăng+không+hợp+lệ", status_code=303)
+    audience = str(form.get("audience", "public")).strip()
+    if audience not in ("public", "friends", "only_me"):
+        audience = "public"
     task = schedule_store.ScheduledTask(
         task_id=schedule_store.new_task_id(scheduled_at.isoformat()),
         action="post_to_own_profile",
         account_id=account_id,
         scheduled_at=scheduled_at.isoformat(),
         content=content,
+        audience=audience,
         reasoning="manual: composed at /admin/post",
     )
     schedule_store.add(task)
@@ -2271,6 +2285,7 @@ async def schedule_fire_now(request: Request, _: None = Depends(_require_auth)):
         target_url=task.target_url,
         content=task.content,
         media_path=task.media_path,
+        audience=task.audience,
         reasoning=task.reasoning,
         source="schedule_manual",
         source_kind=task.source_kind,
