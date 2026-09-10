@@ -48,10 +48,10 @@ Dự án xây dựng một hệ thống tự động thực hiện các hành đ
 | Xác thực API cho `POST /tasks` (X-API-Key) và Admin UI (HTTP Basic Auth) | Hoàn thành |
 | Ghi log & báo cáo lịch sử hành động (SQLite) | Hoàn thành |
 | Content Strategist Agent (AI soạn/viết lại nội dung job đăng nhóm + reply ứng viên, gọi đúng lúc đến giờ đăng, có bật/tắt riêng, đa nhà cung cấp) | Hoàn thành, **đã xác nhận sống với Anthropic**; OpenAI/Gemini/custom chưa test end-to-end — xem mục 4.10 |
-| Đăng nhập tài khoản mới qua web `/admin/accounts` (thay cho chạy lệnh tay) | Hoàn thành — xem mục 4.15 |
+| Đăng nhập tài khoản mới qua web `/admin/accounts` (thay cho chạy lệnh tay) | Hoàn thành — xem mục 4.11 |
 | Cơ chế dự phòng khi 1 selector bị Facebook đổi giao diện làm gãy | Đã thiết kế (dùng AI/LLM "nhìn" trang), **chưa nối vào luồng chạy thật** |
 | Thiết lập môi trường vận hành thật (proxy/IP riêng theo tài khoản, khoá API bên B thật) | Chưa làm — cần trước khi chạy ngoài phạm vi máy cá nhân |
-| Bộ test tự động (`pytest`) cho phần logic thuần (rate-limit, template AI, cấu hình admin, đa nhà cung cấp AI, cảnh báo thiếu xác thực) | Hoàn thành, 75 test — xem mục 4.16. Phần đụng Playwright/trình duyệt thật vẫn chưa có test tự động |
+| Bộ test tự động (`pytest`) cho phần logic thuần (rate-limit, template AI, cấu hình admin, đa nhà cung cấp AI, cảnh báo thiếu xác thực) | Hoàn thành, 76 test — xem mục 4.16. Phần đụng Playwright/trình duyệt thật vẫn chưa có test tự động |
 
 # 3\. Nguyên tắc thiết kế cốt lõi — vì sao mọi hành động đều đi theo cùng một "kịch bản điều hướng"
 
@@ -74,11 +74,11 @@ Quy tắc này ban đầu từng bị hiểu quá đà (một bản nháp sớm 
 
 # 4\. Chi tiết các hạng mục đã hoàn thành
 
-## 4.1. Đăng bài lên tường cá nhân
+## 4.1. Đăng bài lên tường cá nhân (2026-09-02, thêm đối tượng xem 2026-09-10)
 
 Luồng đầy đủ: mở khung đăng bài, gõ nội dung theo tốc độ/nhịp gõ tự nhiên (mục 4.4), chọn đối tượng xem (Public/Friends/Only me — trước đây bị ép cứng "Only me" cho mọi bài, đã sửa để nhận tham số `audience` xuyên suốt từ API tới giao diện đăng bài), và **xác minh thật** bài đã đăng thành công thay vì đoán (mục 4.8).
 
-## 4.2. Đăng bài vào nhóm — 4 lớp dự phòng
+## 4.2. Đăng bài vào nhóm — 4 lớp dự phòng (2026-09-03 – 2026-09-04)
 
 Hạng mục phức tạp nhất của dự án. Một người dùng thật không phải lúc nào cũng vào một nhóm theo đúng một cách — hệ thống mô phỏng đúng điều đó bằng một **chuỗi 4 phương án**, thử lần lượt, dừng ngay khi một phương án xác nhận đúng nhóm:
 
@@ -95,13 +95,15 @@ Hạng mục phức tạp nhất của dự án. Một người dùng thật kh�
 
 **Vẫn còn một điểm chưa xác minh thật:** dấu hiệu "bài đang chờ duyệt" (khi nhóm bật chế độ duyệt bài trước khi hiển thị) mới được viết theo suy luận hợp lý, chưa test với một nhóm thật có bật duyệt bài — Facebook không công khai tài liệu về dấu hiệu DOM chính xác cho trạng thái này, nên cần tự quan sát trực tiếp khi có dịp.
 
-## 4.3. Bình luận vào bài trong nhóm (`comment_on_group_post`)
+## 4.3. Bình luận vào bài trong nhóm (`comment_on_group_post`) (2026-09-08)
 
 Ghi Codegen và xác nhận sống trên đúng nhóm tài khoản đã tham gia thật, comment hiện lên sau khi tải lại trang để xác nhận. Có thêm bước kiểm tra lại dấu hiệu bất thường khi bước xác minh gửi comment bị timeout — cùng nguyên tắc với đăng bài (mục 4.8). Selector khung nhập cũng đã mở rộng để khớp cả bài dạng Hỏi-Đáp (Q&A) của Facebook, hiển thị "Write an answer…" thay vì "Write a comment…" như bài thường — phát hiện qua một lần chạy thật bị timeout 30 giây trước khi sửa.
 
+**Phát hiện link chết (bài/nhóm không còn khả dụng) TRƯỚC KHI thử comment, không phải sau khi timeout (2026-09-08).** Trước đó, comment vào một bài đã bị xoá/ẩn/nhóm không còn xem được sẽ khiến hệ thống tìm mãi khung nhập comment không bao giờ xuất hiện, timeout ~30 giây rồi mới báo lỗi. Giờ nhận diện ngay trang "nội dung này không khả dụng" của Facebook trước khi cố thao tác, báo lỗi rõ ràng ngay lập tức — khác hẳn với việc phát hiện tài khoản bị Facebook hạn chế (mục 4.7): đây là nội dung mục tiêu biến mất, không phải dấu hiệu tài khoản mình có vấn đề, nên không kích hoạt tạm dừng tài khoản.
+
 **3 hành động còn lại** (`comment_on_friend_post`, `like_post`, `read_recent_comments`) **được chủ dự án chủ động yêu cầu tạm ngưng** — không phải vì vướng lỗi kỹ thuật, mà vì chưa cần cho nhu cầu hiện tại. Sẽ làm lại nếu sau này thật sự cần.
 
-## 4.4. Mô phỏng hành vi con người — vì sao phải làm kỹ đến vậy
+## 4.4. Mô phỏng hành vi con người — vì sao phải làm kỹ đến vậy (2026-09-03)
 
 Đây là phần được đầu tư nghiên cứu nhiều nhất của dự án, dựa trên đọc các nguồn nghiên cứu/tài liệu thật về cách các hệ thống chống bot hiện đại phát hiện tự động hoá (cside.com — bài về phát hiện AI agent và phát hiện Playwright/browserless qua con trỏ chuột; browser-use.com — bài về bot detection; thư viện `ghost-cursor` cho Puppeteer/Playwright; một bài nghiên cứu học thuật về phát hiện bot qua nhịp gõ phím — xem đầy đủ nguồn ở mục 8), thay vì chỉ đoán mò.
 
@@ -117,7 +119,9 @@ Cụ thể đã triển khai:
 * **Gõ sai rồi tự sửa (từ có dấu tiếng Việt) — xử lý khác hẳn, có lý do kỹ thuật cụ thể:** dấu tiếng Việt không phải một phím vật lý đơn — chúng được bộ gõ (Unikey, VNI...) ghép từ nhiều phím theo kiểu Telex/VNI. Playwright gửi thẳng ký tự Unicode đã ghép sẵn qua giao thức CDP, **không đi qua bộ gõ IME thật của hệ điều hành** — nên không thể mô phỏng "gõ sai kiểu Telex" ở tầng bàn phím. Giải pháp: mô phỏng đúng *hành vi* quan sát được ở người thật — thỉnh thoảng gõ đúng cả một từ, "nhận ra sai", xoá nguyên từ, gõ lại — luôn đảm bảo văn bản cuối cùng đúng tuyệt đối, không tạo ra chữ tiếng Việt lỗi vô nghĩa.
 * **Các khoảng đợi có ngữ cảnh, không phải một con số cố định:** đợi sau khi trang vừa tải xong, đợi sau khi mở khung soạn bài, đợi giữa các bước chọn (VD: chọn quyền riêng tư), và đặc biệt là khoảng "đọc lại trước khi đăng" — thời gian đợi trước khi bấm Post **tỉ lệ theo độ dài nội dung vừa gõ** (bài dài đợi lâu hơn), mô phỏng đúng việc một người thật đọc lại bài trước khi đăng.
 
-## 4.5. Đa dạng hoá "dấu vân tay" trình duyệt (fingerprint) theo từng tài khoản — đã làm gì, và cố tình CHƯA làm gì
+**Đã cân nhắc và CHỦ ĐỘNG QUYẾT ĐỊNH CHƯA LÀM: điều khiển chuột thật ở tầng hệ điều hành (2026-09-08).** Có tính tới phương án dùng `pyautogui`/`pynput` để điều khiển con trỏ chuột vật lý thật của máy, thay vì `page.mouse.*` của Playwright — về lý thuyết loại bỏ hẳn giới hạn "movementX/Y luôn bằng 0" và "không có mẫu toạ độ tần số cao" vốn có của CDP (giao thức Playwright dùng để điều khiển Chrome). Quyết định KHÔNG làm, vì 5 lý do vận hành cụ thể: (1) bắt buộc máy phải luôn có phiên desktop thật, mở khoá, còn màn hình — mất khả năng chạy nền 24/7 không người trông; (2) không dùng máy song song được vì chuột OS là tài nguyên vật lý dùng chung; (3) mất khả năng chạy nhiều tài khoản cùng lúc (mỗi tài khoản hiện có "chuột ảo" riêng qua CDP, chuột OS thì chỉ có đúng 1 con trỏ); (4) dễ vỡ nếu có cửa sổ/thông báo nào che khuất Chrome đúng lúc click; (5) khoá cứng vĩnh viễn vào "phải có màn hình thật", không bao giờ chuyển sang chạy headless được nữa. Sau khi nghiên cứu thêm, các hệ chống bot tinh vi ngoài đời thực tế vẫn xem cách làm hiện tại (CDP + làm mượt hành vi như 4 điểm trên) là đủ tốt cho production — lợi ích thêm từ chuột OS thật là biên rất nhỏ so với chi phí vận hành phải đánh đổi. Chủ dự án đồng ý ghi lại quyết định này, chưa triển khai.
+
+## 4.5. Đa dạng hoá "dấu vân tay" trình duyệt (fingerprint) theo từng tài khoản — đã làm gì, và cố tình CHƯA làm gì (2026-09-10)
 
 Mỗi tài khoản Facebook đã chạy trên một tiến trình Chromium riêng (không share trình duyệt giữa các tài khoản), nhưng ban đầu mọi tiến trình đều dùng chung **y hệt** một cấu hình màn hình mặc định — nghĩa là dưới góc nhìn của Facebook, mọi tài khoản vẫn "trông giống" cùng một loại thiết bị. Đã khắc phục bằng cách băm `account_id` (SHA256) để chọn ra một cấu hình cố định trong số 5 cấu hình màn hình phổ biến ngoài đời thật (kết hợp độ phân giải + tỉ lệ scale phù hợp thực tế, VD: MacBook 1440x900 thường đi kèm @2x, màn ngoài 1920x1080 thường @1x) — **ổn định qua mọi lần restart**, không đổi ngẫu nhiên mỗi lần mở, vì đổi liên tục còn là tín hiệu bot rõ ràng hơn cả việc dùng chung một cấu hình.
 
@@ -129,7 +133,7 @@ Mỗi tài khoản Facebook đã chạy trên một tiến trình Chromium riên
 
 Cũng chưa dùng thư viện `playwright-stealth` hay tương đương.
 
-## 4.6. Giới hạn tần suất hành động (rate limiting), phân theo "tuổi" tài khoản, và "hạ nhiệt" sau khi kích hoạt lại
+## 4.6. Giới hạn tần suất hành động (rate limiting), phân theo "tuổi" tài khoản, và "hạ nhiệt" sau khi kích hoạt lại (2026-09-08, retune 2026-09-10)
 
 **Vì sao cần:** Điều khoản sử dụng của Facebook cấm hành vi tự động thay thế người dùng thật, và hệ thống chống lạm dụng của họ đặc biệt chú ý tới *khuôn mẫu lặp lại*: tốc độ đều đặn, hoạt động 24/24, khoảng cách giữa các lần thao tác đều tăm tắp — đây là tín hiệu bot rõ hơn bất kỳ một hành động đơn lẻ nào.
 
@@ -157,7 +161,7 @@ Khoảng nghỉ này được tính **riêng theo từng loại hành động** 
 
 **"Hạ nhiệt" tự động sau khi kích hoạt lại một tài khoản bị tạm dừng** — bổ sung sau khi tham khảo một báo cáo thực tế được chia sẻ trong một nhóm về vận hành Facebook: một người vận hành cố tình im lặng thêm 1 tuần sau khi hạn chế được gỡ, báo cáo 3 tháng sạch sẽ tiếp theo; một người khác đăng chéo bài ngay khi hạn chế vừa gỡ thì bị hạn chế lại ngay lập tức. Vì vậy, bấm "Kích hoạt lại" không đưa tài khoản về tốc độ đầy đủ ngay, mà chạy ở giới hạn thấp hơn trong một số ngày cấu hình được, rồi mới tự phục hồi về mức trước khi bị tạm dừng.
 
-## 4.7. Tự phát hiện tài khoản bị Facebook hạn chế và tự tạm dừng
+## 4.7. Tự phát hiện tài khoản bị Facebook hạn chế và tự tạm dừng (2026-09-06 – 2026-09-07)
 
 **Sự cố thật xác nhận hệ thống hoạt động đúng:** tài khoản `tu_iizuki` từng bị Facebook đưa ra màn hình "confirm your identity" thật (đang thao tác tay ghi Codegen, không phải lúc chạy tự động) — mức độ trung bình, chỉ chặn một số hành động, xác minh qua app Facebook trên điện thoại là xong. Đây là lần đầu tiên bộ dấu hiệu phát hiện bất thường trong code được đối chiếu với ảnh chụp màn hình thật thay vì chỉ dựa vào suy đoán — cả 2 cụm chữ đã có sẵn ("confirm your identity", "unusual activity") khớp đúng y hệt màn hình thật, và một cụm thứ 3 ("certain actions have been restricted") được thêm vào để chắc chắn hơn.
 
@@ -167,7 +171,7 @@ Khoảng nghỉ này được tính **riêng theo từng loại hành động** 
 
 **Còn thiếu so với thiết kế đầy đủ của Safety Monitor:** hành vi #2 (chủ động giảm tốc khi sắp chạm giới hạn, không đợi tới lúc thất bại hẳn) và hành vi #3 (báo động ra ngoài qua Slack/email/Telegram khi có tài khoản bị tạm dừng — hiện tại chỉ biết được khi tự vào `/admin` xem banner cảnh báo).
 
-## 4.8. Xác minh bài đăng thật sự thành công \+ chụp ảnh bằng chứng mỗi lần chạy
+## 4.8. Xác minh bài đăng thật sự thành công \+ chụp ảnh bằng chứng mỗi lần chạy (2026-09-07)
 
 **Vì sao cần làm lại:** trước đây, sau khi bấm Post, hệ thống chỉ đợi cứng 2 giây rồi luôn báo thành công — không kiểm tra gì cả. Một sự cố thật đã xảy ra đúng kiểu lỗi này: ảnh bị gắn nhầm vào input ẩn khác, hệ thống vẫn báo thành công dù ảnh không hề xuất hiện trên bài đăng thật.
 
@@ -177,11 +181,11 @@ Khoảng nghỉ này được tính **riêng theo từng loại hành động** 
 
 **Còn cần xác nhận sống:** 2 cơ chế xác minh trên (nút Post biến mất, ảnh thumbnail xuất hiện) được viết theo suy luận hợp lý từ cấu trúc trang đã biết, nhưng chưa chạy thử trực tiếp đủ nhiều lần trên Facebook thật để loại trừ khả năng báo "thất bại" giả cho một bài thực ra đã đăng thành công.
 
-## 4.9. Đính kèm ảnh/video khi đăng bài
+## 4.9. Đính kèm ảnh/video khi đăng bài (2026-09-04)
 
 Tự động đính kèm 1 ảnh cho mỗi bài đăng (cả tường cá nhân lẫn nhóm), bật/tắt được qua trang quản trị (mặc định bật). Nếu bài đăng có ảnh riêng do bên B cung cấp thì luôn ưu tiên dùng ảnh đó; nếu không, hệ thống tự chọn ngẫu nhiên 1 ảnh từ kho ảnh mẫu có sẵn trong dự án. Playwright không thao tác hộp thoại chọn file của hệ điều hành (không làm được), mà chặn ngay cú click và gán file trực tiếp vào input ẩn — cách làm chuẩn của Playwright cho việc upload file.
 
-## 4.10. AI soạn/viết lại nội dung — job đăng nhóm và reply ứng viên (Content Strategist Agent)
+## 4.10. AI soạn/viết lại nội dung — job đăng nhóm và reply ứng viên (Content Strategist Agent) (2026-09-04, viết lại kiến trúc + đa nhà cung cấp 2026-09-10)
 
 **Vì sao cần AI ở đúng chỗ này:** nghiên cứu về cách các công cụ tự động hoá nhóm Facebook bị phát hiện chỉ ra rằng **nội dung giống hệt nhau đăng vào nhiều nhóm/nhiều người trong thời gian ngắn là dấu hiệu bị gắn cờ nhanh nhất**. Vì hệ thống thật sự phát tán một tin tuyển dụng vào mọi nhóm đã tham gia và trả lời hàng loạt ứng viên bằng cùng một bộ câu mẫu, việc có một lớp AI biến tấu nội dung là **yêu cầu bắt buộc**, không phải tính năng "cho đẹp".
 
@@ -266,13 +270,13 @@ Ngành đóng tàu ở Nhật khá thiếu người nên cơ hội thăng tiến
 
 Cũng còn thiếu so với kế hoạch gốc: một bộ chuẩn hoá tín hiệu đầu vào (`normalize_signal()`), và các "guardrail" chống trùng lặp/từ cấm bằng code (hiện mới chỉ có trong system prompt gửi cho AI, chưa có lớp kiểm tra cứng bằng code) — riêng độ dài đầu ra thì đã có chặn cứng bằng code (không chỉ dặn trong prompt).
 
-## 4.15. Đăng nhập tài khoản mới qua web, thay cho chạy lệnh tay trong terminal
+## 4.11. Đăng nhập tài khoản mới qua web, thay cho chạy lệnh tay trong terminal (2026-09-10)
 
 Trước đây thêm tài khoản Facebook mới bắt buộc phải tự chạy `python3 human_bot/bootstrap_login.py <account_id>` trong terminal, một cửa sổ trình duyệt thật mở ra để tự tay đăng nhập, rồi quay lại terminal bấm Enter. Giờ có thêm lựa chọn qua `/admin/accounts`: tài khoản nào có badge đỏ "chưa có phiên đăng nhập" giờ có nút "Đăng nhập & lưu phiên" — mở đúng một cửa sổ trình duyệt thật như cách cũ, chỉ khác là xác nhận xong việc đăng nhập thì bấm nút trên web thay vì Enter trong terminal. **Giới hạn:** chỉ dùng được khi service đang chạy trên máy có màn hình thật — cửa sổ trình duyệt mở ra nằm trên máy đang chạy service, không phải máy đang xem trang quản trị; nếu chạy service trên server không màn hình thì vẫn phải dùng cách chạy lệnh tay như cũ.
 
 **Sự cố thật phát hiện trong lúc làm, đã sửa cùng lúc:** đăng ký một tài khoản ở `/admin/accounts` trước khi đăng nhập xong (tài khoản chưa có phiên đăng nhập) khiến **toàn bộ service sập ngay lúc khởi động**, không chỉ riêng tài khoản đó — đã sửa để một tài khoản thiếu phiên đăng nhập chỉ tự nó không hoạt động được, không kéo sập tài khoản khác hay cả service.
 
-## 4.11. Quản lý tài khoản, nhóm, lịch đăng, cấu hình và báo cáo qua Admin UI
+## 4.12. Quản lý tài khoản, nhóm, lịch đăng, cấu hình và báo cáo qua Admin UI (2026-09-02, nhiều đợt hoàn thiện tới 2026-09-10)
 
 Đã viết lại hoàn toàn từ một trang "đăng trực tiếp" đơn giản (không khác gì tự vào Facebook đăng tay) thành một hệ thống quản trị đầy đủ:
 
@@ -282,11 +286,15 @@ Trước đây thêm tài khoản Facebook mới bắt buộc phải tự chạy
 * **Báo cáo** (`/admin/reports`): tổng quan nhanh (tổng số/thành công/thất bại/tỉ lệ/số tài khoản hoạt động), lọc theo khoảng thời gian, xem ảnh chụp bằng chứng từng lần chạy.
 * **Cấu hình hành vi** (`/admin/config`): chỉnh mọi tham số mô phỏng con người, rate-limit, đồng bộ dữ liệu bên B — có hiệu lực ngay, không cần sửa `.env`/khởi động lại service. Mọi công tắc bật/tắt (cả 3 tab: hành vi/đồng bộ/AI) hiển thị dạng switch (nút gạt) thay vì checkbox thường (2026-09-10) — chỉ đổi giao diện, không đổi cách lưu.
 
-## 4.12. Đồng bộ dữ liệu tự động từ hệ thống tuyển dụng (bên B)
+## 4.13. Đồng bộ dữ liệu tự động từ hệ thống tuyển dụng (bên B) (2026-09-04, hardening 2026-09-08 – 2026-09-09)
 
 Một vòng lặp nền tự động gọi API của bên B để lấy tin tuyển dụng mới (→ lên lịch đăng nhóm) và ứng viên mới (→ lên lịch trả lời), tự chống trùng theo ngày, tự giãn cách thời gian đăng ngẫu nhiên (không đăng dồn cục), và **chia đều công bằng** dữ liệu mới cho mọi tài khoản đang hoạt động thay vì chỉ tài khoản xử lý đầu tiên mỗi vòng nhận được (một lỗi thật đã phát hiện và sửa — xem mục 5). Có "khung giờ yên tĩnh" để không đăng vào ban đêm theo giờ Nhật Bản. **Cổng an toàn tự đăng (`auto_fire_enabled`) mặc định tắt** — bộ đồng bộ vẫn lấy dữ liệu/lên lịch bình thường, nhưng sẽ không tự bấm đăng lên Facebook cho tới khi chủ động bật cổng này; trong lúc chờ, có thể đăng thủ công từng bài từ trang lịch.
 
-## 4.13. Bảo mật
+**Thực thi đúng giới hạn `posts_per_day` ngay khi tự động lên lịch (2026-09-08)** — bài tự động đăng nhóm do bộ đồng bộ tạo ra tôn trọng đúng hạn mức bài/ngày của từng tài khoản (mục 4.6): vượt quá thì tự tràn dồn sang ngày kế tiếp thay vì cố nhét hết vào 1 ngày hoặc bị bỏ luôn, cộng thêm khoảng cách tối thiểu giữa 2 bài đăng cùng vào 1 nhóm (tránh 2 bài liên tiếp rơi đúng vào 1 nhóm dù cách nhau đủ xa với các nhóm khác).
+
+**Bật/tắt đồng bộ dữ liệu riêng theo từng tài khoản, độc lập với Tạm dừng/Kích hoạt (2026-09-08).** Một tài khoản đang ACTIVE nhưng bị tắt đồng bộ ở đây vẫn đăng bài/comment bình thường qua `/admin/post` — chỉ riêng việc tự động lấy job/candidate mới từ bên B cho tài khoản đó bị bỏ qua. Có theo dõi trạng thái lần đồng bộ gần nhất riêng theo từng tài khoản, xem tại `/admin/accounts` tab Đồng bộ.
+
+## 4.14. Bảo mật (2026-09-08, cảnh báo/xác nhận khi thiếu khoá 2026-09-10)
 
 `POST /tasks` (API cho n8n/bên ngoài gọi vào) yêu cầu header `X-API-Key` khi đã đặt khoá trong cấu hình, so sánh bằng phương pháp an toàn chống timing attack (`secrets.compare_digest`). Trang quản trị hỗ trợ HTTP Basic Auth khi chạy ở nơi không phải máy cá nhân. **Chưa đặt khoá thật trong môi trường production** — cần làm trước khi mở các cổng này ra ngoài phạm vi máy/mạng nội bộ.
 
@@ -298,7 +306,7 @@ Thêm (2026-09-10) 2 lớp nhắc nhở lúc khởi động service (`human_bot/
 
 Việc tự đặt giá trị thật cho 3 biến này trong `.env` production vẫn là thao tác thủ công chủ dự án cần tự làm — 2 lớp nhắc nhở này chỉ đảm bảo không ai vô tình bỏ lỡ việc đó, không tự động hoá việc đặt khoá.
 
-## 4.14. Ghi log & lịch sử hành động
+## 4.15. Ghi log & lịch sử hành động (2026-09-04, ghi thêm ra file 2026-09-08)
 
 Mọi lần chạy một hành động — dù từ thao tác tay, từ lịch, hay tự động từ bên B, dù thành công hay thất bại — đều đi qua đúng một điểm ghi log duy nhất trong code, nên không sót trường hợp nào. Có cả log dạng file (`logs/human_bot.log`) lẫn lịch sử có cấu trúc trong SQLite phục vụ trang Báo cáo.
 
@@ -313,7 +321,7 @@ Mọi lần chạy một hành động — dù từ thao tác tay, từ lịch, 
 * `human_bot/content_strategist.py` — mọi quy tắc soạn template (đổi lương qua man/lá/tờ đúng điều kiện, tên visa, gộp dòng "thiếu visa/lương", xử lý danh sách/chuỗi không còn lộ lỗi `['Shizuoka']` từng gặp — mục 4.10) và các nhánh an toàn "rơi về mẫu khi AI lỗi/tắt/thiếu key".
 * `human_bot/ai_client.py` — dùng `httpx.MockTransport` (không gọi mạng thật) xác nhận đúng định dạng request cho cả 4 nhà cung cấp AI, để chắc chắn tính năng đa nhà cung cấp mới thêm không âm thầm gửi sai header/URL cho một hãng nào đó.
 
-**75 test, chạy trong dưới 1 giây, không có test nào đụng vào Facebook thật hay file cấu hình thật** (`runtime_config.json`, `accounts/`, `data_sync_cache/`) — mọi test cần đọc/ghi cấu hình đều được chuyển hướng sang file tạm qua `monkeypatch`, xác nhận lại bằng cách so `md5sum runtime_config.json` trước/sau khi chạy toàn bộ suite (giống hệt nhau). Chạy bằng `pip install -r requirements.txt -r requirements-dev.txt && pytest -q`. (10 trong số đó là `tests/test_service_auth_warning.py`, thêm cùng lúc với tính năng cảnh báo/xác nhận khởi động ở mục 4.13.)
+**76 test, chạy trong dưới 1 giây, không có test nào đụng vào Facebook thật hay file cấu hình thật** (`runtime_config.json`, `accounts/`, `data_sync_cache/`) — mọi test cần đọc/ghi cấu hình đều được chuyển hướng sang file tạm qua `monkeypatch`, xác nhận lại bằng cách so `md5sum runtime_config.json` trước/sau khi chạy toàn bộ suite (giống hệt nhau). Chạy bằng `pip install -r requirements.txt -r requirements-dev.txt && pytest -q`. (10 trong số đó là `tests/test_service_auth_warning.py`, thêm cùng lúc với tính năng cảnh báo/xác nhận khởi động ở mục 4.14; 1 test khác thêm cùng lúc với việc tách giãn cách post/comment ở mục 4.6.)
 
 **Vẫn còn thiếu:** chưa test phần đụng tới Playwright/trình duyệt thật (đúng bản chất — cần trình duyệt + tài khoản Facebook thật, không unit-test được theo nghĩa thông thường), và các module logic khác chưa được test (VD `data_sync.py`'s logic chia đều dữ liệu cho nhiều tài khoản).
 
@@ -329,6 +337,7 @@ Phần này liệt kê để cho thấy mức độ test thực tế của dự 
 * **Session trình duyệt "chết" không được phát hiện lại** (VD: người dùng tự tay đóng cửa sổ Chrome đang hiển thị) khiến mọi tác vụ sau đó cứ fail liên tục cho tới khi phải khởi động lại cả service.
 * **Lỗi cắt cụt nội dung khi sửa bài trong lịch đăng** — ô sửa vô tình dùng lại giá trị đã bị cắt ngắn để hiển thị gọn, làm mất nội dung thật khi lưu.
 * **Cấu hình sai chỗ khiến bài lên lịch thủ công không tự đăng** — cổng bật/tắt tự đăng bị đặt nhầm trong mục cấu hình "đồng bộ bên B", khiến người vận hành tìm mãi không thấy trong mục "lịch đăng".
+* **Timeout phía client quá ngắn khi test `human_bot/service.py` qua HTTP thật** — lúc xác nhận `GET /health`/`POST /tasks` hoạt động đúng qua HTTP thật (không chỉ gọi hàm trực tiếp), phát hiện thời gian chờ mặc định của client ngắn hơn thời gian đăng bài thật cần (pacing giống người cố tình chậm, có bài mất hơn 60 giây tuỳ độ dài nội dung) — client bị timeout trước khi server kịp trả kết quả dù việc đăng vẫn thành công bình thường ở phía server.
 
 # 6\. Đang triển khai / chưa hoàn thiện
 
@@ -338,6 +347,7 @@ Phần này liệt kê để cho thấy mức độ test thực tế của dự 
 * **Chống fingerprint đầy đủ hơn:** user-agent/Client Hints đồng bộ, múi giờ khớp IP thật, và quan trọng nhất — proxy/IP riêng theo từng tài khoản (mục 4.5) — đều chưa làm, chờ quyết định khi cần mở rộng quy mô.
 * **Thiết lập môi trường vận hành thật:** khoá API bên B thật, `TASKS_API_KEY` thật, proxy — chưa điền vào cấu hình production.
 * **Chọn nhóm theo chủ đề** (bài IT → nhóm IT, bài Tokutei → nhóm Tokutei...) thay vì luôn phát tán vào mọi nhóm đã tham gia — đang cân nhắc thêm.
+* **Giới hạn số nhóm đăng bài cho mỗi bài đăng, tránh bị đánh dấu spam (2026-09-10, ghi nhận từ trao đổi với chủ dự án):** hiện `sync_all()` luôn phát 1 tin tuyển dụng vào TOÀN BỘ nhóm tài khoản đã tham gia, không có giới hạn số nhóm/bài — đăng cùng lúc vào quá nhiều nhóm là dấu hiệu spam rõ. Cần thêm cấu hình giới hạn số nhóm tối đa mỗi bài, và quyết định cách chọn nhóm nào khi vượt giới hạn (ngẫu nhiên hay xoay vòng để mọi nhóm đều được phủ theo thời gian) — có thể làm chung một đợt với ý "chọn nhóm theo chủ đề" ngay trên.
 
 # 7\. Kế hoạch tiếp theo
 

@@ -646,6 +646,27 @@
 - [ ] Cân nhắc chọn nhóm theo chủ đề (bài IT → nhóm IT, bài Tokutei →
       nhóm Tokutei...) thay vì luôn broadcast vào mọi nhóm đã tham gia —
       đang suy nghĩ thêm, xem `docs/architecture.md` mục 3c.
+- [ ] **Giới hạn số nhóm đăng bài cho mỗi bài đăng, tránh bị đánh dấu
+      spam** — hiện tại `data_sync.py`'s `sync_all()` luôn phát 1 tin
+      tuyển dụng vào TOÀN BỘ nhóm tài khoản đã tham gia (`get_joined_groups()`),
+      không có giới hạn số nhóm/bài. Đăng cùng lúc vào quá nhiều nhóm là
+      dấu hiệu spam rõ (đã có nghiên cứu trong mục 4.4-4.6 tài liệu chính
+      về tần suất/khoảng cách, nhưng chưa có giới hạn riêng cho SỐ NHÓM
+      mỗi lượt broadcast). Cần: (1) thêm cấu hình max số nhóm/bài đăng
+      (VD ở `/admin/config`), (2) quyết định cách chọn nhóm nào trong số
+      đã tham gia khi có nhiều hơn giới hạn (ngẫu nhiên? xoay vòng để mọi
+      nhóm đều được phủ theo thời gian?) — liên quan tới ý "chọn nhóm
+      theo chủ đề" ngay trên, có thể làm chung một đợt.
+- [ ] **Kiểm tra lại phần viết lại nội dung khi đăng bài vào nhóm** —
+      `content_strategist.draft_single_post()` gọi AI redraft đúng lúc
+      đến giờ đăng (`fire_due_tasks()`), 2 ví dụ AI thật (Anthropic) đã
+      xác nhận đăng thành công và đọc khác nhau ở mục 4.10
+      `FB_Post_Assistant.md` — nhưng đó mới chỉ là kiểm tra thủ công 1
+      lần. Cần rà soát kỹ hơn: nội dung viết lại có luôn đúng luật đã đặt
+      (không trùng chữ giữa nhiều nhóm, không chèn link, đúng định dạng
+      lương/visa, không bịa thêm thông tin ngoài dữ liệu job) trên diện
+      rộng hơn (nhiều job/nhiều nhóm hơn, không chỉ 1 job mẫu), và xác
+      nhận nhánh fallback template hoạt động đúng khi AI lỗi/tắt.
 - [ ] Dựng workflow n8n gọi vào service này (nối toàn bộ các phần lại thành
       một luồng chạy tự động theo lịch hoặc theo trigger từ bên B).
 - [ ] Về lâu dài — nếu định chạy nhiều tài khoản song song trên nhiều máy,
