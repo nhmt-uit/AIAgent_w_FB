@@ -51,7 +51,7 @@ Dự án xây dựng một hệ thống tự động thực hiện các hành đ
 | Đăng nhập tài khoản mới qua web `/admin/accounts` (thay cho chạy lệnh tay) | Hoàn thành — xem mục 4.15 |
 | Cơ chế dự phòng khi 1 selector bị Facebook đổi giao diện làm gãy | Đã thiết kế (dùng AI/LLM "nhìn" trang), **chưa nối vào luồng chạy thật** |
 | Thiết lập môi trường vận hành thật (proxy/IP riêng theo tài khoản, khoá API bên B thật) | Chưa làm — cần trước khi chạy ngoài phạm vi máy cá nhân |
-| Bộ test tự động (`pytest`) cho phần logic thuần (rate-limit, template AI, cấu hình admin, đa nhà cung cấp AI) | Hoàn thành, 65 test — xem mục 4.16. Phần đụng Playwright/trình duyệt thật vẫn chưa có test tự động |
+| Bộ test tự động (`pytest`) cho phần logic thuần (rate-limit, template AI, cấu hình admin, đa nhà cung cấp AI, cảnh báo thiếu xác thực) | Hoàn thành, 75 test — xem mục 4.16. Phần đụng Playwright/trình duyệt thật vẫn chưa có test tự động |
 
 # 3\. Nguyên tắc thiết kế cốt lõi — vì sao mọi hành động đều đi theo cùng một "kịch bản điều hướng"
 
@@ -274,6 +274,14 @@ Một vòng lặp nền tự động gọi API của bên B để lấy tin tuy�
 
 `POST /tasks` (API cho n8n/bên ngoài gọi vào) yêu cầu header `X-API-Key` khi đã đặt khoá trong cấu hình, so sánh bằng phương pháp an toàn chống timing attack (`secrets.compare_digest`). Trang quản trị hỗ trợ HTTP Basic Auth khi chạy ở nơi không phải máy cá nhân. **Chưa đặt khoá thật trong môi trường production** — cần làm trước khi mở các cổng này ra ngoài phạm vi máy/mạng nội bộ.
 
+**Cả 2 lớp bảo vệ trên đều "im lặng tắt" nếu chưa cấu hình** — để trống `ADMIN_USERNAME`/`ADMIN_PASSWORD`/`TASKS_API_KEY` trong `.env` thì `/admin` và `/tasks` chạy hoàn toàn không xác thực, không có lỗi/cảnh báo nào trước đây. Vì `.env` bị gitignore (không đi theo khi clone/deploy sang máy khác), rủi ro thực tế là quên đặt lại 3 biến này ở môi trường mới mà không hề hay biết.
+
+Thêm (2026-09-10) 2 lớp nhắc nhở lúc khởi động service (`human_bot/service.py`, chạy trong `lifespan()`, mỗi lần `uvicorn human_bot.service:app` start):
+1. Ghi cảnh báo vào `logs/human_bot.log` (`_warn_if_auth_unconfigured()`) — bản đầu tiên, nhưng owner phản hồi cảnh báo chỉ nằm trong file log thì dễ bỏ lỡ ngay lúc đang nhìn terminal khởi động.
+2. **Hỏi xác nhận y/n ngay trên terminal** (`_confirm_startup_or_abort()`) — nếu thiếu bất kỳ biến nào VÀ đang chạy trên một terminal thật có người ngồi gõ lệnh (`sys.stdin.isatty()`), in cảnh báo ra màn hình rồi hỏi "Vẫn tiếp tục khởi động? [y/N]:" — gõ gì khác "y" (kể cả Enter trống hay Ctrl-D) thì **service dừng hẳn, không khởi động, không phục vụ request nào**. Nếu service đang chạy nền không có ai trả lời được (systemd, Docker, `nohup ... &`, CI) thì tự động bỏ qua bước hỏi này — chỉ giữ cảnh báo ghi log, tránh treo service vô thời hạn chờ một câu trả lời sẽ không bao giờ tới.
+
+Việc tự đặt giá trị thật cho 3 biến này trong `.env` production vẫn là thao tác thủ công chủ dự án cần tự làm — 2 lớp nhắc nhở này chỉ đảm bảo không ai vô tình bỏ lỡ việc đó, không tự động hoá việc đặt khoá.
+
 ## 4.14. Ghi log & lịch sử hành động
 
 Mọi lần chạy một hành động — dù từ thao tác tay, từ lịch, hay tự động từ bên B, dù thành công hay thất bại — đều đi qua đúng một điểm ghi log duy nhất trong code, nên không sót trường hợp nào. Có cả log dạng file (`logs/human_bot.log`) lẫn lịch sử có cấu trúc trong SQLite phục vụ trang Báo cáo.
@@ -289,7 +297,7 @@ Mọi lần chạy một hành động — dù từ thao tác tay, từ lịch, 
 * `human_bot/content_strategist.py` — mọi quy tắc soạn template (đổi lương qua man/lá/tờ đúng điều kiện, tên visa, gộp dòng "thiếu visa/lương", xử lý danh sách/chuỗi không còn lộ lỗi `['Shizuoka']` từng gặp — mục 4.10) và các nhánh an toàn "rơi về mẫu khi AI lỗi/tắt/thiếu key".
 * `human_bot/ai_client.py` — dùng `httpx.MockTransport` (không gọi mạng thật) xác nhận đúng định dạng request cho cả 4 nhà cung cấp AI, để chắc chắn tính năng đa nhà cung cấp mới thêm không âm thầm gửi sai header/URL cho một hãng nào đó.
 
-**65 test, chạy trong dưới 0.4 giây, không có test nào đụng vào Facebook thật hay file cấu hình thật** (`runtime_config.json`, `accounts/`, `data_sync_cache/`) — mọi test cần đọc/ghi cấu hình đều được chuyển hướng sang file tạm qua `monkeypatch`, xác nhận lại bằng cách so `md5sum runtime_config.json` trước/sau khi chạy toàn bộ suite (giống hệt nhau). Chạy bằng `pip install -r requirements.txt -r requirements-dev.txt && pytest -q`.
+**75 test, chạy trong dưới 1 giây, không có test nào đụng vào Facebook thật hay file cấu hình thật** (`runtime_config.json`, `accounts/`, `data_sync_cache/`) — mọi test cần đọc/ghi cấu hình đều được chuyển hướng sang file tạm qua `monkeypatch`, xác nhận lại bằng cách so `md5sum runtime_config.json` trước/sau khi chạy toàn bộ suite (giống hệt nhau). Chạy bằng `pip install -r requirements.txt -r requirements-dev.txt && pytest -q`. (10 trong số đó là `tests/test_service_auth_warning.py`, thêm cùng lúc với tính năng cảnh báo/xác nhận khởi động ở mục 4.13.)
 
 **Vẫn còn thiếu:** chưa test phần đụng tới Playwright/trình duyệt thật (đúng bản chất — cần trình duyệt + tài khoản Facebook thật, không unit-test được theo nghĩa thông thường), và các module logic khác chưa được test (VD `data_sync.py`'s logic chia đều dữ liệu cho nhiều tài khoản).
 

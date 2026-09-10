@@ -45,6 +45,7 @@ import asyncio  # noqa: E402
 import logging  # noqa: E402
 import os  # noqa: E402
 import secrets  # noqa: E402
+import sys  # noqa: E402
 from datetime import datetime, timezone  # noqa: E402
 
 from human_bot import data_sync, schedule_store, screenshots  # noqa: E402
@@ -202,8 +203,72 @@ async def _screenshot_cleanup_loop() -> None:
         await asyncio.sleep(SCHEDULE_CLEANUP_INTERVAL_SECONDS)
 
 
+def _missing_auth_env_vars() -> list[str]:
+    """.env is gitignored, so cloning/redeploying this project to a new
+    machine starts with NONE of these set — and _require_auth()/
+    _require_tasks_auth() both silently skip their check entirely when
+    that happens (convenient for local dev, dangerous anywhere else)."""
+    return [
+        name for name in ("ADMIN_USERNAME", "ADMIN_PASSWORD", "TASKS_API_KEY")
+        if not os.environ.get(name, "").strip()
+    ]
+
+
+def _warn_if_auth_unconfigured() -> list[str]:
+    """Logs (does not print/prompt) a warning listing which of the 3 auth
+    env vars are missing, if any. Returns that same list so callers (the
+    interactive confirmation below) don't need to recompute it. Always
+    safe to call on its own — never blocks, never raises."""
+    missing = _missing_auth_env_vars()
+    if missing:
+        logger.warning(
+            "SECURITY: %s not set in .env — /admin and/or POST /tasks are running with NO "
+            "authentication. Fine for local-only use; set these in .env before this service "
+            "is reachable from anywhere else.",
+            ", ".join(missing),
+        )
+    return missing
+
+
+def _confirm_startup_or_abort(missing: list[str]) -> None:
+    """Interactive y/n gate for the auth-missing case — requested
+    2026-09-10 after the project owner asked for a way to not silently
+    miss the warning above (which only ever went to logs/human_bot.log,
+    invisible unless someone goes and reads that file). Only prompts when
+    stdin is an actual terminal (`sys.stdin.isatty()`): a detached/
+    backgrounded deployment (systemd, Docker, `nohup ... &`, CI) has no
+    one to answer a prompt, and blocking forever on `input()` there would
+    turn a security reminder into a hung service — those keep the
+    log-only warning above and continue unattended, exactly like before
+    this feature existed. Defaults to abort (anything other than a typed
+    "y", including Ctrl-D/EOF, refuses to start) — the safe default for a
+    prompt about running with no authentication at all."""
+    if not missing:
+        return
+    if not sys.stdin.isatty():
+        return
+    print(
+        f"\n⚠️  SECURITY: {', '.join(missing)} chưa được đặt trong .env — "
+        f"/admin và/hoặc POST /tasks sẽ chạy KHÔNG có xác thực nào.\n"
+        f"Chỉ nên tiếp tục nếu service này KHÔNG ai khác chạm tới được ngoài bạn "
+        f"(chỉ chạy trên máy cá nhân).\n",
+        file=sys.stderr,
+    )
+    try:
+        answer = input("Vẫn tiếp tục khởi động? [y/N]: ").strip().lower()
+    except EOFError:
+        answer = ""
+    if answer != "y":
+        print("Đã dừng khởi động — đặt các biến trên trong .env rồi chạy lại.", file=sys.stderr)
+        raise RuntimeError(
+            f"Startup aborted: {', '.join(missing)} not set in .env (answer 'y' at the "
+            f"prompt, or set them, to proceed)"
+        )
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    _confirm_startup_or_abort(_warn_if_auth_unconfigured())
     active_accounts = [a for a in get_all_accounts().values() if a.status == AccountStatus.ACTIVE]
     await warm_up(active_accounts)
     poll_task = asyncio.create_task(_data_sync_poll_loop())

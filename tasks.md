@@ -884,3 +884,34 @@
       **Kết quả: 65 test, chạy trong 0.35s, không có mock/thật nào đụng
       vào Facebook hay file cấu hình thật.** Chạy bằng
       `pip install -r requirements.txt -r requirements-dev.txt && pytest -q`.
+- [x] **Cảnh báo lúc khởi động nếu thiếu `ADMIN_USERNAME`/`ADMIN_PASSWORD`/
+      `TASKS_API_KEY`, kèm bước xác nhận y/n** — theo P0 đã ghi ở đợt audit
+      trên: 3 biến này để trống thì `/admin` và `POST /tasks` chạy KHÔNG
+      có xác thực nào cả (code âm thầm bỏ qua kiểm tra, không lỗi). Vì
+      `.env` bị gitignore, clone/deploy dự án sang máy khác mà quên đặt
+      lại 3 biến này sẽ lặp lại đúng tình trạng đó mà không có gì báo
+      hiệu. Chia làm 2 hàm trong `human_bot/service.py`, cả 2 đều gọi ở
+      đầu `lifespan()` mỗi lần service khởi động:
+      1. `_warn_if_auth_unconfigured()` — vẫn ghi `logger.warning()` vào
+         `logs/human_bot.log` như bản đầu, liệt kê đúng biến đang thiếu.
+      2. `_confirm_startup_or_abort()` (mới, thêm sau khi owner phản hồi
+         cảnh báo chỉ nằm trong file log thì dễ bỏ lỡ lúc đang nhìn
+         terminal) — nếu có biến thiếu VÀ `sys.stdin.isatty()` là True
+         (đang chạy trên terminal thật, có người ngồi gõ lệnh
+         `uvicorn human_bot.service:app` và Enter): in cảnh báo ra
+         `stderr` + hỏi `Vẫn tiếp tục khởi động? [y/N]:` — gõ gì khác
+         "y" (kể cả Enter trống hoặc Ctrl-D/EOF) thì **dừng hẳn việc khởi
+         động** (raise trong `lifespan()` trước `yield` khiến uvicorn báo
+         "Application startup failed" và thoát, không phục vụ request
+         nào). Nếu `stdin` KHÔNG phải terminal thật (chạy nền qua
+         systemd/Docker/`nohup ... &`/CI) thì **bỏ qua hẳn việc hỏi**,
+         chỉ giữ lại cảnh báo ghi log — hỏi mà không ai trả lời được sẽ
+         treo service vĩnh viễn, tệ hơn cả im lặng bỏ qua như trước.
+      Không tự đặt giá trị thật cho 3 biến — đó vẫn là việc chủ dự án cần
+      tự làm trong `.env` khi sắp chạy ngoài máy cá nhân; tính năng này
+      chỉ đảm bảo không ai vô tình bỏ lỡ việc đó.
+      10 test mới trong `tests/test_service_auth_warning.py` (cảnh báo
+      log — thiếu cả 3/thiếu 1 phần/đủ cả 3/chuỗi khoảng trắng tính là
+      thiếu; xác nhận y/n — không hỏi khi không thiếu gì, không hỏi khi
+      không phải tty, tiếp tục khi gõ "y", dừng khi gõ khác "y", dừng khi
+      EOF) — tổng bộ test giờ là 75.
