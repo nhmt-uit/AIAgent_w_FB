@@ -82,6 +82,13 @@
       adapter), chưa có guardrail chống trùng lặp/từ cấm bằng CODE (mới
       chỉ có trong system prompt — xem Guardrail 1/2/3 trong file spec),
       và chưa mở rộng sang comment/reply ứng viên.
+      **⚠️ Đã thay đổi kiến trúc ở đợt 2026-09-10 phía trên** —
+      `draft_group_post_variants()` (batch, gọi lúc nhận data) không còn
+      được gọi ở đâu nữa (giữ lại code, không xoá), thay bằng
+      `draft_single_post()` (gọi lúc đến giờ đăng); tin nhắn ứng viên
+      cũng đã có nhánh AI riêng (`rewrite_candidate_reply()`) — đoạn mô tả
+      trên chỉ còn đúng cho bối cảnh 2026-09-05, không phải trạng thái
+      hiện tại.
 - [ ] Chạy lại `pip3 install -r requirements.txt` trước khi khởi động lại
       `service.py` — vừa thêm `httpx` (dùng để gọi API bên B trong
       `human_bot/data_sync.py`).
@@ -337,14 +344,13 @@
 
 ## Đợt làm việc 2026-09-09 — chọn audience khi đăng tường cá nhân, đăng nhập qua web, fingerprint, fix crash khởi động
 
-> ⚠️ **Chưa commit (kiểm tra lại 2026-09-09).** Code của cả 4 mục dưới đây đã
-> có thật trong working tree (`actions.py`, `admin.py`, `agent.py`,
-> `browser_pool.py`, `data_sync.py`, `schedule_store.py`, `service.py` đang
-> modified; `bootstrap_login_sessions.py`, `fingerprint.py` là file mới chưa
-> add) nhưng **chưa có commit nào** cho đợt này — `git status` vẫn thấy
-> "Changes not staged for commit". Đánh dấu `[x]` bên dưới nghĩa là "code đã
-> viết xong", không phải "đã an toàn trong git". Nhớ commit sớm để có lưới an
-> toàn, tránh mất việc nếu máy gặp sự cố.
+> ✅ **Đã commit (2026-09-10).** Tách thành 4 commit riêng theo tính năng —
+> `git add -p` để tách các hunk bị gộp chung file (vài chỗ phải tạm revert
+> rồi khôi phục lại bằng tay để mỗi commit đứng độc lập, compile được ngay):
+> - `d978a4b` — Add audience control (public/friends/only_me) for post_to_own_profile
+> - `271928b` — Add web-based login flow, fix startup crash on missing storage_state.json
+> - `86b9afa` — Diversify browser fingerprint (viewport/DPI) per account
+> - `5db3649` — Add AI-assisted drafting for job posts and candidate replies, both toggleable (xem đợt 2026-09-10 bên dưới)
 
 - [x] **`post_to_own_profile` không còn ép cứng "Only me" — chọn được
       audience mỗi lần đăng.** Trước đây hàm này luôn set "Only me" cho
@@ -391,6 +397,144 @@
       lỗi không còn kéo sập các tài khoản khác hay cả service.
 - [x] **Đa dạng hoá fingerprint theo từng tài khoản** — xem mục "Điểm yếu
       đã ghi nhận" bên dưới, mục chống fingerprint.
+
+## Đợt làm việc 2026-09-10 — AI soạn bài job/reply ứng viên chuyển sang lúc đến giờ đăng, có bật/tắt riêng
+
+> ✅ Đã commit — `5db3649` (cùng đợt audience/login/fingerprint ở trên, xem
+> ghi chú commit hash phía trên).
+
+- [x] **AI soạn bài tin tuyển dụng đăng nhóm — chuyển từ "lúc nhận data từ
+      bên B" sang "lúc đến giờ đăng thật".** Trước đây `sync_all()` gọi
+      Anthropic ngay khi vừa nhận job mới, soạn 1 lần cho tất cả nhóm cùng
+      lúc (`draft_group_post_variants`, đảm bảo N nhóm chắc chắn khác chữ
+      vì AI thấy hết cả N nhóm trong 1 lần gọi). Giờ `sync_all()` chỉ dùng
+      template (`content_strategist.template_variants()`, không AI) để lưu
+      tạm vào `ScheduledTask.content` + `job_data` (title/attributes của
+      job); AI chỉ thật sự chạy trong `fire_due_tasks()`, đúng lúc bài sắp
+      đăng, qua hàm mới `draft_single_post()` — 1 lần gọi/1 bài/1 nhóm,
+      **không còn đảm bảo N nhóm chắc chắn khác chữ** (đánh đổi chủ dự án
+      đã đồng ý — dựa vào AI tự biến tấu độc lập mỗi lần gọi, live-test
+      thực tế vẫn đọc khác nhau tự nhiên). `draft_group_post_variants` cũ
+      **giữ lại, không xoá**, đánh dấu "NOT CALLED ANYWHERE" — theo yêu cầu
+      chủ dự án, để dùng lại nếu sau này cần bật lại kiểu batch.
+- [x] **Viết lại template mẫu (nhánh không-AI) theo yêu cầu cụ thể:**
+      - Câu mở đầu: bỏ dấu `[]`, đổi sang pool 8 cụm ngẫu nhiên (TÌM ĐỒNG
+        ĐỘI/TÌM NHÂN SỰ/TÌM NHÂN TÀI/TÌM ỨNG VIÊN/TUYỂN GẤP/TIN TUYỂN
+        DỤNG/CƠ HỘI VIỆC LÀM/CẦN TUYỂN), tự tách 2 dòng nếu ghép với title
+        dài hơn 65 ký tự.
+      - Địa điểm: bỏ dấu `[]` (fix bug in nguyên Python repr `['Shizuoka']`
+        lên bài thật), pool 6 nhãn (Địa điểm/Địa điểm làm việc/Địa chỉ/Vị
+        trí/Nơi làm việc/Khu vực làm việc).
+      - Visa: mã thô bên B (`gijinkoku`...) map sang tên thông dụng tiếng
+        Việt/kanji, random giữa mã gốc/tên Việt/kanji; pool 4 kiểu nhãn
+        (`Visa:`/`Loại visa:`/`Hỗ trợ Visa:`/ghi liền không dấu `:`).
+      - Lương: đổi qua đơn vị "man" (chia 10.000) cho lương tháng/năm bằng
+        JPY, gọi ngẫu nhiên bằng "man"/"m"/"lá"/"tờ" (2 từ lóng cuối theo
+        yêu cầu cụ thể); pool nhãn (Lương/Mức lương/Thu nhập/Đãi ngộ/**Về
+        tay** — riêng "Về tay" chỉ ghép với cách nói "khoảng"/"~", không
+        ghép "từ...đến"/"trên"). Lương giờ/ngày giữ nguyên số yên.
+      - Không còn chèn link — bỏ hẳn dòng "Chi tiết: <url>", thay 1 trong
+        10 câu mời nhắn tin/inbox, random.
+      - Visa/lương thiếu cả 2 → gộp 1 dòng "Thông tin visa/lương — <câu
+        ngắn>" (JLPT thiếu thì vẫn bỏ dòng như cũ, không gộp — theo đúng
+        yêu cầu chỉ visa/lương).
+- [x] **AI reply ứng viên — pipeline 3 tầng, 2 tầng sau LOẠI TRỪ LẪN NHAU
+      (không bao giờ chạy cả 2):**
+      1. Template có sẵn (`_draft_candidate_reply_placeholder`) — soạn lúc
+         lên lịch, baseline/fallback cuối.
+      2. Gọi `GET /api/candidates/{id}/reply` của bên B — chỉ gọi khi
+         **KHÔNG** dùng AI riêng của mình ở bước 3 (tắt cờ, hoặc thiếu
+         `ANTHROPIC_API_KEY`).
+      3. AI (Anthropic) viết lại từ template — hàm mới
+         `rewrite_candidate_reply()`, tối đa ~200 ký tự (chặn cứng 400),
+         không chèn link, giữ đúng ý mời nhắn tin nhưng đổi cách diễn đạt.
+         Chỉ chạy khi bật cờ **VÀ** có key — nếu bật cờ nhưng thiếu key,
+         tự động rơi về gọi bên B (bước 2) như cũ, tránh tốn cả 2 lượt gọi
+         AI cho cùng 1 reply.
+- [x] **2 công tắc bật/tắt riêng ở `/admin/config` → "Đồng bộ dữ liệu bên
+      B"** (`DataSyncConfig.job_post_ai_enabled` /
+      `candidate_reply_ai_enabled`) — độc lập với việc có key hay không,
+      đổi được ngay không cần sửa `.env`/restart. **Bug đã fix trong lúc
+      làm:** 2 checkbox này lúc đầu hiện ra thành `<input type="number">`
+      thay vì checkbox — do thiếu trong allowlist `_BOOL_FIELDS` ở
+      `admin.py`, đã bổ sung.
+- [ ] **Chưa test sống với AI thật** — tài khoản Anthropic Console của chủ
+      dự án đang **hết credit** (`400 Bad Request: credit balance too
+      low`), mọi lần gọi AI trong lúc test đều rơi về fallback template/
+      bên B đúng như thiết kế (không crash), nhưng chưa có lần nào thực sự
+      thấy AI viết ra nội dung cuối cùng cho job **theo template mới**
+      (chỉ có 1 lần test job AI thành công TRƯỚC khi sửa template, dùng
+      định dạng cũ). Cần chạy lại `test_run_task`/chờ sync thật sau khi
+      nạp thêm credit để xác nhận cả 2 nhánh AI (job + candidate) hoạt
+      động đúng luật mới khi có key thật.
+
+## Đợt làm việc 2026-09-10 (tiếp) — Switch thay checkbox, đa nhà cung cấp AI
+
+- [x] **Đổi toàn bộ checkbox bật/tắt ở `/admin/config` (cả 3 tab: Cấu hình
+      hành vi / Đồng bộ dữ liệu / AI) thành switch (nút gạt)** — chỉ đổi
+      giao diện, input ẩn phía dưới vẫn là `<input type="checkbox"
+      name=... value="true">` y hệt cũ nên logic lưu không đổi gì. CSS mới
+      `.switch`/`.switch-slider` trong `_PAGE_STYLE`, tham số `render_rows()`
+      không đổi (mọi field bool giờ luôn render switch).
+- [x] **Hỗ trợ nhiều nhà cung cấp AI, chọn được ngay trên Admin UI** — theo
+      yêu cầu owner: trước đây tính năng AI soạn bài/reply chỉ gọi cứng
+      Anthropic Messages API, dán key OpenAI/hãng khác vào ô cũ không dùng
+      được (vẫn gọi `api.anthropic.com`, key sai định dạng → 401 → rơi về
+      template, không báo lỗi rõ). Đã thêm:
+      1. `human_bot/ai_client.py` (file mới) — điểm gọi AI duy nhất, nhận
+         `(system_prompt, user_prompt, max_tokens)`, tự dispatch theo
+         provider đang chọn: Anthropic (giữ nguyên request cũ), OpenAI/
+         "custom" (chung 1 hàm — cùng chuẩn Chat Completions, "custom" chỉ
+         khác `base_url`), Google Gemini (`generateContent` + `key=` query
+         param).
+      2. `human_bot/secrets_config.py` — `SecretsConfig` thêm `ai_provider`
+         + 1 bộ (key, model, [base_url]) riêng cho từng provider
+         (anthropic/openai/gemini/custom) thay vì chỉ 1 field
+         `anthropic_api_key` như trước.
+      3. `human_bot/runtime_config.py` — `get_active_ai_provider_config()`
+         (mới) đọc `SecretsConfig.ai_provider` rồi trả về đúng
+         key/model/base_url của provider đang chọn, fallback về
+         `ANTHROPIC_API_KEY`/`OPENAI_API_KEY` trong `.env` cho 2 provider
+         đó (Gemini/custom không có env fallback — chỉ nhập được trên
+         admin). `get_anthropic_api_key()` cũ đã bị xoá (không còn nơi nào
+         gọi).
+      4. `human_bot/content_strategist.py` — 2 hàm gọi API trùng lặp
+         (`_draft_via_anthropic`, `rewrite_candidate_reply`) gộp lại dùng
+         chung `ai_client.call_ai_text()`; `anthropic_key_configured()`
+         đổi tên thành `ai_provider_configured()` (cập nhật luôn call site
+         trong `data_sync.py`).
+      5. `human_bot/admin.py` — card "🔑 API Key AI (Anthropic)" cũ đổi
+         thành "🔑 Cấu hình AI": dropdown chọn provider + 1 fieldset
+         key/model (custom có thêm Base URL) mỗi provider, JS thuần
+         ẩn/hiện fieldset theo lựa chọn, 1 form submit lưu hết. Route
+         `/admin/config/anthropic-key[/clear]` đổi thành
+         `/admin/config/ai-provider` và `/admin/config/ai-provider/clear-key`
+         (client gửi kèm `provider` để biết xoá key của ai).
+      6. Tên model giờ nhập được trên Admin UI theo từng provider (trước
+         chỉ đổi được qua env `CONTENT_STRATEGIST_MODEL`, đã bỏ biến này —
+         không còn nơi nào đọc). **Lưu ý quan trọng đã báo owner:** tên
+         model là định danh API, phải gõ đúng chính xác từng ký tự kể cả
+         hoa/thường (vd `gpt-4o-mini`, `gemini-2.5-flash`) — gõ sai không
+         crash app, chỉ rơi về fallback template (log lại lỗi thật).
+      **Chưa test sống với OpenAI/Gemini/custom thật** (chỉ test logic lưu/
+      đọc override bằng script, chưa có key thật của các provider này để
+      gọi thử end-to-end) — cần owner tự thử với key thật trước khi coi là
+      xong hẳn.
+- [x] **2 điểm chỉnh theo phản hồi owner sau khi xem UI:**
+      1. Ô nhập API key không có viền, khó phân biệt với nền — do
+         `input[type=password]` bị thiếu trong danh sách selector CSS
+         `input[type=text], input[type=number]...` ở `admin.py` (chỉ là bug
+         thiếu, không phải cố ý). Đã thêm vào chung selector.
+      2. Ô nhập tên model giờ gợi ý 3 model nổi bật của từng nhà cung cấp
+         (Anthropic: claude-opus-4-5/claude-sonnet-4-5/claude-haiku-4-5,
+         OpenAI: gpt-4o/gpt-4o-mini/gpt-4.1-mini, Gemini:
+         gemini-2.5-pro/gemini-2.5-flash/gemini-2.5-flash-lite; "Tuỳ chỉnh"
+         không có gợi ý vì không có "top 3" hợp lý cho 1 endpoint bất kỳ).
+         **Bản đầu dùng `<select>` riêng đặt cạnh ô nhập — owner phản hồi
+         hiện 2 control cùng lúc rối mắt.** Đổi sang `<datalist>` (HTML
+         chuẩn): chỉ còn 1 ô input duy nhất, bấm vào hiện gợi ý thả xuống
+         để chọn nhanh, nhưng vẫn gõ/sửa tự do bình thường — không khoá
+         giá trị, không cần JS riêng để đồng bộ 2 control.
 
 ## Còn lại (chưa tới lượt ngay, nhưng đã ghi nhận — xem đánh giá 2026-09-03)
 

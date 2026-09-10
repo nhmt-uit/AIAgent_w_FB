@@ -33,6 +33,7 @@ from human_bot.data_sync_config import DataSyncConfig
 from human_bot.scheduling_config import SchedulingConfig
 from human_bot.media import MediaConfig
 from human_bot.safety_cooldown_config import SafetyCooldownConfig
+from human_bot.secrets_config import SecretsConfig
 
 RUNTIME_CONFIG_PATH = Path(__file__).resolve().parent.parent / "runtime_config.json"
 
@@ -267,6 +268,81 @@ def get_scroll_config() -> HumanScrollConfig:
 
 def save_scroll_overrides(values: dict[str, Any]) -> None:
     _save_overrides("scroll", EDITABLE_SCROLL_FIELDS, values)
+
+
+# --- Secrets (admin-managed API keys) --------------------------------------
+# See human_bot/secrets_config.py's docstring for why this is its own
+# section instead of folded into a behavior-tuning table.
+
+EDITABLE_SECRETS_FIELDS: list[str] = [
+    "ai_provider",
+    "anthropic_api_key", "anthropic_model",
+    "openai_api_key", "openai_model",
+    "gemini_api_key", "gemini_model",
+    "custom_api_key", "custom_base_url", "custom_model",
+]
+
+
+def get_secrets_overrides() -> dict[str, Any]:
+    return _get_overrides("secrets", EDITABLE_SECRETS_FIELDS)
+
+
+def get_secrets_config() -> SecretsConfig:
+    return _get_config(SecretsConfig, "secrets", EDITABLE_SECRETS_FIELDS)
+
+
+def save_secrets_overrides(values: dict[str, Any]) -> None:
+    _save_overrides("secrets", EDITABLE_SECRETS_FIELDS, values)
+
+
+@dataclasses.dataclass
+class ActiveAIProviderConfig:
+    """What human_bot/ai_client.py needs to actually make a call: which
+    provider, its key, its model, and (for "custom" only) its base URL —
+    resolved from whichever provider is currently selected in
+    SecretsConfig.ai_provider, so ai_client.py never has to know about
+    SecretsConfig's per-provider field naming."""
+    provider: str
+    api_key: str
+    model: str
+    base_url: str = ""
+
+
+# provider -> (key field, model field, base_url field or None)
+_AI_PROVIDER_FIELD_MAP: dict[str, tuple[str, str, str | None]] = {
+    "anthropic": ("anthropic_api_key", "anthropic_model", None),
+    "openai": ("openai_api_key", "openai_model", None),
+    "gemini": ("gemini_api_key", "gemini_model", None),
+    "custom": ("custom_api_key", "custom_model", "custom_base_url"),
+}
+
+# Env var fallback per provider, mirroring the override-wins-when-set
+# precedence every other section here already uses. Gemini/custom have no
+# established env var in this project, so they're admin-UI-only.
+_AI_PROVIDER_ENV_FALLBACK: dict[str, str] = {
+    "anthropic": "ANTHROPIC_API_KEY",
+    "openai": "OPENAI_API_KEY",
+}
+
+
+def get_active_ai_provider_config() -> ActiveAIProviderConfig:
+    """Resolves the currently selected AI provider's key/model/base_url —
+    the single source of truth human_bot/ai_client.py's call_ai_text()
+    reads from, so content_strategist.py's prompt-building code never
+    needs to know which provider is active."""
+    cfg = get_secrets_config()
+    provider = (cfg.ai_provider or "anthropic").strip().lower()
+    key_field, model_field, base_url_field = _AI_PROVIDER_FIELD_MAP.get(
+        provider, _AI_PROVIDER_FIELD_MAP["anthropic"]
+    )
+    api_key = getattr(cfg, key_field, "").strip()
+    if not api_key:
+        env_var = _AI_PROVIDER_ENV_FALLBACK.get(provider)
+        if env_var:
+            api_key = os.environ.get(env_var, "").strip()
+    model = getattr(cfg, model_field, "").strip()
+    base_url = getattr(cfg, base_url_field, "").strip() if base_url_field else ""
+    return ActiveAIProviderConfig(provider=provider, api_key=api_key, model=model, base_url=base_url)
 
 
 # --- Data sync (side-B poller) ---------------------------------------------

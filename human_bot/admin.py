@@ -45,6 +45,7 @@ import re
 import secrets
 import sqlite3
 from datetime import datetime, timedelta, timezone
+from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
@@ -109,6 +110,9 @@ from human_bot.runtime_config import (
     EDITABLE_RATE_LIMITS_FIELDS,
     get_sync_disabled_account_ids,
     set_account_sync_enabled,
+    get_secrets_config,
+    save_secrets_overrides,
+    get_active_ai_provider_config,
 )
 from human_bot.safety_cooldown_config import SafetyCooldownConfig
 
@@ -238,6 +242,13 @@ _BOOL_FIELDS = {
     "job_post_ai_enabled", "candidate_reply_ai_enabled",
 }
 
+# Pulled out of DataSyncConfig's usual card into their own "🤖 AI" tab in
+# /admin/config, next to the API key card — same fields, same save path
+# (save_data_sync_overrides()), just displayed somewhere more findable
+# than buried in "Đồng bộ dữ liệu". See config_form()'s docstring-less
+# but commented split logic.
+_AI_TOGGLE_FIELDS = {"job_post_ai_enabled", "candidate_reply_ai_enabled"}
+
 _SCHEDULING_LABELS: dict[str, str] = {
     "auto_fire_enabled": (
         "⚠️ Tự động đăng khi đến giờ — áp dụng cho MỌI bài trong lịch (tắt = chỉ đặt "
@@ -284,15 +295,23 @@ _DATA_SYNC_LABELS: dict[str, str] = {
     "candidate_min_confidence": "Độ tin cậy tối thiểu để nhắn ứng viên (0-1)",
     "candidate_max_age_days": "Chỉ nhắn ứng viên có bài đăng trong vòng bao nhiêu ngày",
     "cache_retention_days": "Số ngày giữ lại cache chống trùng trước khi dọn",
+    "job_post_ai_enabled": "Dùng AI soạn lại bài tin tuyển dụng đăng nhóm",
+    "candidate_reply_ai_enabled": "Dùng AI để soạn câu reply comment bài viết ứng viên",
+}
+
+# Overrides the default "mặc định: X · key: field_name" sub-line
+# (render_rows() in config_form()) with a plain-language explanation
+# instead — used for the 2 AI toggles above, where "mặc định: True" is
+# far less useful to an operator than knowing what flipping it actually
+# changes at posting time.
+_FIELD_DESCRIPTIONS: dict[str, str] = {
     "job_post_ai_enabled": (
-        "Dùng AI (Anthropic) soạn lại bài tin tuyển dụng đăng nhóm ngay lúc đến giờ đăng thật "
-        "(không phải lúc mới nhận dữ liệu từ bên B) — cần ANTHROPIC_API_KEY trong .env; "
-        "tắt hoặc thiếu key thì giữ nguyên mẫu (template) đã soạn từ lúc lên lịch"
+        "Bài viết sẽ được soạn lại ngay lúc đăng, nếu không sử dụng thì bài đăng sẽ được đăng theo "
+        "template mẫu"
     ),
     "candidate_reply_ai_enabled": (
-        "Bật + có ANTHROPIC_API_KEY: dùng AI (Anthropic) của mình viết LẠI reply ứng viên ngay lúc đến "
-        "giờ đăng thật, dựa trên mẫu có sẵn — và BỎ QUA việc gọi API /reply của bên B (đỡ tốn 2 lần "
-        "soạn cho cùng 1 reply). Tắt, hoặc bật mà thiếu key: gọi API /reply của bên B như trước"
+        "Comment sẽ được soạn ngay lúc đăng, hoặc nếu tắt sẽ sử dụng câu reply từ API GET /reply, "
+        "hoặc từ template mẫu"
     ),
 }
 
@@ -302,6 +321,174 @@ _CONFIG_SECTIONS.append(
     ("data_sync", "data_sync", "Đồng bộ dữ liệu bên B", DataSyncConfig, EDITABLE_DATA_SYNC_FIELDS, _DATA_SYNC_LABELS,
      get_data_sync_overrides, save_data_sync_overrides)
 )
+
+
+def _mask_api_key(key: str) -> str:
+    """`"sk-ant-api03-abc...xyz9"` -> `"sk-ant-a...yz9"` — enough to
+    recognize/confirm which key is active without displaying anything a
+    screenshot or shoulder-surf could actually reuse. Full dots for
+    anything too short to safely reveal a prefix+suffix of."""
+    if len(key) <= 10:
+        return "•" * len(key)
+    return f"{key[:7]}...{key[-4:]}"
+
+
+# One entry per provider human_bot/ai_client.py knows how to call — the
+# single place to add a 5th provider later (new SecretsConfig fields +
+# one entry here + one _call_* function in ai_client.py). "env_var" is
+# None for Gemini/custom since this project has no established env var
+# name for them (admin-UI-only, unlike Anthropic/OpenAI which fall back
+# to ANTHROPIC_API_KEY/OPENAI_API_KEY per get_active_ai_provider_config()).
+# "suggested_models" — top 3 most-recognizable model ids for that provider,
+# offered as a quick-pick dropdown next to the free-text model input (added
+# 2026-09-10, admin feedback: picking from a short list beats having to
+# already know/copy-paste the exact case-sensitive API identifier). Empty
+# for "custom" — there's no sensible "top 3" for an arbitrary endpoint.
+_AI_PROVIDERS: list[dict[str, Any]] = [
+    {"key": "anthropic", "label": "Anthropic (Claude)", "key_field": "anthropic_api_key",
+     "model_field": "anthropic_model", "model_placeholder": "claude-sonnet-4-5",
+     "suggested_models": ["claude-opus-4-5", "claude-sonnet-4-5", "claude-haiku-4-5"],
+     "key_placeholder": "sk-ant-...", "env_var": "ANTHROPIC_API_KEY", "base_url_field": None},
+    {"key": "openai", "label": "OpenAI (GPT)", "key_field": "openai_api_key",
+     "model_field": "openai_model", "model_placeholder": "gpt-4o-mini",
+     "suggested_models": ["gpt-4o", "gpt-4o-mini", "gpt-4.1-mini"],
+     "key_placeholder": "sk-...", "env_var": "OPENAI_API_KEY", "base_url_field": None},
+    {"key": "gemini", "label": "Google Gemini", "key_field": "gemini_api_key",
+     "model_field": "gemini_model", "model_placeholder": "gemini-2.5-flash",
+     "suggested_models": ["gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.5-flash-lite"],
+     "key_placeholder": "AIza...", "env_var": None, "base_url_field": None},
+    {"key": "custom", "label": "Tuỳ chỉnh (OpenAI-compatible)", "key_field": "custom_api_key",
+     "suggested_models": [],
+     "model_field": "custom_model", "model_placeholder": "vd: deepseek-chat",
+     "key_placeholder": "API key của bên đó", "env_var": None, "base_url_field": "custom_base_url"},
+]
+
+# Toggles which provider's fieldset is visible when the dropdown below
+# changes — plain vanilla JS (no htmx round-trip needed, all 4 providers'
+# fields already sit in the DOM so one form submit saves everything).
+_AI_PROVIDER_SWITCH_JS = (
+    "document.querySelectorAll('[data-ai-provider-fields]').forEach(function(el){"
+    "el.hidden = (el.getAttribute('data-ai-provider-fields') !== this.value);"
+    "}, this);"
+)
+
+
+def _ai_provider_card_html(flash: str = "") -> str:
+    """Standalone (not a `<form>`, deliberately — the whole /admin/config
+    page is already one big `<form>`, and nested `<form>` elements are
+    invalid HTML/silently misbehave) htmx-driven card for managing which AI
+    provider is active plus its key/model (+ base URL for "custom") from
+    the web instead of only via .env. Originally Anthropic-only (added
+    2026-09-10 after live-testing content_strategist.py's AI drafting),
+    generalized same day to Anthropic/OpenAI/Gemini/custom — see
+    human_bot/secrets_config.py and human_bot/ai_client.py. Re-rendered
+    wholesale (hx-swap="outerHTML") after every save/clear so the masked
+    status line always reflects what's actually active."""
+    cfg = get_secrets_config()
+    provider_keys = [p["key"] for p in _AI_PROVIDERS]
+    active = cfg.ai_provider if cfg.ai_provider in provider_keys else "anthropic"
+    active_provider_info = next(p for p in _AI_PROVIDERS if p["key"] == active)
+    active_cfg = get_active_ai_provider_config()
+
+    if active_cfg.api_key:
+        override_set = bool(getattr(cfg, active_provider_info["key_field"]).strip())
+        source = "nhập trên admin" if override_set else "từ .env"
+        status = (
+            f'<span class="badge" style="background:#ecfdf5;color:#059669;">'
+            f'Provider đang dùng: {html.escape(str(active_provider_info["label"]))} — key {source} '
+            f'({html.escape(_mask_api_key(active_cfg.api_key))})</span>'
+        )
+    else:
+        status = (
+            f'<span class="badge" style="background:#fef2f2;color:#dc2626;">'
+            f'Provider đang chọn ({html.escape(str(active_provider_info["label"]))}) chưa có key nào — '
+            f'nhánh AI sẽ luôn rơi về mẫu (template)</span>'
+        )
+
+    options_html = "".join(
+        f'<option value="{p["key"]}"{" selected" if p["key"] == active else ""}>{html.escape(str(p["label"]))}</option>'
+        for p in _AI_PROVIDERS
+    )
+
+    fieldsets_html = []
+    for p in _AI_PROVIDERS:
+        key_val = str(getattr(cfg, p["key_field"]))
+        model_val = str(getattr(cfg, p["model_field"]))
+        hidden_attr = "" if p["key"] == active else " hidden"
+        env_hint = f' · fallback <code>.env</code>: <code>{p["env_var"]}</code>' if p["env_var"] else ""
+
+        base_url_html = ""
+        if p["base_url_field"]:
+            base_url_val = str(getattr(cfg, p["base_url_field"]))
+            base_url_html = f"""
+    <div class="field-stack">
+      <div class="field-label">Base URL<div class="field-key">endpoint gốc của bên cung cấp, KHÔNG kèm "/chat/completions" — vd: https://api.deepseek.com/v1</div></div>
+      <div class="field-input"><input type="text" name="{p['base_url_field']}" value="{html.escape(base_url_val)}" placeholder="https://.../v1"></div>
+    </div>"""
+
+        clear_btn_html = ""
+        if key_val.strip():
+            clear_btn_html = (
+                f'<button type="button" class="btn-small btn-secondary" style="flex-shrink:0;" '
+                f'hx-post="/admin/config/ai-provider/clear-key" '
+                f'hx-vals=\'{{"provider": "{p["key"]}"}}\' '
+                f'hx-target="#ai-provider-card" hx-swap="outerHTML" '
+                f'hx-confirm="Xoá key đã lưu cho {html.escape(str(p["label"]))}? Sẽ dùng lại key trong .env nếu có (Anthropic/OpenAI), hoặc không dùng AI nếu không có.">Xoá key</button>'
+            )
+
+        # datalist: one native combo-box-like input — a dropdown arrow to
+        # pick a suggested model AND free-typing in the same field, instead
+        # of a separate <select> stacked above/below the text input (admin
+        # feedback: two visible controls for one value looked cluttered).
+        model_input_id = f"model-input-{p['key']}"
+        datalist_html = ""
+        list_attr = ""
+        if p["suggested_models"]:
+            datalist_id = f"model-suggestions-{p['key']}"
+            list_attr = f' list="{datalist_id}"'
+            datalist_options = "".join(
+                f'<option value="{html.escape(m)}">' for m in p["suggested_models"]
+            )
+            datalist_html = f'<datalist id="{datalist_id}">{datalist_options}</datalist>'
+
+        fieldsets_html.append(f"""
+  <div data-ai-provider-fields="{p['key']}"{hidden_attr}>
+    <div class="field-stack">
+      <div class="field-label">API key ({html.escape(str(p["label"]))})<div class="field-key">để trống = giữ nguyên key hiện tại{env_hint}</div></div>
+      <div class="field-input" style="display:flex;gap:8px;">
+        <input type="password" name="{p['key_field']}" placeholder="{p['key_placeholder']}"
+          style="flex:1 1 auto;min-width:0;font-family:monospace;">
+        <button type="button" class="btn-small btn-secondary" style="flex-shrink:0;"
+          onclick="var i=this.previousElementSibling; i.type = (i.type==='password' ? 'text' : 'password');">👁</button>
+        {clear_btn_html}
+      </div>
+    </div>
+    <div class="field-stack">
+      <div class="field-label">Model<div class="field-key">để trống = dùng mặc định hệ thống — bấm vào ô để chọn nhanh model phổ biến, hoặc tự gõ tên khác (phải đúng chính xác, phân biệt hoa/thường)</div></div>
+      <div class="field-input">
+        <input type="text" id="{model_input_id}" name="{p['model_field']}" value="{html.escape(model_val)}" placeholder="{p['model_placeholder']}" style="font-family:monospace;"{list_attr}>
+        {datalist_html}
+      </div>
+    </div>{base_url_html}
+  </div>""")
+
+    return f"""
+<div class="card" id="ai-provider-card">
+  <h2>🔑 Cấu hình AI</h2>
+  <p class="page-desc">Chọn nhà cung cấp AI dùng cho 2 công tắc AI ở dưới (soạn bài tin tuyển dụng + viết lại reply ứng viên). Key/model nhập ở đây <b>ưu tiên hơn</b> biến môi trường trong <code>.env</code> — có hiệu lực ngay, không cần khởi động lại service.</p>
+  {flash}
+  <p>{status}</p>
+  <div class="field-stack">
+    <div class="field-label">Nhà cung cấp</div>
+    <div class="field-input"><select name="ai_provider" onchange="{_AI_PROVIDER_SWITCH_JS}">{options_html}</select></div>
+  </div>
+  {"".join(fieldsets_html)}
+  <div class="form-actions">
+    <button type="button" hx-post="/admin/config/ai-provider" hx-include="#ai-provider-card"
+      hx-target="#ai-provider-card" hx-swap="outerHTML">Lưu cấu hình AI</button>
+  </div>
+</div>"""
+
 
 _MEDIA_LABELS: dict[str, str] = {
     "attach_random_meme_default": (
@@ -379,14 +566,27 @@ _PAGE_STYLE = """
   .field-stack .field-label { @apply text-sm text-gray-800 font-medium flex-none min-w-0; }
   .field-stack .field-input { @apply w-full; }
 
-  input[type=text], input[type=number], input[type=datetime-local], textarea, select {
+  input[type=text], input[type=number], input[type=password], input[type=datetime-local], textarea, select {
     @apply w-full box-border px-2.5 py-2 text-sm border border-gray-200 rounded-lg bg-white text-gray-900 font-sans;
   }
-  input[type=text]:focus, input[type=number]:focus, input[type=datetime-local]:focus, textarea:focus, select:focus {
+  input[type=text]:focus, input[type=number]:focus, input[type=password]:focus, input[type=datetime-local]:focus, textarea:focus, select:focus {
     @apply outline-none border-indigo-600 ring-4 ring-indigo-50;
   }
   input[type=checkbox] { @apply w-[18px] h-[18px] accent-indigo-600 cursor-pointer; }
   textarea { @apply min-h-[160px] resize-y; }
+
+  /* Toggle switch — same underlying <input type=checkbox name=... value="true">
+     as the plain checkboxes above (so form submission/save path is
+     unchanged), just visually hidden and styled via the sibling .switch-slider.
+     Used for the AI tab's on/off toggles, where "bật/tắt" reads better as a
+     switch than a checkbox. */
+  .switch { @apply relative inline-block w-[42px] h-[24px] cursor-pointer flex-shrink-0; }
+  .switch input { @apply absolute opacity-0 w-0 h-0 cursor-pointer; }
+  .switch-slider { @apply absolute inset-0 bg-gray-300 rounded-full transition-colors; }
+  .switch-slider::before { content: ""; @apply absolute w-[18px] h-[18px] left-[3px] top-[3px] bg-white rounded-full transition-transform shadow; }
+  .switch input:checked + .switch-slider { @apply bg-indigo-600; }
+  .switch input:checked + .switch-slider::before { @apply translate-x-[18px]; }
+  .switch input:focus-visible + .switch-slider { @apply ring-4 ring-indigo-50; }
 
   button, .btn {
     @apply px-[18px] py-[9px] text-sm font-semibold border-0 rounded-lg bg-indigo-600 text-white cursor-pointer transition-colors inline-block text-center;
@@ -966,38 +1166,73 @@ async def admin_home(_: None = Depends(_require_auth)) -> str:
 
 @router.get("/config", response_class=HTMLResponse)
 async def config_form(saved: bool = False, tab: str = "behavior", _: None = Depends(_require_auth)) -> str:
-    sections_html = []
-    for section_key, prefix, title, config_cls, editable_fields, labels, get_overrides, _save_fn in _CONFIG_SECTIONS:
-        current = get_overrides()
+    def render_rows(config_cls, editable_fields, labels, current, prefix, field_subset=None):
+        """`field_subset` narrows which of `editable_fields` actually get
+        rendered here — used to split DataSyncConfig's 2 AI-toggle fields
+        out into their own tab (see below) without needing a whole
+        separate _CONFIG_SECTIONS entry/save path for them; they still
+        save through the same save_data_sync_overrides() as every other
+        DataSyncConfig field, just rendered in a different card/tab."""
         defaults = config_cls()
+        names = field_subset if field_subset is not None else editable_fields
         rows = []
-        for field_name in editable_fields:
+        for field_name in names:
             label = labels.get(field_name, field_name)
             default_val = getattr(defaults, field_name)
             value = current.get(field_name, default_val)
             form_name = f"{prefix}__{field_name}"
             if field_name in _BOOL_FIELDS:
                 checked = "checked" if value else ""
-                input_html = f'<input type="checkbox" name="{form_name}" value="true" {checked}>'
+                input_html = (
+                    f'<label class="switch"><input type="checkbox" name="{form_name}" value="true" {checked}>'
+                    f'<span class="switch-slider"></span></label>'
+                )
             else:
                 input_html = f'<input type="number" step="any" name="{form_name}" value="{html.escape(str(value))}">'
+            sub_line = (
+                html.escape(_FIELD_DESCRIPTIONS[field_name]) if field_name in _FIELD_DESCRIPTIONS
+                else f"mặc định: {html.escape(str(default_val))} · key: {field_name}"
+            )
             rows.append(f"""
 <div class="field-row">
-  <div class="field-label">{html.escape(label)}<div class="field-key">mặc định: {html.escape(str(default_val))} · key: {field_name}</div></div>
+  <div class="field-label">{html.escape(label)}<div class="field-key">{sub_line}</div></div>
   <div class="field-input">{input_html}</div>
 </div>""")
-        icon = _ICONS.get(prefix, "")
-        sections_html.append((section_key, f"""
+        return "".join(rows)
+
+    def render_card(icon: str, title: str, rows_html: str) -> str:
+        return f"""
 <div class="card">
   <h2>{icon} {html.escape(title)}</h2>
-  <div class="field-grid">{''.join(rows)}</div>
-</div>"""))
+  <div class="field-grid">{rows_html}</div>
+</div>"""
+
+    sections_html = []
+    for section_key, prefix, title, config_cls, editable_fields, labels, get_overrides, _save_fn in _CONFIG_SECTIONS:
+        current = get_overrides()
+        if section_key == "data_sync":
+            # Pulled out into the "ai" tab below, alongside the API key
+            # card — everything else from DataSyncConfig stays here.
+            fields_here = [f for f in editable_fields if f not in _AI_TOGGLE_FIELDS]
+        else:
+            fields_here = editable_fields
+        rows_html = render_rows(config_cls, editable_fields, labels, current, prefix, fields_here)
+        icon = _ICONS.get(prefix, "")
+        sections_html.append((section_key, render_card(icon, title, rows_html)))
+
+    data_sync_current = get_data_sync_overrides()
+    ai_toggle_rows = render_rows(
+        DataSyncConfig, EDITABLE_DATA_SYNC_FIELDS, _DATA_SYNC_LABELS, data_sync_current, "data_sync",
+        [f for f in EDITABLE_DATA_SYNC_FIELDS if f in _AI_TOGGLE_FIELDS],
+    )
+    ai_toggle_card = render_card("🤖", "Bật/tắt AI", ai_toggle_rows)
+
     flash = '<p class="flash">✅ Đã lưu cấu hình. Áp dụng ngay từ lần đăng bài tiếp theo.</p>' if saved else ""
 
     behavior_cards = "".join(card for key, card in sections_html if key != "data_sync")
     sync_cards = "".join(card for key, card in sections_html if key == "data_sync")
 
-    active_tab = tab if tab in ("behavior", "sync") else "behavior"
+    active_tab = tab if tab in ("behavior", "sync", "ai") else "behavior"
 
     def tab_btn(key: str, label: str) -> str:
         cls = "tab-btn active" if key == active_tab else "tab-btn"
@@ -1015,6 +1250,7 @@ async def config_form(saved: bool = False, tab: str = "behavior", _: None = Depe
   <div class="tab-bar">
     {tab_btn("behavior", "🧑 Cấu hình hành vi")}
     {tab_btn("sync", "🔄 Đồng bộ dữ liệu")}
+    {tab_btn("ai", "🤖 AI")}
   </div>
 
   <div class="tab-panel" id="tab-behavior"{panel_attrs("behavior")}>
@@ -1024,6 +1260,12 @@ async def config_form(saved: bool = False, tab: str = "behavior", _: None = Depe
   <div class="tab-panel" id="tab-sync"{panel_attrs("sync")}>
     <p class="page-desc">Cấu hình cho bộ đồng bộ dữ liệu bên B (human_bot/data_sync.py). Lần sync gần nhất theo từng tài khoản: xem <a href="/admin/accounts?tab=sync">Tài khoản → Đồng bộ</a>.</p>
     {sync_cards}
+  </div>
+
+  <div class="tab-panel" id="tab-ai"{panel_attrs("ai")}>
+    <p class="page-desc">Chọn nhà cung cấp AI + key/model và công tắc bật/tắt cho AI soạn bài tin tuyển dụng đăng nhóm + viết lại reply ứng viên (human_bot/content_strategist.py, human_bot/ai_client.py). Cả 2 công tắc dưới đây vẫn là field của bộ đồng bộ bên B (DataSyncConfig) — chỉ tách ra hiển thị riêng ở đây cho gọn.</p>
+    {_ai_provider_card_html()}
+    {ai_toggle_card}
   </div>
 </div>
 <div class="form-actions"><button type="submit">Lưu cấu hình</button></div>
@@ -1063,6 +1305,40 @@ async def config_save(request: Request, _: None = Depends(_require_auth)) -> Red
                 continue
         save_fn(values)
     return RedirectResponse(url="/admin/config?saved=1", status_code=303)
+
+
+@router.post("/config/ai-provider", response_class=HTMLResponse)
+async def config_ai_provider_save(request: Request, _: None = Depends(_require_auth)) -> str:
+    form = await request.form()
+    provider_keys = [p["key"] for p in _AI_PROVIDERS]
+    provider = str(form.get("ai_provider", "anthropic")).strip().lower()
+    if provider not in provider_keys:
+        provider = "anthropic"
+
+    updates: dict[str, Any] = {"ai_provider": provider}
+    for p in _AI_PROVIDERS:
+        for field in (p["key_field"], p["model_field"], p["base_url_field"]):
+            if not field:
+                continue
+            # Blank means "leave unchanged" (see the card's own field-key
+            # hint) — same semantics the single-provider version of this
+            # route always had; the separate "Xoá key" button is what
+            # actually clears a field.
+            raw = str(form.get(field, "")).strip()
+            if raw:
+                updates[field] = raw
+    save_secrets_overrides(updates)
+    return _ai_provider_card_html(flash='<p class="flash">✅ Đã lưu cấu hình AI.</p>')
+
+
+@router.post("/config/ai-provider/clear-key", response_class=HTMLResponse)
+async def config_ai_provider_clear_key(request: Request, _: None = Depends(_require_auth)) -> str:
+    form = await request.form()
+    provider = str(form.get("provider", "")).strip().lower()
+    provider_info = next((p for p in _AI_PROVIDERS if p["key"] == provider), None)
+    if provider_info:
+        save_secrets_overrides({provider_info["key_field"]: ""})
+    return _ai_provider_card_html(flash='<p class="flash">✅ Đã xoá key — quay lại dùng key trong .env (nếu có) hoặc không dùng AI.</p>')
 
 
 def _account_id_error(account_id: str, existing: dict) -> str | None:

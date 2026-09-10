@@ -10,8 +10,9 @@ principle as docs/skills/rate-limiting-pacing.md.
 
 IMPORTANT — job posts broadcast to multiple groups are drafted by
 human_bot/content_strategist.py's draft_group_post_variants(): genuinely
-different wording per group via an Anthropic call when ANTHROPIC_API_KEY
-is set in .env, silently falling back to a plain rotating-opener template
+different wording per group via whichever AI provider is configured on
+/admin/config's AI tab (Anthropic/OpenAI/Gemini/custom — see human_bot/
+ai_client.py), silently falling back to a plain rotating-opener template
 otherwise (see that module's docstring for the full fallback design).
 Candidate outreach replies use side B's own GET /api/candidates/{id}/reply
 (`_fetch_candidate_reply`, called from fire_due_tasks() right before a
@@ -30,8 +31,9 @@ dinh, cung nguyen tac voi docs/skills/rate-limiting-pacing.md.
 
 QUAN TRONG — bai dang vao nhieu nhom duoc soan boi
 human_bot/content_strategist.py's draft_group_post_variants(): that su
-khac nhau moi nhom qua Anthropic khi co ANTHROPIC_API_KEY trong .env, tu
-dong roi ve mau (template) don gian neu chua co key. Tin nhan ung vien
+khac nhau moi nhom qua AI provider dang duoc cau hinh o /admin/config
+(Anthropic/OpenAI/Gemini/custom), tu dong roi ve mau (template) don gian
+neu chua co key. Tin nhan ung vien
 (_draft_candidate_reply_placeholder ben duoi) van la mau don gian — moi
 ung vien chi nhan 1 tin, khong co gi de bien tau. Coi moi muc lich sinh ra
 o day la BAN NHAP can xem/sua trong /admin/schedule truoc khi no thuc su
@@ -552,14 +554,14 @@ async def _fetch_candidate_reply(source_id: str, cfg: DataSyncConfig) -> str | N
     missing "reply" field, so the caller falls back to the local
     template already stored on the task from schedule time.
 
-    Called by fire_due_tasks() only in the branch where OUR OWN Anthropic
+    Called by fire_due_tasks() only in the branch where OUR OWN AI-provider
     rewrite (content_strategist.rewrite_candidate_reply(), stage 3) will
     NOT run for this candidate — stage 2 (this) and stage 3 are mutually
     exclusive by design as of 2026-09-10, see rewrite_candidate_reply()'s
     docstring for the full pipeline and why. Has no /admin/config toggle
     of its own; whether it gets called at all is decided entirely by that
     branch, based on DataSyncConfig.candidate_reply_ai_enabled and
-    whether an ANTHROPIC_API_KEY is actually configured."""
+    whether the active AI provider actually has a key configured."""
     token = os.environ.get("DATA_INGESTION_API_TOKEN", "")
     if not token or not source_id:
         return None
@@ -901,10 +903,10 @@ async def fire_due_tasks(cfg: SchedulingConfig | None = None) -> dict[str, Any]:
             #   1. content already = task.content, the local template
             #      drafted at schedule time — starting baseline.
             use_own_ai = (
-                data_sync_cfg.candidate_reply_ai_enabled and content_strategist.anthropic_key_configured()
+                data_sync_cfg.candidate_reply_ai_enabled and content_strategist.ai_provider_configured()
             )
             if use_own_ai:
-                #   3. OUR OWN Anthropic rewrite of stage 1's template —
+                #   3. OUR OWN AI-provider rewrite of stage 1's template —
                 #      stage 2 (side B's /reply) is skipped entirely here,
                 #      no point paying for both drafts when we're about
                 #      to rewrite it ourselves anyway. Returns `content`
@@ -916,7 +918,7 @@ async def fire_due_tasks(cfg: SchedulingConfig | None = None) -> dict[str, Any]:
             else:
                 #   2. side B's own /reply draft — called here (not
                 #      stage 3) either because the toggle is off, or it's
-                #      on but there's no ANTHROPIC_API_KEY to actually
+                #      on but the active AI provider has no key to actually
                 #      rewrite with. See _fetch_candidate_reply()'s
                 #      docstring for why here (not the sync loop) is the
                 #      one-call-per-candidate point. Replaces stage 1's

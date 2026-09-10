@@ -2,11 +2,15 @@
 
 Hệ thống tự động hoá Facebook cho tuyển dụng lao động Việt Nam tại Nhật Bản (AIAgent\_w\_FB)
 
-*(Cập nhật lần này: 2026-09-09. Bản trước mô tả trạng thái ngày 2026-09-04 —
+*(Cập nhật lần này: 2026-09-10. Bản trước mô tả trạng thái ngày 2026-09-04 —
 từ đó tới nay dự án đã đi thêm một quãng đáng kể: đăng nhóm, comment nhóm,
 quản lý tài khoản/nhóm/lịch đăng qua web, đồng bộ dữ liệu tự động từ hệ
-thống tuyển dụng, và cả một tầng "phòng vệ" nhiều lớp chống bị Facebook
-phát hiện là bot — phần lớn nội dung mới trong báo cáo này.)*
+thống tuyển dụng, một tầng "phòng vệ" nhiều lớp chống bị Facebook phát
+hiện là bot, và — mới nhất, 2026-09-10 — AI viết/viết lại nội dung được
+dời sang đúng lúc bài sắp đăng thật (thay vì lúc vừa nhận dữ liệu), áp
+dụng thêm cho cả tin nhắn ứng viên, có công tắc bật/tắt riêng, cùng một
+cách đăng nhập tài khoản mới qua web thay cho chạy lệnh tay trong
+terminal.)*
 
 # 1\. Tổng quan
 
@@ -43,7 +47,8 @@ Dự án xây dựng một hệ thống tự động thực hiện các hành đ
 | Đồng bộ dữ liệu tự động từ bên B (tin tuyển dụng → đăng nhóm, ứng viên → comment) | Hoàn thành, cổng an toàn tắt mặc định |
 | Xác thực API cho `POST /tasks` (X-API-Key) và Admin UI (HTTP Basic Auth) | Hoàn thành |
 | Ghi log & báo cáo lịch sử hành động (SQLite) | Hoàn thành |
-| Content Strategist Agent (AI viết nội dung khác nhau cho mỗi nhóm) | Hoàn thành **một phần hẹp** — chỉ áp dụng khi 1 tin đăng vào nhiều nhóm cùng lúc |
+| Content Strategist Agent (AI soạn/viết lại nội dung job đăng nhóm + reply ứng viên, gọi đúng lúc đến giờ đăng, có bật/tắt riêng) | Hoàn thành, **chưa xác nhận sống với AI thật** (hết credit test) — xem mục 4.10 |
+| Đăng nhập tài khoản mới qua web `/admin/accounts` (thay cho chạy lệnh tay) | Hoàn thành — xem mục 4.15 |
 | Cơ chế dự phòng khi 1 selector bị Facebook đổi giao diện làm gãy | Đã thiết kế (dùng AI/LLM "nhìn" trang), **chưa nối vào luồng chạy thật** |
 | Thiết lập môi trường vận hành thật (proxy/IP riêng theo tài khoản, khoá API bên B thật) | Chưa làm — cần trước khi chạy ngoài phạm vi máy cá nhân |
 
@@ -159,11 +164,31 @@ Khoảng nghỉ này được tính **riêng theo từng loại hành động** 
 
 Tự động đính kèm 1 ảnh cho mỗi bài đăng (cả tường cá nhân lẫn nhóm), bật/tắt được qua trang quản trị (mặc định bật). Nếu bài đăng có ảnh riêng do bên B cung cấp thì luôn ưu tiên dùng ảnh đó; nếu không, hệ thống tự chọn ngẫu nhiên 1 ảnh từ kho ảnh mẫu có sẵn trong dự án. Playwright không thao tác hộp thoại chọn file của hệ điều hành (không làm được), mà chặn ngay cú click và gán file trực tiếp vào input ẩn — cách làm chuẩn của Playwright cho việc upload file.
 
-## 4.10. AI viết nội dung khác nhau khi 1 tin đăng vào nhiều nhóm (Content Strategist Agent — bản đầu tiên)
+## 4.10. AI soạn/viết lại nội dung — job đăng nhóm và reply ứng viên (Content Strategist Agent)
 
-**Vì sao cần AI ở đúng chỗ này:** nghiên cứu về cách các công cụ tự động hoá nhóm Facebook bị phát hiện chỉ ra rằng **nội dung giống hệt nhau đăng vào nhiều nhóm trong thời gian ngắn là dấu hiệu bị gắn cờ nhanh nhất**. Vì hệ thống thật sự phát tán một tin tuyển dụng vào mọi nhóm mà tài khoản đã tham gia (không phải giả định), việc AI viết lại nội dung khác nhau cho mỗi nhóm là **yêu cầu bắt buộc**, không phải tính năng "cho đẹp".
+**Vì sao cần AI ở đúng chỗ này:** nghiên cứu về cách các công cụ tự động hoá nhóm Facebook bị phát hiện chỉ ra rằng **nội dung giống hệt nhau đăng vào nhiều nhóm/nhiều người trong thời gian ngắn là dấu hiệu bị gắn cờ nhanh nhất**. Vì hệ thống thật sự phát tán một tin tuyển dụng vào mọi nhóm đã tham gia và trả lời hàng loạt ứng viên bằng cùng một bộ câu mẫu, việc có một lớp AI biến tấu nội dung là **yêu cầu bắt buộc**, không phải tính năng "cho đẹp".
 
-Theo đúng phạm vi chủ dự án yêu cầu: chỉ áp dụng cho trường hợp **một tin đăng vào nhiều nhóm cùng lúc**, gọi thẳng Anthropic API — nếu không có API key hoặc gọi lỗi thì tự rơi về mẫu (template) cũ, không văng lỗi, không chặn lịch đăng. **Chưa làm** cho đăng tường cá nhân (gõ tay, đăng 1 lần, không cần biến tấu — theo đúng yêu cầu chủ dự án) và **chưa làm** cho nội dung trả lời ứng viên (vẫn dùng mẫu, tuy đã có 10 biến thể ngẫu nhiên để tránh lặp y hệt chữ). Cũng còn thiếu so với kế hoạch gốc: một bộ chuẩn hoá tín hiệu đầu vào (`normalize_signal()`), và các "guardrail" chống trùng lặp/từ cấm bằng code (hiện mới chỉ có trong system prompt gửi cho AI, chưa có lớp kiểm tra cứng bằng code).
+**Thay đổi kiến trúc quan trọng (2026-09-10): AI chuyển từ "lúc vừa nhận dữ liệu" sang "đúng lúc bài sắp đăng thật".** Bản đầu (2026-09-05) gọi AI ngay khi vừa lấy được 1 tin tuyển dụng mới từ bên B, soạn 1 lần cho toàn bộ nhóm sẽ đăng cùng lúc — ưu điểm là chắc chắn N nhóm khác chữ (AI thấy hết N nhóm trong 1 lần gọi), nhược điểm là tốn tiền gọi AI ngay cả khi bài đó sau này bị sửa/huỷ trước khi đăng. Bản mới: dữ liệu vừa nhận chỉ được soạn tạm bằng **mẫu cố định** (không AI, không tốn phí) để hiện ngay trên trang lịch đăng; AI chỉ thật sự được gọi **ngay trước khi bài thật sự đăng lên Facebook**, mỗi lần gọi ứng với đúng 1 bài cho đúng 1 nhóm. **Đánh đổi đã được chủ dự án chấp nhận:** không còn đảm bảo chắc chắn N nhóm khác chữ nhau (vì không còn gọi 1 lần cho cả nhóm cùng lúc) — dựa vào AI tự biến tấu độc lập mỗi lần gọi; live-test thực tế cho thấy vẫn đọc khác nhau một cách tự nhiên. Cách gọi cũ (1 lần cho cả batch nhóm) **được giữ lại trong code, không xoá**, chỉ đánh dấu "không còn được gọi ở đâu" — để dùng lại nếu sau này cần.
+
+**Mẫu (template) không-AI cũng được viết lại kỹ hơn nhiều** — trước chỉ có 3 câu mở đầu cố định và 1 lỗi thật (thuộc tính dạng danh sách của bên B bị in thẳng ra bài đăng dưới dạng `['Shizuoka']`, lộ cả dấu ngoặc vuông của Python): giờ có pool 8 câu mở đầu ngẫu nhiên, nhãn địa điểm/visa/lương đều có nhiều cách gọi khác nhau (random mỗi lần), tên visa (mã thô bên B như `gijinkoku`) được map sang tên tiếng Việt/kanji thông dụng, lương tháng/năm bằng yên được đổi qua đơn vị dân gian "man"/tiếng lóng Việt "lá"/"tờ", và **không bao giờ chèn link vào bài** — link được thay bằng câu mời nhắn tin/inbox.
+
+**Mở rộng sang cả nội dung trả lời ứng viên (trước đây chưa làm):** giờ có pipeline 3 tầng — mẫu cố định → gọi API `/reply` của bên B (bên B tự chạy AI riêng của họ) → AI (Anthropic) của chính hệ thống viết lại từ mẫu, tối đa khoảng 200 ký tự. **Hai bước gọi AI (bên B và của mình) không bao giờ chạy cùng lúc cho 1 ứng viên** — nếu AI của mình đang bật và có API key thì bỏ hẳn bước gọi bên B, tránh trả tiền cho 2 lượt soạn AI cho cùng 1 câu trả lời.
+
+**Cả hai nhánh AI (job và reply ứng viên) đều có công tắc bật/tắt riêng ở `/admin/config`**, độc lập với việc có cấu hình API key hay không — tắt được ngay không cần sửa `.env`/khởi động lại service, phòng khi cần kiểm soát chi phí hoặc muốn quay lại dùng mẫu cố định tạm thời.
+
+**Chưa xác nhận sống với AI thật sau khi đổi:** tài khoản Anthropic dùng để test đang hết credit (`400 — credit balance too low`) — mọi lần test sau khi đổi kiến trúc đều rơi về mẫu/bên B đúng như thiết kế an toàn (không văng lỗi), nhưng chưa có lần nào thấy AI thật viết ra bài theo đúng luật mới (man/lá/tờ, tên visa, không chèn link). Cần nạp lại credit và chạy thử lại trước khi tin tưởng hoàn toàn.
+
+**Đa nhà cung cấp AI, chọn được ngay trên Admin UI (2026-09-10, thêm sau khi phát hiện giới hạn trên):** ban đầu hệ thống gọi cứng Anthropic Messages API — dán API key của OpenAI hay bất kỳ hãng nào khác vào ô cấu hình cũ không có tác dụng gì, vì request vẫn được gửi thẳng tới `api.anthropic.com` với key sai định dạng (kết quả: lỗi xác thực 401, tự động rơi về mẫu cố định, không báo lỗi rõ cho người quản trị). Theo yêu cầu owner muốn "linh hoạt đổi qua lại nhiều model", đã tách phần **gọi API** (khác nhau giữa các hãng: URL, header xác thực, cấu trúc request/response) ra khỏi phần **soạn nội dung/kiểm tra kết quả** (giống nhau dù dùng hãng nào) — file mới `human_bot/ai_client.py` chỉ lo phần đầu, `content_strategist.py` giữ nguyên toàn bộ prompt tiếng Việt và luật kiểm tra (đếm ký tự, đúng số bài, không rỗng...) như cũ. 4 nhà cung cấp hỗ trợ sẵn: **Anthropic (Claude), OpenAI (GPT), Google Gemini, và một lựa chọn "Tuỳ chỉnh"** (endpoint bất kỳ nói được chuẩn OpenAI Chat Completions — dùng được cho DeepSeek/Groq/OpenRouter/LLM chạy nội bộ...). Mỗi nhà cung cấp có ô key + tên model riêng, không dùng chung 1 ô như trước — đổi qua lại không cần nhập lại key đã lưu cho hãng cũ. **Lưu ý quan trọng đã báo owner:** tên model là định danh kỹ thuật của API (ví dụ `gpt-4o-mini`, `gemini-2.5-flash`), phải gõ đúng chính xác từng ký tự kể cả chữ hoa/thường — gõ sai không làm sập hệ thống, chỉ khiến lệnh gọi AI thất bại và tự động rơi về mẫu cố định (có ghi log lỗi thật để dò). **Chưa test end-to-end với key thật của OpenAI/Gemini/custom** — mới kiểm tra logic lưu/đọc cấu hình bằng script nội bộ, chưa có key thật của các hãng này để xác nhận nội dung AI trả về đúng định dạng mong đợi.
+
+**2 lần tinh chỉnh giao diện theo phản hồi trực tiếp sau khi xem UI:** (1) ô nhập API key ban đầu không có viền, khó phân biệt với nền — do thiếu `input[type=password]` trong danh sách selector CSS chung của trang, chỉ là sót chứ không cố ý, đã bổ sung; (2) ô nhập tên model ban đầu có thêm 1 dropdown "chọn nhanh" riêng đặt cạnh ô nhập tự do — hiện 2 control cho cùng 1 giá trị bị nhận xét là rối mắt, nên đã gộp lại thành **1 ô input duy nhất dùng `<datalist>`** (tính năng chuẩn của HTML): bấm vào ô hiện gợi ý 3 model phổ biến để chọn nhanh, nhưng vẫn gõ/sửa tự do bình thường trong đúng 1 ô, không cần thêm JS để đồng bộ giữa 2 control.
+
+Cũng còn thiếu so với kế hoạch gốc: một bộ chuẩn hoá tín hiệu đầu vào (`normalize_signal()`), và các "guardrail" chống trùng lặp/từ cấm bằng code (hiện mới chỉ có trong system prompt gửi cho AI, chưa có lớp kiểm tra cứng bằng code) — riêng độ dài đầu ra thì đã có chặn cứng bằng code (không chỉ dặn trong prompt).
+
+## 4.15. Đăng nhập tài khoản mới qua web, thay cho chạy lệnh tay trong terminal
+
+Trước đây thêm tài khoản Facebook mới bắt buộc phải tự chạy `python3 human_bot/bootstrap_login.py <account_id>` trong terminal, một cửa sổ trình duyệt thật mở ra để tự tay đăng nhập, rồi quay lại terminal bấm Enter. Giờ có thêm lựa chọn qua `/admin/accounts`: tài khoản nào có badge đỏ "chưa có phiên đăng nhập" giờ có nút "Đăng nhập & lưu phiên" — mở đúng một cửa sổ trình duyệt thật như cách cũ, chỉ khác là xác nhận xong việc đăng nhập thì bấm nút trên web thay vì Enter trong terminal. **Giới hạn:** chỉ dùng được khi service đang chạy trên máy có màn hình thật — cửa sổ trình duyệt mở ra nằm trên máy đang chạy service, không phải máy đang xem trang quản trị; nếu chạy service trên server không màn hình thì vẫn phải dùng cách chạy lệnh tay như cũ.
+
+**Sự cố thật phát hiện trong lúc làm, đã sửa cùng lúc:** đăng ký một tài khoản ở `/admin/accounts` trước khi đăng nhập xong (tài khoản chưa có phiên đăng nhập) khiến **toàn bộ service sập ngay lúc khởi động**, không chỉ riêng tài khoản đó — đã sửa để một tài khoản thiếu phiên đăng nhập chỉ tự nó không hoạt động được, không kéo sập tài khoản khác hay cả service.
 
 ## 4.11. Quản lý tài khoản, nhóm, lịch đăng, cấu hình và báo cáo qua Admin UI
 
@@ -173,7 +198,7 @@ Theo đúng phạm vi chủ dự án yêu cầu: chỉ áp dụng cho trường 
 * **Soạn & lên lịch đăng** (`/admin/post` → `/admin/schedule`): **mọi bài đều phải qua bước lịch đăng để duyệt trước khi thật sự chạy** — không còn nút "đăng ngay lập tức" nào bỏ qua bước này, kể cả muốn đăng ngay cũng chỉ là để trống giờ rồi bấm "Đăng ngay" ở trang lịch. Hỗ trợ nhiều khối nội dung khác nhau cho nhiều tập nhóm khác nhau trong cùng một lượt soạn. Trang lịch có bộ lọc, phân trang, hiển thị giờ theo múi giờ Nhật Bản, cảnh báo ngay trên từng dòng nếu bài đang bị chặn bởi rate-limit.
 * **Quản lý nhóm** (`/admin/groups`): nhập/sửa/xoá danh sách nhóm đã tham gia theo từng tài khoản, không cần sửa code.
 * **Báo cáo** (`/admin/reports`): tổng quan nhanh (tổng số/thành công/thất bại/tỉ lệ/số tài khoản hoạt động), lọc theo khoảng thời gian, xem ảnh chụp bằng chứng từng lần chạy.
-* **Cấu hình hành vi** (`/admin/config`): chỉnh mọi tham số mô phỏng con người, rate-limit, đồng bộ dữ liệu bên B — có hiệu lực ngay, không cần sửa `.env`/khởi động lại service.
+* **Cấu hình hành vi** (`/admin/config`): chỉnh mọi tham số mô phỏng con người, rate-limit, đồng bộ dữ liệu bên B — có hiệu lực ngay, không cần sửa `.env`/khởi động lại service. Mọi công tắc bật/tắt (cả 3 tab: hành vi/đồng bộ/AI) hiển thị dạng switch (nút gạt) thay vì checkbox thường (2026-09-10) — chỉ đổi giao diện, không đổi cách lưu.
 
 ## 4.12. Đồng bộ dữ liệu tự động từ hệ thống tuyển dụng (bên B)
 
@@ -202,7 +227,7 @@ Phần này liệt kê để cho thấy mức độ test thực tế của dự 
 
 # 6\. Đang triển khai / chưa hoàn thiện
 
-* **Content Strategist Agent — mở rộng phạm vi:** hiện chỉ áp dụng cho đăng nhóm đa tài khoản; chưa mở rộng sang trả lời ứng viên và chưa có lớp guardrail bằng code (chỉ mới trong prompt gửi AI).
+* **Content Strategist Agent — đã mở rộng sang cả job đăng nhóm và trả lời ứng viên (2026-09-10), nhưng chưa xác nhận sống với AI thật** — tài khoản Anthropic dùng test đang hết credit; vẫn thiếu guardrail chống trùng lặp/từ cấm bằng code (chỉ mới trong prompt gửi AI, riêng độ dài đầu ra thì đã chặn cứng bằng code).
 * **Safety Monitor — hành vi #2/#3:** chưa có throttle sớm khi sắp chạm giới hạn, chưa có báo động tự động ra kênh ngoài (Slack/email/Telegram) khi một tài khoản bị tạm dừng.
 * **Cơ chế dự phòng khi selector bị Facebook đổi giao diện làm gãy:** mỗi bước hiện chỉ dùng đúng 1 selector đã ghi sẵn — nếu Facebook đổi UI, hành động đó sẽ fail hoàn toàn cho tới khi ghi lại. Phương án dùng AI/LLM "nhìn" trang khi selector gãy đã thiết kế (`human_bot/llm.py`) nhưng **chưa được nối vào luồng chạy thật** ở bất kỳ đâu — cần quyết định có làm hay không, và áp dụng cho hành động nào trước.
 * **Chống fingerprint đầy đủ hơn:** user-agent/Client Hints đồng bộ, múi giờ khớp IP thật, và quan trọng nhất — proxy/IP riêng theo từng tài khoản (mục 4.5) — đều chưa làm, chờ quyết định khi cần mở rộng quy mô.

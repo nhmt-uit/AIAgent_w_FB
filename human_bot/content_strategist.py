@@ -26,14 +26,21 @@ Two entry points, used at two different points in the pipeline (changed
   its own docstring): rewrites whatever text data_sync.py already has
   (side B's own /reply draft, or the local template) into fresh wording,
   same fire-time timing as draft_single_post().
-All three that actually call the API do so directly against Anthropic's
-Messages API over httpx (already a project dependency, see
-requirements.txt) rather than going through human_bot/llm.py's get_llm(),
-which pulls in the (optional, not installed by default) browser-use
-package just to construct a ChatAnthropic — too heavy for a single
-plain-text drafting call.
+All three that actually call the API do so through human_bot/ai_client.py's
+call_ai_text() (added 2026-09-10, multi-provider — Anthropic/OpenAI/Gemini/
+a custom OpenAI-compatible endpoint, whichever is selected on /admin/config's
+AI tab) over httpx (already a project dependency, see requirements.txt)
+rather than going through human_bot/llm.py's get_llm(), which pulls in the
+(optional, not installed by default) browser-use package just to construct
+a chat model client — too heavy for a single plain-text drafting call.
 
-Safe-by-default: if ai_enabled is False, ANTHROPIC_API_KEY is unset, or
+Which provider/key/model is "active" is resolved by
+human_bot.runtime_config.get_active_ai_provider_config() — an
+/admin/config-saved override per provider (added 2026-09-10) if one is
+set, else the ANTHROPIC_API_KEY/OPENAI_API_KEY env var for those two
+providers.
+
+Safe-by-default: if ai_enabled is False, no AI provider key is configured, or
 the API call fails or returns something unusable (wrong variant count,
 empty string, bad JSON, over length), draft_single_post() silently falls
 back to the same plain-template drafting template_variants() already
@@ -57,21 +64,16 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import random
 from typing import TYPE_CHECKING, Any
 
-import httpx
+from human_bot.ai_client import call_ai_text
+from human_bot.runtime_config import get_active_ai_provider_config
 
 if TYPE_CHECKING:
     from human_bot.config import GroupRef
 
 logger = logging.getLogger("human_bot.content_strategist")
-
-ANTHROPIC_API_URL = "https://api.anthropic.com/v1/messages"
-# Overridable via .env (CONTENT_STRATEGIST_MODEL) in case this id ever
-# needs to change without a code edit — see .env.example.
-DEFAULT_MODEL = "claude-sonnet-4-5"
 
 # Rewritten 2026-09-10 to fold in the same business rules the fallback
 # template (_draft_job_post_placeholder) already enforces mechanically —
@@ -389,7 +391,7 @@ def _job_summary(job: dict) -> dict:
     }
 
 
-async def _draft_via_anthropic(job: dict, groups: list["GroupRef"], api_key: str) -> list[str]:
+async def _draft_via_ai(job: dict, groups: list["GroupRef"]) -> list[str]:
     group_names = [g.name or g.url for g in groups]
     user_prompt = (
         f"Tin tuyển dụng (JSON): {json.dumps(_job_summary(job), ensure_ascii=False)}\n\n"
@@ -400,28 +402,7 @@ async def _draft_via_anthropic(job: dict, groups: list["GroupRef"], api_key: str
         f"— đúng {len(groups)} phần tử, đúng thứ tự nhóm ở trên, không thêm chữ nào khác."
     )
 
-    model = os.environ.get("CONTENT_STRATEGIST_MODEL", "").strip() or DEFAULT_MODEL
-    async with httpx.AsyncClient(timeout=60) as client:
-        response = await client.post(
-            ANTHROPIC_API_URL,
-            headers={
-                "x-api-key": api_key,
-                "anthropic-version": "2023-06-01",
-                "content-type": "application/json",
-            },
-            json={
-                "model": model,
-                "max_tokens": 2048,
-                "system": _SYSTEM_PROMPT,
-                "messages": [{"role": "user", "content": user_prompt}],
-            },
-        )
-        response.raise_for_status()
-        data = response.json()
-
-    text = "".join(
-        block.get("text", "") for block in data.get("content", []) if block.get("type") == "text"
-    )
+    text = await call_ai_text(_SYSTEM_PROMPT, user_prompt, max_tokens=2048)
     parsed = _extract_json(text)
     posts = parsed["posts"] if isinstance(parsed, dict) else parsed
     if not isinstance(posts, list) or len(posts) != len(groups):
@@ -477,14 +458,13 @@ async def draft_single_post(job: dict, group_name: str | None = None, ai_enabled
     if not ai_enabled:
         return _draft_job_post_placeholder(job, variant_seed=random.randrange(len(_JOB_POST_OPENERS)))
 
-    api_key = os.environ.get("ANTHROPIC_API_KEY", "").strip()
-    if not api_key:
+    if not get_active_ai_provider_config().api_key:
         return _draft_job_post_placeholder(job, variant_seed=random.randrange(len(_JOB_POST_OPENERS)))
 
     from human_bot.config import GroupRef  # runtime import — module-level is TYPE_CHECKING-only above
 
     try:
-        posts = await _draft_via_anthropic(job, [GroupRef(name=group_name or "", url="")], api_key)
+        posts = await _draft_via_ai(job, [GroupRef(name=group_name or "", url="")])
         return posts[0]
     except Exception:  # noqa: BLE001 - any AI failure must fall back, never block scheduling
         logger.exception("content_strategist: AI draft failed, falling back to placeholder template")
@@ -505,10 +485,10 @@ async def draft_group_post_variants(
     job: dict, groups: list["GroupRef"], ai_enabled: bool = True,
 ) -> list[str]:
     """One drafted post per group in `groups`, same order — genuinely
-    different wording per group when an ANTHROPIC_API_KEY is configured,
-    `ai_enabled` is True, and the call succeeds; else the pre-AI
-    placeholder template (see module docstring for why this fallback is
-    safe/silent by design).
+    different wording per group when the active AI provider has a key
+    configured, `ai_enabled` is True, and the call succeeds; else the
+    pre-AI placeholder template (see module docstring for why this
+    fallback is safe/silent by design).
 
     `ai_enabled` is DataSyncConfig.job_post_ai_enabled, the /admin/config
     toggle — kept as a plain parameter here rather than reading
@@ -520,12 +500,11 @@ async def draft_group_post_variants(
     if not ai_enabled:
         return template_variants(job, groups)
 
-    api_key = os.environ.get("ANTHROPIC_API_KEY", "").strip()
-    if not api_key:
+    if not get_active_ai_provider_config().api_key:
         return template_variants(job, groups)
 
     try:
-        return await _draft_via_anthropic(job, groups, api_key)
+        return await _draft_via_ai(job, groups)
     except Exception:  # noqa: BLE001 - any AI failure must fall back, never block scheduling
         logger.exception("content_strategist: AI draft failed, falling back to placeholder template")
         return template_variants(job, groups)
@@ -536,7 +515,7 @@ async def draft_group_post_variants(
 # data_sync.py's fire_due_tasks(). Stage 2 and stage 3 are MUTUALLY
 # EXCLUSIVE (changed 2026-09-10, same day this stage was added) — never
 # both called for the same candidate, so a candidate never gets billed
-# against both side B's Claude call AND our own Anthropic call for one
+# against both side B's Claude call AND our own AI-provider call for one
 # reply:
 #   1. The local template (data_sync._draft_candidate_reply_placeholder)
 #      — drafted at SCHEDULE time, stashed as ScheduledTask.content.
@@ -545,19 +524,19 @@ async def draft_group_post_variants(
 #   2. data_sync._fetch_candidate_reply() — side B's own GET
 #      /api/candidates/{id}/reply. Called ONLY when stage 3 will NOT run
 #      (DataSyncConfig.candidate_reply_ai_enabled is False, OR it's True
-#      but content_strategist.anthropic_key_configured() is False — no
+#      but content_strategist.ai_provider_configured() is False — no
 #      point calling side B's paid drafting call AND skipping our own
 #      cheaper rewrite for lack of a key; call side B instead in that
 #      case). Replaces stage 1's text if it returns one.
-#   3. rewrite_candidate_reply() below — OUR OWN Anthropic call, run
-#      ONLY when candidate_reply_ai_enabled is True AND an
-#      ANTHROPIC_API_KEY is actually configured; rewrites stage 1's
-#      template (stage 2 is skipped entirely in this case, so there is no
-#      side-B text to rewrite) into fresh wording. Exists because stage 1
-#      only ever recycles the same 10 fixed templates — this stage is
-#      what actually guarantees each posted comment reads uniquely, the
-#      same anti-spam motivation draft_single_post() serves for job
-#      posts.
+#   3. rewrite_candidate_reply() below — OUR OWN AI-provider call (whichever
+#      provider is active on /admin/config's AI tab), run ONLY when
+#      candidate_reply_ai_enabled is True AND that provider actually has a
+#      key configured; rewrites stage 1's template (stage 2 is skipped
+#      entirely in this case, so there is no side-B text to rewrite) into
+#      fresh wording. Exists because stage 1 only ever recycles the same
+#      10 fixed templates — this stage is what actually guarantees each
+#      posted comment reads uniquely, the same anti-spam motivation
+#      draft_single_post() serves for job posts.
 
 _CANDIDATE_REPLY_SYSTEM_PROMPT = """Bạn là một người thật đang bình luận dưới bài đăng tìm việc của một ứng viên trong nhóm Facebook.
 Nhiệm vụ: viết LẠI một bản nháp bình luận có sẵn, mời ứng viên đó nhắn tin/inbox để trao đổi thêm về cơ hội việc làm.
@@ -576,14 +555,17 @@ Bạn chỉ trả lời bằng JSON hợp lệ dạng {"reply": "..."} không th
 _MAX_CANDIDATE_REPLY_LENGTH = 400
 
 
-def anthropic_key_configured() -> bool:
-    """True if ANTHROPIC_API_KEY is set — the single source of truth for
-    that check, used by both draft_single_post()/rewrite_candidate_reply()
-    themselves AND by data_sync.py's fire_due_tasks(), which needs to know
-    this BEFORE deciding whether to even call side B's own /reply endpoint
-    for a candidate (see rewrite_candidate_reply()'s docstring, "stage 2
-    vs. stage 3 are now mutually exclusive")."""
-    return bool(os.environ.get("ANTHROPIC_API_KEY", "").strip())
+def ai_provider_configured() -> bool:
+    """True if the currently active AI provider (/admin/config's AI tab —
+    human_bot.runtime_config.get_active_ai_provider_config(), generalized
+    2026-09-10 from the original Anthropic-only anthropic_key_configured())
+    has an API key available. The single source of truth for that check,
+    used by both draft_single_post()/rewrite_candidate_reply() themselves
+    AND by data_sync.py's fire_due_tasks(), which needs to know this
+    BEFORE deciding whether to even call side B's own /reply endpoint for
+    a candidate (see rewrite_candidate_reply()'s docstring, "stage 2 vs.
+    stage 3 are now mutually exclusive")."""
+    return bool(get_active_ai_provider_config().api_key)
 
 
 async def rewrite_candidate_reply(
@@ -591,20 +573,19 @@ async def rewrite_candidate_reply(
 ) -> str:
     """Rewrites `base_text` (whatever data_sync.py already has for this
     candidate — side B's own reply draft, or the local template) into
-    fresh wording via Anthropic, grounded on `candidate`'s attributes
-    (desiredJobField/preferredRegion — see schedule_store.ScheduledTask.
-    candidate_data's docstring for its shape) so the rewrite still makes
-    sense for this specific person, not a generic paraphrase.
+    fresh wording via the active AI provider, grounded on `candidate`'s
+    attributes (desiredJobField/preferredRegion — see schedule_store.
+    ScheduledTask.candidate_data's docstring for its shape) so the rewrite
+    still makes sense for this specific person, not a generic paraphrase.
 
     Returns `base_text` UNCHANGED (never raises, never returns empty) if
-    `ai_enabled` is False, ANTHROPIC_API_KEY is unset, `base_text` itself
-    is falsy, or the API call fails/returns something unusable — same
-    safe-by-default stance as draft_single_post()."""
+    `ai_enabled` is False, no AI provider key is configured, `base_text`
+    itself is falsy, or the API call fails/returns something unusable —
+    same safe-by-default stance as draft_single_post()."""
     if not ai_enabled or not base_text:
         return base_text
 
-    api_key = os.environ.get("ANTHROPIC_API_KEY", "").strip()
-    if not api_key:
+    if not get_active_ai_provider_config().api_key:
         return base_text
 
     attrs = (candidate or {}).get("attributes") or {}
@@ -618,30 +599,9 @@ async def rewrite_candidate_reply(
         f'Viết lại "ban_nhap_hien_tai" theo đúng quy tắc đã nêu. '
         f'Trả lời DUY NHẤT bằng JSON dạng {{"reply": "..."}}, không thêm chữ nào khác.'
     )
-    model = os.environ.get("CONTENT_STRATEGIST_MODEL", "").strip() or DEFAULT_MODEL
 
     try:
-        async with httpx.AsyncClient(timeout=60) as client:
-            response = await client.post(
-                ANTHROPIC_API_URL,
-                headers={
-                    "x-api-key": api_key,
-                    "anthropic-version": "2023-06-01",
-                    "content-type": "application/json",
-                },
-                json={
-                    "model": model,
-                    "max_tokens": 512,
-                    "system": _CANDIDATE_REPLY_SYSTEM_PROMPT,
-                    "messages": [{"role": "user", "content": user_prompt}],
-                },
-            )
-            response.raise_for_status()
-            data = response.json()
-
-        text = "".join(
-            block.get("text", "") for block in data.get("content", []) if block.get("type") == "text"
-        )
+        text = await call_ai_text(_CANDIDATE_REPLY_SYSTEM_PROMPT, user_prompt, max_tokens=512)
         parsed = _extract_json(text)
         reply = parsed.get("reply") if isinstance(parsed, dict) else None
         reply = str(reply).strip() if reply else ""

@@ -361,15 +361,19 @@ built, not just planned:
 plan.** `human_bot/content_strategist.py`'s `draft_group_post_variants()`
 is a real, working slice of the Content Strategist Agent: when a job post
 is broadcast to multiple groups, it drafts genuinely different wording per
-group by calling Anthropic's Messages API directly over `httpx` (not
-through `human_bot/llm.py`'s provider-selection helper — that pulls in the
+group by calling whichever AI provider is configured on `/admin/config`'s
+AI tab — Anthropic, OpenAI, Google Gemini, or a custom OpenAI-compatible
+endpoint (`human_bot/ai_client.py`, generalized 2026-09-10 from the
+original Anthropic-only version) — directly over `httpx` (not through
+`human_bot/llm.py`'s provider-selection helper — that pulls in the
 optional, not-installed-by-default `browser-use` package just to
-construct a `ChatAnthropic`, too heavy for one plain-text drafting call).
-No `ANTHROPIC_API_KEY` in `.env`, or a failed call, silently falls back to
-the same plain-template drafting that existed before — `data_sync.py`'s
-behavior is unchanged until a real key is added and the service
-restarted. This enforces "vary wording per group when broadcasting" (the
-hard requirement from this section's decisions / `docs/skills/
+construct a chat model client, too heavy for one plain-text drafting
+call). No API key configured for the active provider (admin override or,
+for Anthropic/OpenAI, the matching `.env` var), or a failed call, silently
+falls back to the same plain-template drafting that existed before —
+`data_sync.py`'s behavior is unchanged until a real key is configured.
+This enforces "vary wording per group when broadcasting" (the hard
+requirement from this section's decisions / `docs/skills/
 group-targeting.md`) for the one case it's wired into.
 
 Per the project owner's explicit scoping (2026-09-05): posting to one's

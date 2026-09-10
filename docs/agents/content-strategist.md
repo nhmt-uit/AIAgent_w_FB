@@ -13,15 +13,18 @@ Scope narrowed from the original plan below, per the project owner: only
 wording, since that is the one case where posting identical text more
 than once is a real spam signal. Implemented as
 `human_bot/content_strategist.py`'s `draft_group_post_variants()`, wired
-into `human_bot/data_sync.py`'s `sync_all()`. Calls Anthropic's Messages
-API directly over `httpx` — **not** through `human_bot/llm.py`'s
-provider-selection helper (`get_llm()`) mentioned in step 2 below; that
-helper returns a `browser_use.ChatAnthropic`, which pulls in the optional,
+into `human_bot/data_sync.py`'s `sync_all()`. Calls whichever AI provider
+is configured on `/admin/config`'s AI tab (Anthropic, OpenAI, Google
+Gemini, or a custom OpenAI-compatible endpoint — `human_bot/ai_client.py`,
+generalized 2026-09-10 from the original Anthropic-only version) directly
+over `httpx` — **not** through `human_bot/llm.py`'s provider-selection
+helper (`get_llm()`) mentioned in step 2 below; that helper returns a
+`browser_use` chat model client, which pulls in the optional,
 not-installed-by-default `browser-use` package just to make one plain-text
-drafting call — decided not worth the dependency weight. No
-`ANTHROPIC_API_KEY` in `.env`, or a failed call, silently falls back to a
-plain rotating-opener template — `data_sync.py`'s behavior is unchanged
-until a key is added (and the service restarted). Posting to one's own
+drafting call — decided not worth the dependency weight. No API key
+configured for the active provider, or a failed call, silently falls back
+to a plain rotating-opener template — `data_sync.py`'s behavior is
+unchanged until a key is configured. Posting to one's own
 profile is user-typed by hand via `/admin/post` and only happens once, so
 it is explicitly OUT of scope — not drafted by this agent at all.
 Candidate outreach replies are also a single message per candidate (no
