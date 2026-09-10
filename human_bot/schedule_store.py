@@ -48,6 +48,21 @@ class ScheduledTask:
     reasoning: str = ""
     source_kind: str = ""  # "job" | "candidate" — which side-B endpoint this came from
     source_id: str = ""  # side-B's own record id, for traceability/debugging
+    # source_kind == "job" only — the job's own {"title", "attributes"}
+    # (see content_strategist._job_summary's shape), stashed here at
+    # schedule time so fire_due_tasks() can redraft this ONE task's post
+    # with AI right before it actually fires (2026-09-10 — AI drafting
+    # moved from schedule-time to fire-time, see data_sync.py's sync_all()
+    # docstring) without needing another round-trip to side B for data
+    # already fetched once. None for every other action/source_kind.
+    job_data: dict | None = None
+    # source_kind == "candidate" only — the candidate's own {"attributes"}
+    # (desiredJobField/preferredRegion...), stashed here at schedule time
+    # so fire_due_tasks() can hand it to content_strategist.
+    # rewrite_candidate_reply() as grounding context, right before this
+    # task fires — same reasoning/timing as job_data above. None for
+    # every other action/source_kind.
+    candidate_data: dict | None = None
     created_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
     # Set instead of moving the task to failed/ when a fire attempt hits
     # RateLimiter's min_delay_seconds gap specifically (not other failure

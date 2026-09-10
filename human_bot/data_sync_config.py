@@ -118,3 +118,34 @@ class DataSyncConfig:
     base_url: str = field(
         default_factory=lambda: _env_str("DATA_INGESTION_BASE_URL", "http://localhost:3100")
     )
+
+    # Separate on/off switches for the two places OUR OWN Anthropic key
+    # gets called to draft/rewrite content (added 2026-09-10, requested
+    # after live-testing content_strategist.py with a real
+    # ANTHROPIC_API_KEY) — independent of whether the key is actually
+    # set, so an admin can flip AI off temporarily (cost control, or
+    # wanting the plain template back while testing) WITHOUT removing the
+    # key from .env and restarting the service. Both are only consulted
+    # at FIRE time (data_sync.fire_due_tasks()), never at schedule time —
+    # see content_strategist's module docstring.
+    #
+    # job_post_ai_enabled: gates content_strategist.draft_single_post()
+    # entirely — off means the template drafted at schedule time
+    # (content_strategist.template_variants()) is posted as-is.
+    #
+    # candidate_reply_ai_enabled: when True AND an ANTHROPIC_API_KEY is
+    # actually configured, content_strategist.rewrite_candidate_reply()
+    # rewrites the local template directly and data_sync.
+    # _fetch_candidate_reply() (side B's own /reply endpoint) is SKIPPED
+    # entirely — no reason to pay for side B's drafting call when we're
+    # about to rewrite it with our own key anyway. Otherwise (False, or
+    # True but no key set) side B's /reply IS called instead, same as
+    # before this field existed. The two are mutually exclusive per
+    # candidate, never both — see fire_due_tasks() and rewrite_candidate_
+    # reply()'s docstring for the full picture.
+    job_post_ai_enabled: bool = field(
+        default_factory=lambda: _env_bool("DATA_SYNC_JOB_POST_AI_ENABLED", True)
+    )
+    candidate_reply_ai_enabled: bool = field(
+        default_factory=lambda: _env_bool("DATA_SYNC_CANDIDATE_REPLY_AI_ENABLED", True)
+    )

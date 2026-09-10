@@ -79,7 +79,7 @@ _ACTION_DISPATCH: dict[str, tuple[str, Callable[[Page, TaskRequest], Awaitable[A
         "post",
         lambda page, req: actions.post_to_group(
             page, req.target_url, req.content, req.media_path,
-            group_name=_resolve_group_name(req.account_id, req.target_url),
+            group_name=resolve_group_name(req.account_id, req.target_url),
         ),
     ),
     "comment_on_friend_post": (
@@ -110,7 +110,7 @@ def rate_limit_bucket_for(action: str) -> str | None:
     return entry[0] if entry else None
 
 
-def _resolve_group_name(account_id: str, url: str | None) -> str | None:
+def resolve_group_name(account_id: str, url: str | None) -> str | None:
     """Best-effort lookup of a group's display name from /admin/groups'
     saved list, purely for readability in action_log (e.g. so a report
     shows "Nhóm IT Nhật Bản" instead of a bare URL) and as the search
@@ -152,7 +152,7 @@ def _log_result(request: TaskRequest, success: bool, message: str, screenshot_pa
             success=success,
             message=message,
             target_url=request.target_url,
-            target_group_name=_resolve_group_name(request.account_id, request.target_url),
+            target_group_name=resolve_group_name(request.account_id, request.target_url),
             content=request.content,
             source=request.source,
             source_kind=request.source_kind,

@@ -550,7 +550,16 @@ async def _fetch_candidate_reply(source_id: str, cfg: DataSyncConfig) -> str | N
     pending/, so schedule_store.due_tasks() never returns it again: no
     separate dedup cache needed. Returns None on any failure or an empty/
     missing "reply" field, so the caller falls back to the local
-    template already stored on the task from schedule time."""
+    template already stored on the task from schedule time.
+
+    Called by fire_due_tasks() only in the branch where OUR OWN Anthropic
+    rewrite (content_strategist.rewrite_candidate_reply(), stage 3) will
+    NOT run for this candidate — stage 2 (this) and stage 3 are mutually
+    exclusive by design as of 2026-09-10, see rewrite_candidate_reply()'s
+    docstring for the full pipeline and why. Has no /admin/config toggle
+    of its own; whether it gets called at all is decided entirely by that
+    branch, based on DataSyncConfig.candidate_reply_ai_enabled and
+    whether an ANTHROPIC_API_KEY is actually configured."""
     token = os.environ.get("DATA_INGESTION_API_TOKEN", "")
     if not token or not source_id:
         return None
@@ -723,12 +732,17 @@ async def sync_all(account_ids: list[str], cfg: DataSyncConfig | None = None) ->
         for job in job_assignment.get(aid, []):
             jid = str(job.get("id") or "")
             groups = get_joined_groups(aid)
-            # One drafting call for ALL of this job's groups at once (not
-            # one per group) — content_strategist.draft_group_post_variants()
-            # needs the full group list up front to guarantee the variants
-            # it returns are actually different from each other, not just
-            # independently generated and coincidentally similar.
-            variants = await content_strategist.draft_group_post_variants(job, groups)
+            # Template only here, at SCHEDULE time — never AI (2026-09-10,
+            # AI drafting moved to fire_due_tasks(), see
+            # content_strategist.draft_single_post()'s docstring for why).
+            # This content is what /admin/schedule shows in the meantime,
+            # and what stays in place if AI is off/fails at fire time.
+            variants = content_strategist.template_variants(job, groups)
+            # Job attributes stashed on each task for fire_due_tasks() to
+            # redraft with AI later — see schedule_store.ScheduledTask.
+            # job_data's docstring. Small subset only, same shape
+            # content_strategist._job_summary() builds for the AI prompt.
+            job_data = {"title": job.get("title"), "attributes": job.get("attributes") or {}}
             for group, content in zip(groups, variants):
                 # Clamp the CHAIN variable itself (not a throwaway copy) —
                 # see apply_quiet_hours()'s docstring for why this matters.
@@ -761,6 +775,7 @@ async def sync_all(account_ids: list[str], cfg: DataSyncConfig | None = None) ->
                     else f"auto: new job {jid} broadcast to joined group",
                     source_kind="job",
                     source_id=jid,
+                    job_data=job_data,
                 )
                 schedule_store.add(task)
                 scheduled_posts += 1
@@ -787,6 +802,9 @@ async def sync_all(account_ids: list[str], cfg: DataSyncConfig | None = None) ->
                 reasoning=f"auto: reply to candidate {cid}",
                 source_kind="candidate",
                 source_id=cid,
+                # Stashed for fire_due_tasks()'s AI rewrite stage — see
+                # schedule_store.ScheduledTask.candidate_data's docstring.
+                candidate_data={"attributes": attrs},
             )
             schedule_store.add(task)
             scheduled_comments += 1
@@ -847,9 +865,10 @@ async def fire_due_tasks(cfg: SchedulingConfig | None = None) -> dict[str, Any]:
     if not cfg.auto_fire_enabled:
         return {"due": len(due), "fired": 0, "reason": "auto_fire_enabled is False"}
 
-    from human_bot.agent import TaskRequest, run_task, rate_limit_bucket_for  # local import — avoid import cycle at module load
+    from human_bot.agent import TaskRequest, run_task, rate_limit_bucket_for, resolve_group_name  # local import — avoid import cycle at module load
     from human_bot.safety import rate_limit_wait_message
 
+    data_sync_cfg = get_data_sync_config()
     fired = 0
     for task in due:
         # Cheap pre-check BEFORE calling run_task(): we already know
@@ -876,14 +895,51 @@ async def fire_due_tasks(cfg: SchedulingConfig | None = None) -> dict[str, Any]:
 
         content = task.content
         if task.source_kind == "candidate" and task.action in ("comment_on_group_post", "comment_on_friend_post"):
-            # Fetch side B's fresh, Claude-drafted reply right before this
-            # actually posts — see _fetch_candidate_reply()'s docstring
-            # for why here (not the sync loop) is the one-call-per-
-            # candidate point. Falls back to task.content (the local
-            # template stashed at schedule time) on any failure.
-            fresh_reply = await _fetch_candidate_reply(task.source_id, get_data_sync_config())
-            if fresh_reply:
-                content = fresh_reply
+            # 3-stage pipeline, stage 2/3 MUTUALLY EXCLUSIVE — see
+            # content_strategist.rewrite_candidate_reply()'s docstring
+            # for the full picture and why:
+            #   1. content already = task.content, the local template
+            #      drafted at schedule time — starting baseline.
+            use_own_ai = (
+                data_sync_cfg.candidate_reply_ai_enabled and content_strategist.anthropic_key_configured()
+            )
+            if use_own_ai:
+                #   3. OUR OWN Anthropic rewrite of stage 1's template —
+                #      stage 2 (side B's /reply) is skipped entirely here,
+                #      no point paying for both drafts when we're about
+                #      to rewrite it ourselves anyway. Returns `content`
+                #      UNCHANGED (never empty) on any failure, so this
+                #      call is always safe to assign back.
+                content = await content_strategist.rewrite_candidate_reply(
+                    content, task.candidate_data, ai_enabled=True,
+                )
+            else:
+                #   2. side B's own /reply draft — called here (not
+                #      stage 3) either because the toggle is off, or it's
+                #      on but there's no ANTHROPIC_API_KEY to actually
+                #      rewrite with. See _fetch_candidate_reply()'s
+                #      docstring for why here (not the sync loop) is the
+                #      one-call-per-candidate point. Replaces stage 1's
+                #      text if it returns one.
+                fresh_reply = await _fetch_candidate_reply(task.source_id, data_sync_cfg)
+                if fresh_reply:
+                    content = fresh_reply
+        elif (
+            task.source_kind == "job" and task.action == "post_to_group"
+            and task.job_data and data_sync_cfg.job_post_ai_enabled
+        ):
+            # Same "right before it actually posts" reasoning as the
+            # candidate branch above, moved here 2026-09-10 — see
+            # content_strategist.draft_single_post()'s docstring for the
+            # full history/trade-off. Only even attempted when the toggle
+            # is on; task.content (the template stashed at schedule time)
+            # is left untouched otherwise, no wasted recomputation.
+            group_name = resolve_group_name(task.account_id, task.target_url)
+            fresh_content = await content_strategist.draft_single_post(
+                task.job_data, group_name, ai_enabled=True,
+            )
+            if fresh_content:
+                content = fresh_content
 
         request = TaskRequest(
             action=task.action,
@@ -891,6 +947,7 @@ async def fire_due_tasks(cfg: SchedulingConfig | None = None) -> dict[str, Any]:
             target_url=task.target_url,
             content=content,
             media_path=task.media_path,
+            audience=task.audience,
             reasoning=task.reasoning,
             source="schedule_auto",
             source_kind=task.source_kind,

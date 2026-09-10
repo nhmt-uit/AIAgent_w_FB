@@ -233,7 +233,10 @@ _SCROLL_LABELS: dict[str, str] = {
     "max_iterations": "Số lần cuộn tối đa trước khi chốt vị trí chính xác",
 }
 
-_BOOL_FIELDS = {"enabled", "auto_fire_enabled", "attach_random_meme_default"}
+_BOOL_FIELDS = {
+    "enabled", "auto_fire_enabled", "attach_random_meme_default",
+    "job_post_ai_enabled", "candidate_reply_ai_enabled",
+}
 
 _SCHEDULING_LABELS: dict[str, str] = {
     "auto_fire_enabled": (
@@ -281,6 +284,16 @@ _DATA_SYNC_LABELS: dict[str, str] = {
     "candidate_min_confidence": "Độ tin cậy tối thiểu để nhắn ứng viên (0-1)",
     "candidate_max_age_days": "Chỉ nhắn ứng viên có bài đăng trong vòng bao nhiêu ngày",
     "cache_retention_days": "Số ngày giữ lại cache chống trùng trước khi dọn",
+    "job_post_ai_enabled": (
+        "Dùng AI (Anthropic) soạn lại bài tin tuyển dụng đăng nhóm ngay lúc đến giờ đăng thật "
+        "(không phải lúc mới nhận dữ liệu từ bên B) — cần ANTHROPIC_API_KEY trong .env; "
+        "tắt hoặc thiếu key thì giữ nguyên mẫu (template) đã soạn từ lúc lên lịch"
+    ),
+    "candidate_reply_ai_enabled": (
+        "Bật + có ANTHROPIC_API_KEY: dùng AI (Anthropic) của mình viết LẠI reply ứng viên ngay lúc đến "
+        "giờ đăng thật, dựa trên mẫu có sẵn — và BỎ QUA việc gọi API /reply của bên B (đỡ tốn 2 lần "
+        "soạn cho cùng 1 reply). Tắt, hoặc bật mà thiếu key: gọi API /reply của bên B như trước"
+    ),
 }
 
 _ICONS["data_sync"] = "🔄"
