@@ -819,3 +819,68 @@
       production; lợi ích thêm từ chuột OS thật là biên rất nhỏ so với chi
       phí vận hành ở trên. **Owner đồng ý ghi lại, sẽ tự nghiên cứu thêm,
       chưa triển khai.**
+
+## Đợt làm việc 2026-09-10 (tiếp) — Bộ test tự động đầu tiên cho dự án
+
+- [x] **Rà soát toàn dự án + `tasks.md` để tìm việc cần làm tiếp theo** —
+      dùng agent audit toàn bộ code (không chỉ đọc tài liệu), đối chiếu
+      TODO/FIXME/marker trong code với những gì đã ghi trong tasks.md/
+      FB_Post_Assistant.md. Kết quả: tài liệu khớp đúng với code, không
+      có gap nào bị giấu — chỉ phát hiện 1 gap MỚI chưa từng ghi ở đâu:
+      **dự án hoàn toàn chưa có bộ test tự động** (chỉ có 4 script chạy
+      tay cần Facebook thật, không có assertion/CI). Danh sách ưu tiên đưa
+      ra: (P0) đặt `TASKS_API_KEY`/`ADMIN_USERNAME`/`ADMIN_PASSWORD` thật
+      trước khi expose ra ngoài máy cá nhân; (P1) xác nhận sống các cơ chế
+      verify còn "chưa test thật" đã ghi từ trước; (P2) viết test cho phần
+      logic thuần — **chọn làm P2 trước**, xem bên dưới.
+- [x] **Thêm bộ test tự động đầu tiên cho dự án (`pytest`), cho các phần
+      logic THUẦN không cần trình duyệt/Facebook thật:**
+      1. `requirements-dev.txt` (mới, tách riêng khỏi `requirements.txt` —
+         chỉ cần khi phát triển/test, không cần để chạy service thật):
+         `pytest`, `pytest-asyncio`.
+      2. `pytest.ini` (mới): `pythonpath = .` để `import human_bot...` chạy
+         được dù gọi `pytest` từ đâu, `testpaths = tests`.
+      3. `tests/conftest.py` — fixture `isolated_runtime_config` monkeypatch
+         `human_bot.runtime_config.RUNTIME_CONFIG_PATH` sang file tạm
+         (`tmp_path`) — **quy tắc bắt buộc, không test nào được phép đụng
+         vào `runtime_config.json`/`accounts/`/`data_sync_cache/` thật**
+         (đã xác nhận lại bằng `md5sum runtime_config.json` trước/sau khi
+         chạy toàn bộ suite — giống hệt nhau).
+      4. `tests/test_safety.py` (14 test) — `human_bot/safety.py`:
+         `detect_anomaly`/`is_content_unavailable` (khớp tín hiệu, không
+         khớp, dấu hiệu qua URL checkpoint), và `RateLimiter` đầy đủ (chặn
+         theo count cap posts/day, comments/hour+day, likes/hour; chặn/
+         không chặn theo khoảng cách min_delay_seconds; `ignore_gap=True`
+         chỉ bỏ qua gap chứ không bỏ qua count cap; gap tính riêng theo
+         từng loại hành động — post không bị chặn bởi comment vừa chạy;
+         `record()` ghi đúng khoảng `next_allowed_at`). Dùng 1 class giả
+         (`_FakeAccount`, duck-type đúng interface `AccountConfig` mà
+         `RateLimiter` cần) thay vì `AccountConfig` thật — log ghi vào
+         `tmp_path`, không đụng thư mục `accounts/` thật.
+      5. `tests/test_runtime_config.py` (14 test) — merge/fallback logic:
+         không có file → dùng default code; lưu 1 field → chỉ field đó đổi;
+         field lạ bị lọc bỏ khi lưu; file JSON hỏng/không phải object →
+         fallback `{}` an toàn, không crash; toàn bộ logic
+         `get_active_ai_provider_config()` mới thêm (override thắng env,
+         Anthropic/OpenAI có env fallback, Gemini/custom không, provider lạ
+         rơi về field mapping của anthropic).
+      6. `tests/test_content_strategist.py` (30 test) — soạn template job
+         post: đổi lương qua man/lá/tờ đúng luật (tháng/năm mới đổi, giờ/
+         ngày giữ nguyên, tiền tệ khác giữ nguyên), tên visa map đúng, join
+         list không còn lộ `['Shizuoka']` kiểu Python repr (lỗi thật đã sửa
+         trước đây), dòng "thiếu visa/lương" gộp đúng, xuống dòng header
+         quá dài, opener đúng theo INDEX NHÓM (bug cũ: theo index job) —
+         cộng cả nhánh fallback AI (tắt cờ / thiếu key / AI lỗi đều rơi về
+         template, không exception nào lọt ra ngoài). Dùng
+         `monkeypatch.setattr(random, "choice", lambda seq: seq[0])` để
+         khử ngẫu nhiên, assert đúng nội dung thay vì "một trong N khả
+         năng".
+      7. `tests/test_ai_client.py` (7 test, thêm ngoài kế hoạch ban đầu vì
+         rẻ và đúng tinh thần "logic thuần") — dùng `httpx.MockTransport`
+         (không gọi mạng thật) để xác nhận đúng URL/header/body cho cả 4
+         provider (Anthropic `x-api-key`, OpenAI/custom `Authorization:
+         Bearer` + đúng `base_url`, Gemini `?key=` query param), và
+         `AIProviderError` khi thiếu key/model.
+      **Kết quả: 65 test, chạy trong 0.35s, không có mock/thật nào đụng
+      vào Facebook hay file cấu hình thật.** Chạy bằng
+      `pip install -r requirements.txt -r requirements-dev.txt && pytest -q`.

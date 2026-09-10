@@ -51,6 +51,7 @@ Dự án xây dựng một hệ thống tự động thực hiện các hành đ
 | Đăng nhập tài khoản mới qua web `/admin/accounts` (thay cho chạy lệnh tay) | Hoàn thành — xem mục 4.15 |
 | Cơ chế dự phòng khi 1 selector bị Facebook đổi giao diện làm gãy | Đã thiết kế (dùng AI/LLM "nhìn" trang), **chưa nối vào luồng chạy thật** |
 | Thiết lập môi trường vận hành thật (proxy/IP riêng theo tài khoản, khoá API bên B thật) | Chưa làm — cần trước khi chạy ngoài phạm vi máy cá nhân |
+| Bộ test tự động (`pytest`) cho phần logic thuần (rate-limit, template AI, cấu hình admin, đa nhà cung cấp AI) | Hoàn thành, 65 test — xem mục 4.16. Phần đụng Playwright/trình duyệt thật vẫn chưa có test tự động |
 
 # 3\. Nguyên tắc thiết kế cốt lõi — vì sao mọi hành động đều đi theo cùng một "kịch bản điều hướng"
 
@@ -276,6 +277,21 @@ Một vòng lặp nền tự động gọi API của bên B để lấy tin tuy�
 ## 4.14. Ghi log & lịch sử hành động
 
 Mọi lần chạy một hành động — dù từ thao tác tay, từ lịch, hay tự động từ bên B, dù thành công hay thất bại — đều đi qua đúng một điểm ghi log duy nhất trong code, nên không sót trường hợp nào. Có cả log dạng file (`logs/human_bot.log`) lẫn lịch sử có cấu trúc trong SQLite phục vụ trang Báo cáo.
+
+## 4.16. Bộ test tự động đầu tiên cho dự án (2026-09-10)
+
+**Trước đây dự án hoàn toàn không có test tự động nào** — chỉ có 4 script chạy tay (`human_bot/test_run_task.py`, `test_service_api.py`, `test_post_own_profile_media.py`, `test_post_to_group_manual.py`), tất cả đều cần một phiên Facebook thật đang đăng nhập và không có assertion nào — chạy xong phải tự mắt nhìn kết quả. Một đợt rà soát toàn dự án (dùng agent tự động đối chiếu code với `tasks.md`) xác nhận tài liệu tiến độ khớp đúng với code thật, nhưng phát hiện đây là lỗ hổng duy nhất chưa từng được ghi nhận ở đâu.
+
+Đã thêm bộ test bằng `pytest`, tập trung vào **phần logic thuần, không cần trình duyệt hay Facebook thật** — nơi một lỗi âm thầm (tính sai rate-limit, đổi lương sai đơn vị, cấu hình admin không thật sự có hiệu lực) trước đây chỉ phát hiện được khi tự nhìn thấy bài đăng sai trên Facebook:
+
+* `human_bot/safety.py` — toàn bộ toán rate-limit (chặn theo số lượng/ngày/giờ, khoảng cách tối thiểu giữa 2 hành động cùng loại, `ignore_gap` chỉ bỏ qua đúng phần pacing chứ không bao giờ bỏ qua giới hạn số lượng) và phát hiện dấu hiệu bất thường/nội dung đã mất.
+* `human_bot/runtime_config.py` — logic merge override từ `/admin/config` với giá trị mặc định trong code, và toàn bộ đường fallback key/model theo nhà cung cấp AI (mục 4.10) vừa thêm.
+* `human_bot/content_strategist.py` — mọi quy tắc soạn template (đổi lương qua man/lá/tờ đúng điều kiện, tên visa, gộp dòng "thiếu visa/lương", xử lý danh sách/chuỗi không còn lộ lỗi `['Shizuoka']` từng gặp — mục 4.10) và các nhánh an toàn "rơi về mẫu khi AI lỗi/tắt/thiếu key".
+* `human_bot/ai_client.py` — dùng `httpx.MockTransport` (không gọi mạng thật) xác nhận đúng định dạng request cho cả 4 nhà cung cấp AI, để chắc chắn tính năng đa nhà cung cấp mới thêm không âm thầm gửi sai header/URL cho một hãng nào đó.
+
+**65 test, chạy trong dưới 0.4 giây, không có test nào đụng vào Facebook thật hay file cấu hình thật** (`runtime_config.json`, `accounts/`, `data_sync_cache/`) — mọi test cần đọc/ghi cấu hình đều được chuyển hướng sang file tạm qua `monkeypatch`, xác nhận lại bằng cách so `md5sum runtime_config.json` trước/sau khi chạy toàn bộ suite (giống hệt nhau). Chạy bằng `pip install -r requirements.txt -r requirements-dev.txt && pytest -q`.
+
+**Vẫn còn thiếu:** chưa test phần đụng tới Playwright/trình duyệt thật (đúng bản chất — cần trình duyệt + tài khoản Facebook thật, không unit-test được theo nghĩa thông thường), và các module logic khác chưa được test (VD `data_sync.py`'s logic chia đều dữ liệu cho nhiều tài khoản).
 
 # 5\. Một số sự cố thực tế đã phát hiện và xử lý trong quá trình test
 
