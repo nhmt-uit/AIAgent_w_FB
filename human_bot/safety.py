@@ -182,6 +182,35 @@ class RateLimiter:
             return False, f"min_delay_seconds gap not elapsed yet, wait ~{wait_s}s"
         return True, "ok"
 
+    def gap_ok(self, action_type: str) -> tuple[bool, str]:
+        """Public wrapper around _last_action_gap_ok() (2026-09-11) —
+        the min_delay_seconds/max_delay_seconds pacing check ONLY, no
+        count-based caps. Exposed so human_bot/daily_limits.py can reuse
+        this gap logic (unaffected by the rolling-window-vs-business-day
+        change) without going through can_proceed(), whose own
+        posts_per_day/comments_per_day branches that module now
+        supersedes — see can_proceed()'s docstring below for the
+        rolling-window version this replaced, kept here unused rather
+        than deleted in case there's ever a reason to compare against or
+        revert to it."""
+        return self._last_action_gap_ok(action_type)
+
+    def recent_count(self, action_type: str, window: timedelta) -> int:
+        """How many `action_type` attempts (success or fail — see
+        _read_recent()/can_proceed()'s own use of this, which never
+        filters by success either) are logged within `window` of now.
+        Read-only, same underlying log can_proceed() itself reads to
+        decide whether to block — exposed publicly (2026-09-11) so
+        human_bot/data_sync.py's scheduler can ask "how much room is
+        REALLY left right now" before deciding how much new work to
+        queue, not just get a yes/no on a single attempt. See the
+        conversation that added this for why: the scheduler used to only
+        track its OWN scheduled_at bookkeeping (grouped by calendar day),
+        which can drift from what this rolling window actually allows —
+        e.g. a backlog fired in a burst can land several calendar days'
+        worth of scheduled activity inside the same rolling 24h window."""
+        return len([r for r in self._read_recent(window) if r["action"] == action_type])
+
     def can_proceed(self, action_type: str, ignore_gap: bool = False) -> tuple[bool, str]:
         """`ignore_gap=True` skips ONLY the min/max_delay_seconds pacing
         check (see _last_action_gap_ok's docstring) — the count-based hard
@@ -193,25 +222,40 @@ class RateLimiter:
         be — that count is the strongest signal Facebook itself uses to
         flag automation, so it stays a hard refusal regardless of this
         flag. See is_gap_reason() for how callers tell the two apart
-        before deciding whether to offer this override at all."""
+        before deciding whether to offer this override at all.
+
+        NOT CALLED ANYWHERE as of 2026-09-11 — every real call site
+        (human_bot/agent.py's run_task(), human_bot/admin.py's
+        schedule_fire_now(), human_bot/daily_limits.py's hard_cap_message())
+        switched to human_bot/daily_limits.py's can_proceed() instead,
+        which reuses this class's gap_ok()/recent_count()/record() but
+        checks posts_per_day/comments_per_day against a "business day"
+        (2:00 AM JST boundary) instead of THIS method's rolling 24h
+        window — project owner's decision, see the conversation this was
+        changed from for the full reasoning (rolling window vs
+        calendar-day scheduling kept drifting out of sync in ways worth
+        a redesign, not a patch). Left here unused rather than deleted in
+        case there's ever a reason to read or revert to it — do not wire
+        this back up without checking daily_limits.py's own module
+        docstring first."""
         if not ignore_gap:
             gap_ok, gap_reason = self._last_action_gap_ok(action_type)
             if not gap_ok:
                 return False, gap_reason
         limits = self.account.rate_limits
         if action_type == "post":
-            count = len([r for r in self._read_recent(timedelta(days=1)) if r["action"] == "post"])
+            count = self.recent_count("post", timedelta(days=1))
             if count >= limits.posts_per_day:
                 return False, "posts_per_day limit reached"
         elif action_type == "comment":
-            hourly = len([r for r in self._read_recent(timedelta(hours=1)) if r["action"] == "comment"])
-            daily = len([r for r in self._read_recent(timedelta(days=1)) if r["action"] == "comment"])
+            hourly = self.recent_count("comment", timedelta(hours=1))
+            daily = self.recent_count("comment", timedelta(days=1))
             if hourly >= limits.comments_per_hour:
                 return False, "comments_per_hour limit reached"
             if daily >= limits.comments_per_day:
                 return False, "comments_per_day limit reached"
         elif action_type == "like":
-            hourly = len([r for r in self._read_recent(timedelta(hours=1)) if r["action"] == "like"])
+            hourly = self.recent_count("like", timedelta(hours=1))
             if hourly >= limits.likes_per_hour:
                 return False, "likes_per_hour limit reached"
         return True, "ok"
@@ -332,7 +376,14 @@ def rate_limit_hard_cap_message(account: AccountConfig, action_type: str) -> str
     schedule stayed under it — see the conversation this was added from,
     2026-09-11, for the full investigation. So instead of promising a
     specific clock time, this just tells the admin the cap is hit and to
-    reschedule by hand."""
+    reschedule by hand.
+
+    NOT CALLED ANYWHERE as of 2026-09-11 — superseded by
+    human_bot/daily_limits.py's hard_cap_message(), same reasoning as
+    can_proceed()'s own "NOT CALLED ANYWHERE" note above (this function
+    is built directly on can_proceed(), so it inherited the same
+    rolling-window-vs-business-day mismatch). Left here unused rather
+    than deleted."""
     allowed, reason = RateLimiter(account).can_proceed(action_type)
     if allowed or is_gap_reason(reason):
         return None
