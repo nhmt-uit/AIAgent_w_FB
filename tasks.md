@@ -1642,6 +1642,16 @@
       `attributes.contact`, khác mục đích với cache chống trùng theo
       `id`); nếu về sau cần "quên" luôn việc đã liên hệ ai đó, đây là file
       riêng cần xoá thêm, không tự động bị xoá theo thao tác này.
+- [x] **Lặp lại thao tác reset (2026-09-11 18:33) — dữ liệu mới tích luỹ
+      trở lại sau lần reset đầu (37 file `pending/` mới, cache ngày
+      `2026-09-11.json` mới, `_state.json` mới do bộ đồng bộ nền vẫn chạy
+      liên tục).** Xoá lại đúng `scheduled/pending/*` và toàn bộ
+      `data_sync_cache/*.json` — lần này gộp luôn `_sync_status.json` vào
+      lệnh xoá (khác lần trước là cố tình giữ lại) vì dùng `rm -f
+      data_sync_cache/*.json` chung một lệnh; không ảnh hưởng gì về mặt
+      chức năng (file này chỉ hiển thị "lần đồng bộ gần nhất", tự ghi lại
+      ở lần sync kế tiếp), chỉ nêu ra để khớp đúng những gì đã thực sự xảy
+      ra. `scheduled/posted|failed|cancelled/` vẫn giữ nguyên, không đụng.
 
 ## Đợt làm việc 2026-09-11 (tiếp) — Sửa bug thật: `sync_all()` crash mỗi lần poll
 
@@ -1684,3 +1694,42 @@
       sau chuẩn hoá thì không) — **110 test, tất cả pass.**
       **Chưa xác nhận trên service thật sau fix** — cần restart để nạp
       code mới, quan sát `sync_all()` không còn crash trong log.
+
+## Đợt làm việc 2026-09-11 (tiếp) — 3 cải thiện Admin UI theo phản hồi trực tiếp
+
+- [x] **Nút "Áp nhanh theo tuổi tài khoản" (modal "⏱️ Giới hạn") không
+      còn tự lưu ngay khi bấm — owner phát hiện qua chính buổi làm việc
+      này** (hạn mức tu_iizuki đổi từ 12/15 xuống 5/7 giữa 2 lần tôi
+      kiểm tra, hoá ra do bấm thử nút tier mà không biết nó lưu ngay).
+      Chuyển hẳn sang client-side: nút giờ chỉ điền số vào các ô nhập
+      của form chính, phải bấm "Lưu" mới thật sự ghi vào
+      `runtime_config.json`. Giá trị vẫn lấy đúng từ `ACCOUNT_AGE_TIERS`
+      thật (render sẵn ra `data-*` attribute trên nút, JS chỉ đọc lại —
+      không hardcode số ở JS, không thể lệch với server). Riêng
+      `max_groups_per_post` (không thuộc tier preset) cố tình KHÔNG có
+      trong `data-*` — bấm tier không đụng gì tới ô đó, giữ nguyên giá
+      trị hiện tại của tài khoản. Xoá hẳn route
+      `/admin/accounts/rate-limits/apply-tier` (không còn ai gọi).
+- [x] **Cột "Tuổi tài khoản" mới trong `/admin/accounts`** — hàm
+      `_account_age_tier_label()` so khớp `posts_per_day`/
+      `comments_per_day` hiện tại với 5 tier trong `ACCOUNT_AGE_TIERS`,
+      hiện đúng nhãn (VD "Dưới 1 tháng") hoặc "Tuỳ chỉnh" nếu không
+      khớp — không cần mở modal mới biết tài khoản đang ở mức nào.
+- [x] **Đồng bộ toàn bộ chỗ hiển thị giờ trong Admin UI theo giờ trình
+      duyệt đang mở** — rà bằng `grep` mọi nơi gọi `_fmt_jst()`/`_fmt_dt()`
+      (hàm hiển thị giờ CỐ ĐỊNH — JST hoặc UTC, không theo người xem),
+      đổi cả 5 chỗ còn sót sang `_local_dt_html()` (cơ chế đã có sẵn
+      cho Lịch đăng — server render JST làm fallback, JS ghi đè bằng
+      giờ trình duyệt thật qua `Date` — không cần thư viện): trạng thái
+      đồng bộ + tạm dừng + hạ nhiệt ở `/admin/accounts`, và quan trọng
+      nhất — cột "Thời gian (UTC)" ở bảng "Hoạt động gần đây"
+      (`/admin/reports`), đúng chỗ vừa gây nhầm lẫn "2 nhóm/2 comment"
+      thay vì 3/4 thật do đọc ngày UTC thay vì ngày nghiệp vụ. Đổi tên
+      cột thành "Thời gian" (không còn gắn cứng UTC). Xoá hẳn `_fmt_dt()`
+      — không còn nơi nào gọi sau khi đổi.
+      Verify: render trực tiếp qua Python xác nhận cả 3 điểm đúng
+      (nút tier ra `<button type="button">` thuần không còn `<form>`
+      POST; cột "Tuổi tài khoản" so khớp đúng tier thật của `tu_iizuki`
+      lẫn trường hợp tuỳ chỉnh; bảng Hoạt động gần đây không còn nhãn
+      "(UTC)", có `data-local-dt`). 110 test vẫn pass. **Chưa xác nhận
+      trên UI thật** — cần restart service.
