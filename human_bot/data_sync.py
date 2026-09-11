@@ -873,6 +873,21 @@ async def sync_all(account_ids: list[str], cfg: DataSyncConfig | None = None) ->
             next_comment_time = max(next_comment_time, last_comment_at + timedelta(minutes=comment_gap_min))
         enforced_comment_floor = RateLimiter(account).next_allowed_at("comment")
         if enforced_comment_floor is not None:
+            # RateLimiter.next_allowed_at() parses a NAIVE datetime (see
+            # safety.py — every timestamp it reads/writes is
+            # datetime.utcnow(), never timezone-aware), but next_comment_time
+            # here is timezone-AWARE (built from datetime.now(timezone.utc)
+            # above) — comparing them directly raises TypeError. Confirmed
+            # live 2026-09-11: this crashed sync_all() on EVERY poll cycle
+            # once the account had any comment history at all (silent from
+            # the operator's point of view — service.py's poll loop just
+            # logs "data_sync.sync_all failed" and moves on, so nothing
+            # ever got scheduled, with no obvious error visible outside the
+            # log file). Normalize to aware UTC before comparing, same
+            # pattern already used in daily_limits.py's
+            # count_since_business_day_start() for the identical reason.
+            if enforced_comment_floor.tzinfo is None:
+                enforced_comment_floor = enforced_comment_floor.replace(tzinfo=timezone.utc)
             next_comment_time = max(next_comment_time, enforced_comment_floor)
 
         scheduled_posts = 0

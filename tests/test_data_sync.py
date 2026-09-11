@@ -1,14 +1,19 @@
 from __future__ import annotations
 
+import json
+from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
+from pathlib import Path
 
 import human_bot.schedule_store as schedule_store
+from human_bot.config import RateLimits
 from human_bot.data_sync import (
     _count_scheduled_actions_by_day,
     _next_available_business_day,
     _next_available_post_slot,
 )
 from human_bot.data_sync_config import DataSyncConfig
+from human_bot.safety import RateLimiter
 
 
 # --- _next_available_post_slot (quiet hours + per-group gap only, no capacity) ---
@@ -165,3 +170,71 @@ def test_count_scheduled_actions_by_day_no_matching_tasks(monkeypatch):
     monkeypatch.setattr(schedule_store, "list_pending", lambda: [])
     monkeypatch.setattr(schedule_store, "list_posted", lambda: [])
     assert _count_scheduled_actions_by_day("acc1", {"post_to_group"}) == {}
+
+
+# --- Regression: naive vs. aware datetime comparison in sync_all() ----------
+#
+# Real incident, 2026-09-11: RateLimiter.next_allowed_at() always returns a
+# NAIVE datetime (safety.py's record() only ever writes datetime.utcnow(),
+# never timezone-aware — confirmed by grep, consistent throughout that
+# file), but sync_all()'s own `next_comment_time` chain is built from
+# datetime.now(timezone.utc), timezone-AWARE. `max(next_comment_time,
+# enforced_comment_floor)` without normalizing first raised TypeError on
+# EVERY poll cycle once the account had any comment history — silently,
+# from the operator's point of view (service.py's poll loop only logs
+# "data_sync.sync_all failed" and moves on; the owner restarted the
+# service, set a 5-minute poll interval, and saw nothing get scheduled at
+# all). sync_all() itself isn't unit-tested here (needs a live HTTP call to
+# side B), but this locks down the exact underlying contract the fix
+# depends on: next_allowed_at() is naive, and it must be normalized to
+# aware UTC before comparing against an aware chain variable.
+
+@dataclass
+class _FakeAccount:
+    rate_limits: RateLimits
+    action_log_path: Path
+
+
+def test_rate_limiter_next_allowed_at_is_naive_not_aware(tmp_path):
+    account = _FakeAccount(rate_limits=RateLimits(), action_log_path=tmp_path / "action_log.jsonl")
+    limiter = RateLimiter(account)
+    now = datetime.utcnow()
+    with limiter.log_path.open("a") as f:
+        f.write(json.dumps({
+            "timestamp": now.isoformat(),
+            "action": "comment",
+            "success": True,
+            "next_allowed_at": (now + timedelta(hours=1)).isoformat(),
+        }) + "\n")
+    allowed_at = limiter.next_allowed_at("comment")
+    assert allowed_at is not None
+    assert allowed_at.tzinfo is None
+
+
+def test_naive_next_allowed_at_normalized_before_max_with_aware_chain(tmp_path):
+    """Exercises the exact fix in sync_all(): comparing the naive value
+    straight against an aware datetime must raise, but normalizing it
+    first (the fix) must not."""
+    account = _FakeAccount(rate_limits=RateLimits(), action_log_path=tmp_path / "action_log.jsonl")
+    limiter = RateLimiter(account)
+    now = datetime.utcnow()
+    with limiter.log_path.open("a") as f:
+        f.write(json.dumps({
+            "timestamp": now.isoformat(),
+            "action": "comment",
+            "success": True,
+            "next_allowed_at": (now + timedelta(hours=1)).isoformat(),
+        }) + "\n")
+    naive_floor = limiter.next_allowed_at("comment")
+    aware_chain_time = datetime.now(timezone.utc)
+
+    try:
+        max(aware_chain_time, naive_floor)
+    except TypeError:
+        pass
+    else:
+        raise AssertionError("expected the unnormalized comparison to still raise TypeError")
+
+    normalized = naive_floor.replace(tzinfo=timezone.utc)
+    result = max(aware_chain_time, normalized)  # must not raise
+    assert result.tzinfo is not None
