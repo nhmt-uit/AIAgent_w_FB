@@ -45,6 +45,18 @@ def test_salary_line_non_jpy_currency_keeps_raw_amount():
     assert "2000" in line and "3000" in line and "USD" in line
 
 
+def test_salary_line_year_period_can_use_nenshuu_label(monkeypatch):
+    monkeypatch.setattr(cs.random, "choice", lambda seq: seq[-1])
+    line = cs._salary_line({"min": 7000000, "currency": "JPY", "period": "year"})
+    assert line.startswith("Nenshuu:") or line.startswith("年収:")
+
+
+def test_salary_line_non_year_period_never_uses_nenshuu_label(monkeypatch):
+    monkeypatch.setattr(cs.random, "choice", lambda seq: seq[-1])
+    line = cs._salary_line({"min": 250000, "currency": "JPY", "period": "month"})
+    assert "Nenshuu" not in line and "年収" not in line
+
+
 def test_salary_line_min_only():
     line = cs._salary_line({"min": 200000, "currency": "JPY", "period": "month"})
     assert line is not None
@@ -195,8 +207,8 @@ async def test_draft_single_post_falls_back_when_no_api_key(monkeypatch):
 
     monkeypatch.setattr(cs, "call_ai_text", _should_not_be_called)
     job = _job(company="X")
-    result = await cs.draft_single_post(job, group_name="G1", ai_enabled=True)
-    assert "X" in result  # still a valid placeholder render
+    result = await cs.draft_single_post(job, "bản nháp đã lên lịch", group_name="G1", ai_enabled=True)
+    assert result == "bản nháp đã lên lịch"  # existing schedule content untouched
 
 
 @pytest.mark.asyncio
@@ -206,8 +218,8 @@ async def test_draft_single_post_skips_ai_entirely_when_disabled(monkeypatch):
 
     monkeypatch.setattr(cs, "call_ai_text", _should_not_be_called)
     job = _job(company="X")
-    result = await cs.draft_single_post(job, group_name="G1", ai_enabled=False)
-    assert "X" in result
+    result = await cs.draft_single_post(job, "bản nháp đã lên lịch", group_name="G1", ai_enabled=False)
+    assert result == "bản nháp đã lên lịch"
 
 
 @pytest.mark.asyncio
@@ -222,8 +234,26 @@ async def test_draft_single_post_falls_back_on_ai_failure(monkeypatch):
 
     monkeypatch.setattr(cs, "call_ai_text", _raise)
     job = _job(company="X")
-    result = await cs.draft_single_post(job, group_name="G1", ai_enabled=True)
-    assert "X" in result  # fell back to placeholder template, no exception raised
+    result = await cs.draft_single_post(job, "bản nháp admin đã tự sửa", group_name="G1", ai_enabled=True)
+    # Must keep the existing (possibly admin-edited) schedule content, NOT
+    # regenerate a fresh random template — see draft_single_post()'s docstring.
+    assert result == "bản nháp admin đã tự sửa"
+
+
+@pytest.mark.asyncio
+async def test_draft_single_post_uses_ai_result_when_call_succeeds(monkeypatch):
+    monkeypatch.setattr(
+        cs, "get_active_ai_provider_config",
+        lambda: type("C", (), {"api_key": "some-key"})(),
+    )
+
+    async def _fake_call(system_prompt, user_prompt, max_tokens):
+        return json.dumps({"posts": ["bài viết mới từ AI"]})
+
+    monkeypatch.setattr(cs, "call_ai_text", _fake_call)
+    job = _job(company="X")
+    result = await cs.draft_single_post(job, "bản nháp cũ", group_name="G1", ai_enabled=True)
+    assert result == "bài viết mới từ AI"
 
 
 @pytest.mark.asyncio

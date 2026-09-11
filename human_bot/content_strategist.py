@@ -219,6 +219,15 @@ def _visa_line(visa_code: str) -> str:
 _SALARY_LABELS = ["Lương", "Mức lương", "Thu nhập", "Đãi ngộ", "Về tay"]
 _SALARY_ABOUT_ONLY_LABEL = "Về tay"
 
+# "Nenshuu"/"年収" (Japanese for annual income) — added 2026-09-10 per
+# owner request, common loanwords in Vietnamese-for-Japan-jobs communities
+# (same spirit as the visa kanji in _VISA_TYPE_NAMES below). ONLY valid
+# for period == "year" — unlike the general pool above, calling a monthly
+# or hourly wage "Nenshuu" would be factually wrong, not just a style
+# choice, so this extends (not replaces) _SALARY_LABELS only when the
+# salary is actually annual.
+_SALARY_LABELS_YEAR_EXTRA = ["Nenshuu", "年収"]
+
 # Vietnamese slang for 万 (10,000 yên) — used instead of the bare number
 # whenever the amount is actually in yên and the pay period is month/year
 # (an hourly/daily wage like "1400 yên/giờ" stays as a plain number; only
@@ -258,10 +267,12 @@ def _salary_line(salary: Any) -> str | None:
     if not lo and not hi:
         return None
 
-    label = random.choice(_SALARY_LABELS)
-    about_only = label == _SALARY_ABOUT_ONLY_LABEL
     currency = (salary.get("currency") or "JPY").upper()
     period = salary.get("period") or ""
+
+    label_pool = _SALARY_LABELS + _SALARY_LABELS_YEAR_EXTRA if period == "year" else _SALARY_LABELS
+    label = random.choice(label_pool)
+    about_only = label == _SALARY_ABOUT_ONLY_LABEL
 
     if currency == "JPY" and period in _MAN_PERIOD_KEYS:
         # Real yên amounts convert to man/lá/tờ — this is what side B's
@@ -426,18 +437,20 @@ async def _draft_via_ai(job: dict, groups: list["GroupRef"]) -> list[str]:
     return cleaned
 
 
-async def draft_single_post(job: dict, group_name: str | None = None, ai_enabled: bool = True) -> str:
-    """AI-drafted (or template-drafted) text for exactly ONE post to ONE
-    group — the fire-time counterpart of the removed `draft_group_post_
-    variants` (batch, one call across every group of a job at once).
-    2026-09-10: AI drafting moved from SCHEDULE time (data_sync.py's
-    sync_all(), when a job is first fetched from side B) to FIRE time
-    (data_sync.py's fire_due_tasks(), right before this one
-    ScheduledTask actually posts) per the project owner's explicit
-    request — mirroring how _fetch_candidate_reply() already works for
-    candidate replies (side B only runs ITS Claude call when that
-    endpoint is hit, at fire time, for the same "don't pay for a draft
-    that might get cancelled/rescheduled before it ever posts" reason).
+async def draft_single_post(
+    job: dict, existing_content: str, group_name: str | None = None, ai_enabled: bool = True,
+) -> str:
+    """AI-drafted text for exactly ONE post to ONE group — the fire-time
+    counterpart of the removed `draft_group_post_variants` (batch, one
+    call across every group of a job at once). 2026-09-10: AI drafting
+    moved from SCHEDULE time (data_sync.py's sync_all(), when a job is
+    first fetched from side B) to FIRE time (data_sync.py's
+    fire_due_tasks(), right before this one ScheduledTask actually
+    posts) per the project owner's explicit request — mirroring how
+    _fetch_candidate_reply() already works for candidate replies (side B
+    only runs ITS Claude call when that endpoint is hit, at fire time,
+    for the same "don't pay for a draft that might get cancelled/
+    rescheduled before it ever posts" reason).
 
     Trade-off the owner explicitly accepted: the old batch call's
     guarantee that N groups broadcasting the same job get GENUINELY
@@ -449,6 +462,16 @@ async def draft_single_post(job: dict, group_name: str | None = None, ai_enabled
     job and still read naturally different call to call, but this is no
     longer an enforced guarantee, just an observed tendency.
 
+    `existing_content` is whatever is ALREADY on the ScheduledTask —
+    the template drafted at schedule time, or an admin's own hand-edit
+    made on /admin/schedule before this task fired. Returned UNCHANGED
+    whenever AI isn't used at all (2026-09-10, fixing a real gotcha
+    reported by the project owner: this function used to fall back to a
+    freshly-random `_draft_job_post_placeholder()` call on AI failure,
+    silently discarding whatever an admin had manually edited into the
+    schedule — same "never lose what's already there" stance
+    rewrite_candidate_reply() already takes with `base_text`).
+
     `ai_enabled` is DataSyncConfig.job_post_ai_enabled, the /admin/config
     toggle — kept as a plain parameter (not read from runtime_config
     directly) so this module stays testable/callable without that whole
@@ -456,10 +479,10 @@ async def draft_single_post(job: dict, group_name: str | None = None, ai_enabled
     human_bot.agent.resolve_group_name()'s result) — a None/empty value
     just means the model gets no group name to personalize around."""
     if not ai_enabled:
-        return _draft_job_post_placeholder(job, variant_seed=random.randrange(len(_JOB_POST_OPENERS)))
+        return existing_content
 
     if not get_active_ai_provider_config().api_key:
-        return _draft_job_post_placeholder(job, variant_seed=random.randrange(len(_JOB_POST_OPENERS)))
+        return existing_content
 
     from human_bot.config import GroupRef  # runtime import — module-level is TYPE_CHECKING-only above
 
@@ -467,8 +490,8 @@ async def draft_single_post(job: dict, group_name: str | None = None, ai_enabled
         posts = await _draft_via_ai(job, [GroupRef(name=group_name or "", url="")])
         return posts[0]
     except Exception:  # noqa: BLE001 - any AI failure must fall back, never block scheduling
-        logger.exception("content_strategist: AI draft failed, falling back to placeholder template")
-        return _draft_job_post_placeholder(job, variant_seed=random.randrange(len(_JOB_POST_OPENERS)))
+        logger.exception("content_strategist: AI draft failed, keeping existing schedule content")
+        return existing_content
 
 
 # NOT CALLED ANYWHERE as of 2026-09-10 — superseded by draft_single_post()
