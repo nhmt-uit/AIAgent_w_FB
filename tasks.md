@@ -1385,3 +1385,30 @@
       `tu_iizuki` giữ mặc định 3, override thử nghiệm lên 5 hoạt động
       đúng và không ảnh hưởng tài khoản khác. Render modal thật xác
       nhận field hiện đúng. 79 test vẫn pass.
+- [x] **x_safety (enforcement) đổi từ random sang cố định = gap_min —
+      loại bỏ hoàn toàn va chạm x1/x_safety đã ghi nhận từ trước
+      (2026-09-10, mục "kẹp sàn" comment scheduling), theo quyết định
+      chủ dự án (đánh dấu TẠM THỜI).** `safety.py`'s `RateLimiter.record()`
+      trước đây `random.uniform(gap_min, gap_max)` mỗi lần 1 hành động
+      chạy xong — độc lập hoàn toàn với x₁ (số đã random khi lên lịch
+      hành động kế tiếp, `data_sync.py`). Lý do đổi: x₁ luôn nằm trong
+      `[gap_min, gap_max]` theo đúng định nghĩa, nên nếu x_safety cố
+      định = gap_min thì `x₁ ≥ x_safety` là CHẮC CHẮN TOÁN HỌC (không
+      phải xác suất ~50% như trước) — không cần random thêm 1 lần nữa
+      ở lớp enforcement, vì độ ngẫu nhiên thật của giờ đăng đã có đủ ở
+      lớp lên lịch rồi. `next_allowed_at` giờ chỉ còn ý nghĩa "mốc nghỉ
+      tối thiểu tuyệt đối" để các đường KHÔNG qua lịch (đặt tay, "Đăng
+      ngay"/"Đăng lại") biết mà né, không phải nguồn ngẫu nhiên chính.
+      **Đánh đổi ghi nhận rõ trong code (chưa giải quyết):** mọi đường
+      không qua lịch giờ có khoảng cách enforcement CỐ ĐỊNH mỗi lần
+      (đúng kiểu lặp lại từng bị nhận diện là dấu hiệu bất thường ở
+      nơi khác trong dự án) — chấp nhận vì các đường đó do người thật
+      bấm tay, không phải vòng lặp tự động lặp lại; cần xem lại nếu
+      sau này có thêm đường gọi tự động không qua lịch.
+      Xoá import `random` không còn dùng trong `safety.py`.
+      Verify: mô phỏng 100,000 lần `x1 = random.uniform(gap_min,
+      gap_max)` so với `x_safety = gap_min` (số thật của `tu_iizuki`,
+      5400-10800s) → **0 va chạm**. 79 test vẫn pass (test
+      `test_record_writes_next_allowed_at_within_configured_range` vẫn
+      đúng vì kiểm tra dạng khoảng `[95,205]`, không phụ thuộc có
+      random hay không).
