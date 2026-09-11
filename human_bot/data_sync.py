@@ -51,7 +51,7 @@ from typing import Any
 
 import httpx
 
-from human_bot import content_strategist, schedule_store
+from human_bot import content_strategist, daily_limits, schedule_store
 from human_bot.config import AccountConfig, get_account
 from human_bot.data_sync_config import DataSyncConfig
 from human_bot.scheduling_config import SchedulingConfig
@@ -323,17 +323,25 @@ _COMMENT_ACTIONS = {"comment_on_group_post", "comment_on_friend_post"}
 
 def _count_scheduled_actions_by_day(account_id: str, actions: set[str]) -> dict[date, int]:
     """How many tasks whose `action` is in `actions` this account already
-    has on the books per calendar date (UTC — same simplification
-    apply_quiet_hours makes), counting both PENDING (not fired yet) and
-    already-POSTED ones. Both matter for the daily cap below: posted ones
-    already used up today's quota, and pending ones from an earlier sync
-    reserve tomorrow's (or later) quota too, so a later run the same day
-    doesn't schedule right on top of them. Includes every account's tasks
-    in the pending/posted directories, filtered down to this one —
-    small-scale by design, matching this project's other file-based
-    stores (see human_bot/schedule_store.py). Generalized from a
-    post_to_group-only version (2026-09-10) so the same function backs
-    the capacity check for both post and comment distribution below."""
+    has on the books per "ngày nghiệp vụ" (business day — 2 AM JST
+    boundary, human_bot/daily_limits.py's business_day_key(); changed
+    2026-09-11 from raw UTC calendar date, see the conversation this was
+    changed from), counting both PENDING (not fired yet) and already-
+    POSTED ones. Both matter for the daily cap below: posted ones already
+    used up today's quota, and pending ones from an earlier sync reserve
+    a later business day's quota too, so a later run the same business
+    day doesn't schedule right on top of them. Using the SAME business-
+    day definition daily_limits.py's real enforcement uses (rather than
+    UTC midnight) is what makes it safe to schedule multiple business
+    days ahead again below (_next_available_post_slot()'s rollover) — a
+    business day, once past, never retroactively changes, so a job
+    locked into "ngày mai" can't get leapfrogged by a later-arriving one
+    the way a rolling 24h window could. Includes every account's tasks in
+    the pending/posted directories, filtered down to this one — small-
+    scale by design, matching this project's other file-based stores
+    (see human_bot/schedule_store.py). Generalized from a post_to_group-
+    only version (2026-09-10) so the same function backs the capacity
+    check for both post and comment distribution below."""
     counts: dict[date, int] = {}
     for task in schedule_store.list_pending() + schedule_store.list_posted():
         if task.account_id != account_id or task.action not in actions:
@@ -342,7 +350,7 @@ def _count_scheduled_actions_by_day(account_id: str, actions: set[str]) -> dict[
             scheduled = datetime.fromisoformat(task.scheduled_at.replace("Z", "+00:00"))
         except ValueError:
             continue
-        d = scheduled.date()
+        d = daily_limits.business_day_key(scheduled)
         counts[d] = counts.get(d, 0) + 1
     return counts
 
@@ -486,24 +494,28 @@ def _last_scheduled_comment_time(account_id: str) -> datetime | None:
 def _next_available_post_slot(
     dt: datetime,
     cfg: DataSyncConfig,
-    daily_limit: int,
-    day_counts: dict[date, int],
     group_url: str,
     last_group_post_at: dict[str, datetime],
 ) -> datetime:
-    """Push `dt` forward until it satisfies, together: quiet hours, this
-    account's RateLimits.posts_per_day (overflow rolls to the START of
-    the next day rather than being dropped — decided 2026-09-08), and a
-    minimum cfg.post_gap_min_minutes gap since the last post scheduled
-    to this SAME group (the sequential chain in the caller only
-    guarantees spacing between the overall last two posts, not
-    specifically between two posts landing on the same group).
+    """Push `dt` forward until it satisfies, together: quiet hours, and a
+    minimum cfg.post_gap_min_minutes gap since the last post scheduled to
+    this SAME group (the sequential chain in the caller only guarantees
+    spacing between the overall last two posts, not specifically between
+    two posts landing on the same group).
 
-    Iterates because satisfying one constraint can violate another (e.g.
-    rolling to the next day can land back inside quiet hours, or push
-    past another group's minimum gap) — bounded so a pathological config
-    (e.g. daily_limit=0) can't loop forever; whatever `dt` lands on after
-    the cap is used as-is rather than crashing."""
+    Does NOT handle the daily posts_per_day cap itself — the caller
+    (sync_all()) picks which business day (_next_available_business_day()
+    below) and how many groups fit BEFORE ever calling this, so by the
+    time this runs the group count already fits. 2026-09-11 history: this
+    used to roll `dt` to the next UTC calendar day when full (removed the
+    same day capacity switched to a rolling 24h window, since that
+    combination could reorder jobs — see git history/the conversation —
+    then RESTORED once capacity moved to "ngày nghiệp vụ", human_bot/
+    daily_limits.py's business-day boundary, which — unlike a rolling
+    window — never retroactively changes once past, so day-rollover is
+    safe again). Bounded iteration purely for quiet-hours/gap interplay
+    (one can in principle push back into the other), not capacity, so 60
+    is generous rather than load-bearing."""
     for _ in range(60):
         moved = False
 
@@ -517,13 +529,45 @@ def _next_available_post_slot(
             if dt - last_for_group < min_gap:
                 dt, moved = last_for_group + min_gap, True
 
-        if day_counts.get(dt.date(), 0) >= daily_limit:
-            dt = datetime.combine(dt.date() + timedelta(days=1), datetime.min.time(), tzinfo=dt.tzinfo)
-            moved = True
-
         if not moved:
             break
     return dt
+
+
+def _next_available_business_day(
+    dt: datetime,
+    daily_limit: int,
+    day_counts: dict[date, int],
+    today_key: date,
+    real_used_today: int,
+) -> tuple[datetime, date, int]:
+    """Tràn-ngày (2026-09-11, mang lại sau khi bỏ đi cùng đợt chuyển sang
+    kẹp sàn cửa sổ trượt — xem _next_available_post_slot()'s docstring
+    cho lịch sử đầy đủ): đẩy `dt` tới ĐẦU "ngày nghiệp vụ" kế tiếp
+    (human_bot/daily_limits.py's business_day_start(), mốc 2h sáng JST —
+    KHÔNG phải nửa đêm UTC), lặp lại cho tới khi tìm được 1 ngày còn ít
+    nhất 1 slot trống. AN TOÀN để khoá vào 1 ngày tương lai cụ thể ở đây
+    (khác hẳn hồi còn cửa sổ trượt): một "ngày nghiệp vụ" đã qua thì
+    KHÔNG BAO GIỜ tự thay đổi ngược lại, nên không có rủi ro job mới hơn
+    "nẫng" mất slot của 1 ngày đã khoá cho job cũ.
+
+    `real_used_today`: số hoạt động THẬT trong ngày nghiệp vụ HIỆN TẠI
+    (`today_key`) — chỉ áp dụng cho đúng `today_key`, vì các ngày nghiệp
+    vụ tương lai chưa có gì xảy ra thật (real = 0 mặc định cho chúng).
+
+    Trả về `(dt mới, business-day key của dt đó, số slot còn trống ở đó)`
+    — số slot có thể là 0 nếu vượt quá 60 ngày tìm kiếm (cấu hình bệnh
+    lý, VD daily_limit=0) — caller tự quyết định hoãn job trong trường
+    hợp đó, không lặp vô hạn."""
+    day_key = daily_limits.business_day_key(dt)
+    for _ in range(60):
+        real_used = real_used_today if day_key == today_key else 0
+        available = daily_limit - max(day_counts.get(day_key, 0), real_used)
+        if available > 0:
+            return dt, day_key, available
+        dt = daily_limits.business_day_start(dt) + timedelta(days=1)
+        day_key = daily_limits.business_day_key(dt)
+    return dt, day_key, 0
 
 
 # --- Draft content (candidate outreach — see module docstring) --------------
@@ -688,7 +732,12 @@ async def sync_all(account_ids: list[str], cfg: DataSyncConfig | None = None) ->
 
     seen = _load_seen_ids(cfg.cache_retention_days)
     contacted = _load_contacted_contacts()
-    today = _utc_today()
+    # "ngày nghiệp vụ" hiện tại (2 AM JST boundary), không phải ngày
+    # dương lịch UTC thô — 2026-09-11, xem daily_limits.py's module
+    # docstring + _count_scheduled_actions_by_day()'s docstring ngay
+    # trên cho lý do đổi (khớp đúng với cách safety.py/daily_limits.py
+    # thật sự enforce, cho phép mang lại cơ chế tràn-ngày an toàn).
+    today = daily_limits.business_day_key(datetime.now(timezone.utc))
 
     # --- Jobs: figure out each account's remaining posts_per_day room today,
     # filter to genuinely-new jobs, then hand them out via water-filling.
@@ -710,9 +759,24 @@ async def sync_all(account_ids: list[str], cfg: DataSyncConfig | None = None) ->
     # job silently produced zero posts and was still _mark_seen()'d right
     # after — permanently lost, never retried, while also taking a share
     # away from another account that actually had groups to post into.
+    # Kẹp sàn theo dữ liệu THẬT (2026-09-11) — lấy SỐ LỚN HƠN giữa "đã
+    # lên lịch cho ngày nghiệp vụ hôm nay" và
+    # daily_limits.count_since_business_day_start() (đếm THẬT từ mốc 2h
+    # sáng JST, cùng định nghĩa "ngày" mà daily_limits.can_proceed() thật
+    # sự dùng để chặn/cho phép — KHÔNG còn là cửa sổ trượt 24h nữa, xem
+    # daily_limits.py's module docstring). Vì cả 2 số giờ cùng nói về
+    # đúng 1 "ngày nghiệp vụ" cố định (không tự trôi như cửa sổ trượt),
+    # so sánh này có ý nghĩa thật, và quan trọng hơn: một khi 1 ngày
+    # nghiệp vụ đã qua, capacity của nó không bao giờ "mở lại" — đây
+    # chính là điều kiện khiến việc khoá 1 job vào "ngày nghiệp vụ mai"
+    # (tràn-ngày, xem _next_available_post_slot() bên dưới) AN TOÀN trở
+    # lại, không còn rủi ro đảo thứ tự đã gặp hồi còn dùng cửa sổ trượt.
     job_capacities = {
         aid: acc.rate_limits.posts_per_day
-        - _count_scheduled_actions_by_day(aid, {"post_to_group"}).get(today, 0)
+        - max(
+            _count_scheduled_actions_by_day(aid, {"post_to_group"}).get(today, 0),
+            daily_limits.count_since_business_day_start(acc, "post"),
+        )
         for aid, acc in accounts.items()
         if get_joined_groups(aid)
     }
@@ -745,9 +809,18 @@ async def sync_all(account_ids: list[str], cfg: DataSyncConfig | None = None) ->
             continue
         distributable_candidates.append(cand)
 
+    # Kẹp sàn theo dữ liệu THẬT — cùng lý do/cùng cách với job_capacities
+    # ở trên. Không cần thêm gì khác cho comment: mỗi candidate luôn tạo
+    # ĐÚNG 1 task (không "nở" ra nhiều nhóm như job), nên chỉ cần con số
+    # capacity đúng là _water_fill_distribute() đã tự động defer đúng
+    # phần vượt quá vào deferred_candidates (giữ cursor, lấy lại đúng thứ
+    # tự ở poll sau) — không cần logic "đăng vừa đủ" như job.
     comment_capacities = {
         aid: acc.rate_limits.comments_per_day
-        - _count_scheduled_actions_by_day(aid, _COMMENT_ACTIONS).get(today, 0)
+        - max(
+            _count_scheduled_actions_by_day(aid, _COMMENT_ACTIONS).get(today, 0),
+            daily_limits.count_since_business_day_start(acc, "comment"),
+        )
         for aid, acc in accounts.items()
     }
     candidate_assignment, deferred_candidates = _water_fill_distribute(distributable_candidates, comment_capacities)
@@ -808,9 +881,36 @@ async def sync_all(account_ids: list[str], cfg: DataSyncConfig | None = None) ->
         daily_post_limit = account.rate_limits.posts_per_day
         day_post_counts = _count_scheduled_actions_by_day(aid, {"post_to_group"})
         last_group_post_at = _last_scheduled_time_per_group(aid)
+        # Frozen for this whole poll (2026-09-11) — scheduling doesn't
+        # itself create real Facebook activity, so the account's real
+        # "ngày nghiệp vụ hôm nay" post count can't change mid-loop; only
+        # day_post_counts (this poll's own scheduling decisions) needs
+        # live incrementing below.
+        real_recent_posts = daily_limits.count_since_business_day_start(account, "post")
+        # Jobs that ran out even the 60-business-day search bound in
+        # _next_available_business_day() (pathological config, e.g.
+        # daily_limit=0) — separate from the outer water-fill's
+        # `deferred_jobs`, but needs merging into it before the cursor
+        # holdback below, or a job skipped here (never _mark_seen()'d)
+        # could still fall out of side B's own `since` window and never
+        # get re-fetched at all.
+        deferred_jobs_inner: list[dict] = []
 
         for job in job_assignment.get(aid, []):
             jid = str(job.get("id") or "")
+            # Tràn-ngày (2026-09-11, mang lại sau khi chuyển capacity
+            # sang "ngày nghiệp vụ" — xem _next_available_business_day()'s
+            # docstring): tìm ngày nghiệp vụ sớm nhất (bắt đầu từ chỗ
+            # `next_post_time` đang đứng) còn ít nhất 1 slot, đẩy
+            # next_post_time sang đúng ngày đó nếu cần. available==0 chỉ
+            # còn xảy ra khi vượt quá 60 ngày tìm kiếm (cấu hình bệnh lý)
+            # — hoãn cả job trong trường hợp đó.
+            next_post_time, post_day_key, available = _next_available_business_day(
+                next_post_time, daily_post_limit, day_post_counts, today, real_recent_posts,
+            )
+            if available <= 0:
+                deferred_jobs_inner.append(job)
+                continue
             # Capped to account.rate_limits.max_groups_per_post — PER
             # ACCOUNT, not a global setting (2026-09-11, project owner's
             # call: an account in fewer/newer groups may want a tighter
@@ -828,11 +928,16 @@ async def sync_all(account_ids: list[str], cfg: DataSyncConfig | None = None) ->
             # past whichever groups happen to sort first. A group never
             # posted to at all (not in last_group_post_at) sorts first
             # (datetime.min), i.e. always gets priority over one posted to
-            # recently.
+            # recently. Further capped to `available` — 2026-09-11,
+            # project owner's call: if only 2 real slots remain but the
+            # cap is 3, post to those 2 now rather than deferring the
+            # whole job — the job is then considered fully handled
+            # (marked seen) even though it only reached 2/3 groups; it is
+            # NOT retried later to "top up" the missing group.
             groups = sorted(
                 get_joined_groups(aid),
                 key=lambda g: last_group_post_at.get(g.url) or datetime.min.replace(tzinfo=timezone.utc),
-            )[:account.rate_limits.max_groups_per_post]
+            )[:min(account.rate_limits.max_groups_per_post, available)]
             # Template only here, at SCHEDULE time — never AI (2026-09-10,
             # AI drafting moved to fire_due_tasks(), see
             # content_strategist.draft_single_post()'s docstring for why).
@@ -847,15 +952,22 @@ async def sync_all(account_ids: list[str], cfg: DataSyncConfig | None = None) ->
             for group, content in zip(groups, variants):
                 # Clamp the CHAIN variable itself (not a throwaway copy) —
                 # see apply_quiet_hours()'s docstring for why this matters.
-                # Also enforces the daily posts_per_day cap (overflow rolls
-                # to the next day) and a minimum gap since this same
+                # Enforces quiet hours + a minimum gap since this same
                 # group's last scheduled post — see
-                # _next_available_post_slot()'s docstring.
+                # _next_available_post_slot()'s docstring. The daily
+                # posts_per_day cap is already accounted for above
+                # (`available`, checked once per job before this loop).
                 next_post_time = _next_available_post_slot(
-                    next_post_time, cfg, daily_post_limit, day_post_counts, group.url, last_group_post_at,
+                    next_post_time, cfg, group.url, last_group_post_at,
                 )
                 scheduled_at = next_post_time
-                day_post_counts[scheduled_at.date()] = day_post_counts.get(scheduled_at.date(), 0) + 1
+                # Keyed by the SLOT'S OWN business day, not `post_day_key`
+                # above — quiet-hours/per-group-gap clamping in
+                # _next_available_post_slot() could in principle still
+                # push a slot past 2 AM JST into the next business day
+                # (rare, but the counter must reflect reality either way).
+                scheduled_day_key = daily_limits.business_day_key(scheduled_at)
+                day_post_counts[scheduled_day_key] = day_post_counts.get(scheduled_day_key, 0) + 1
                 last_group_post_at[group.url] = scheduled_at
                 task = schedule_store.ScheduledTask(
                     task_id=schedule_store.new_task_id(scheduled_at.isoformat()),
@@ -882,6 +994,15 @@ async def sync_all(account_ids: list[str], cfg: DataSyncConfig | None = None) ->
                 scheduled_posts += 1
                 next_post_time = next_post_time + timedelta(minutes=random.uniform(post_gap_min, post_gap_max))
             _mark_seen(jid, "job")
+
+        # Merge into the OUTER deferred_jobs (mutates the same list the
+        # water-fill call above returned) so the cursor holdback below
+        # sees jobs deferred INSIDE this account's loop too, not just the
+        # ones water-fill excluded outright before this loop even started
+        # — otherwise a job skipped here (never _mark_seen()'d) could
+        # still fall out of side B's own `since` window and never get
+        # re-fetched at all.
+        deferred_jobs.extend(deferred_jobs_inner)
 
         for cand in candidate_assignment.get(aid, []):
             cid = str(cand.get("id") or "")
@@ -966,8 +1087,9 @@ async def fire_due_tasks(cfg: SchedulingConfig | None = None) -> dict[str, Any]:
     if not cfg.auto_fire_enabled:
         return {"due": len(due), "fired": 0, "reason": "auto_fire_enabled is False"}
 
+    from human_bot import daily_limits
     from human_bot.agent import TaskRequest, run_task, rate_limit_bucket_for, resolve_group_name  # local import — avoid import cycle at module load
-    from human_bot.safety import rate_limit_hard_cap_message, rate_limit_wait_message
+    from human_bot.safety import rate_limit_wait_message
 
     data_sync_cfg = get_data_sync_config()
     fired = 0
@@ -997,15 +1119,17 @@ async def fire_due_tasks(cfg: SchedulingConfig | None = None) -> dict[str, Any]:
         # full AI rewrite call first. A hard cap can stay blocked far
         # longer than the soft gap (up to the whole rolling 24h/1h
         # window), so skipping run_task() here matters even more for
-        # this case, not less. rate_limit_hard_cap_message() explains why
-        # in more detail, including why this can trigger even though
-        # data_sync.py's own scheduler never over-books a single calendar
-        # day.
+        # this case, not less. daily_limits.hard_cap_message() explains
+        # why in more detail (2026-09-11: moved off safety.py's own
+        # rate_limit_hard_cap_message()/can_proceed(), which check a
+        # rolling 24h/1h window — daily_limits.py's posts_per_day/
+        # comments_per_day check is now against a "business day" instead,
+        # see that module's docstring for the full reasoning).
         account = get_account(task.account_id)
         bucket = rate_limit_bucket_for(task.action)
         warning = None
         if account and bucket:
-            warning = rate_limit_wait_message(account, bucket) or rate_limit_hard_cap_message(account, bucket)
+            warning = rate_limit_wait_message(account, bucket) or daily_limits.hard_cap_message(account, bucket)
         if warning:
             schedule_store.update(task.task_id, last_warning=warning)
             continue
