@@ -1621,3 +1621,66 @@
       **Kết quả cuối: 108/108 test pass (79 cũ + 29 mới), không file
       cấu hình/dữ liệu thật nào bị đụng trong lúc test** (dùng
       `tmp_path`/`monkeypatch` cách ly hoàn toàn).
+
+## Đợt làm việc 2026-09-11 (tiếp) — Reset dữ liệu test: xoá lịch đang chờ + cache đồng bộ bên B
+
+- [x] **Thao tác vận hành theo yêu cầu trực tiếp — không phải thay đổi code.**
+      Xoá sạch `scheduled/pending/` (220 file bài đang chờ đăng tại thời
+      điểm xoá) và cache đồng bộ dữ liệu bên B trong `data_sync_cache/`
+      (`2026-09-10.json` — file id đã-thấy theo ngày dùng để chống trùng;
+      `_state.json` — con trỏ `jobs_since`/`candidates_since` dùng để chỉ
+      hỏi bên B những gì mới kể từ lần trước) để lần đồng bộ tiếp theo
+      chạy như một lần lấy dữ liệu đầu tiên (không có `since`, không có id
+      nào bị coi là "đã thấy"). **Không đụng** `scheduled/posted/`,
+      `scheduled/failed/`, `scheduled/cancelled/` (lịch sử) theo đúng yêu
+      cầu, và **không xoá** `data_sync_cache/_sync_status.json` (chỉ là
+      thông tin hiển thị lần đồng bộ gần nhất ở `/admin`, không ảnh hưởng
+      hành vi lấy dữ liệu) — giữ lại để không mất thông tin không cần
+      thiết.
+      **Chưa đụng tới `_contacted_contacts.json`** (chưa tồn tại tại thời
+      điểm reset) — đây là danh sách chống nhắn trùng người (theo
+      `attributes.contact`, khác mục đích với cache chống trùng theo
+      `id`); nếu về sau cần "quên" luôn việc đã liên hệ ai đó, đây là file
+      riêng cần xoá thêm, không tự động bị xoá theo thao tác này.
+
+## Đợt làm việc 2026-09-11 (tiếp) — Sửa bug thật: `sync_all()` crash mỗi lần poll
+
+- [x] **Bug thật, ảnh hưởng service đang chạy sống — owner báo "restart +
+      đặt 5 phút chạy sync mà không thấy gì".** Tra `logs/human_bot.log`
+      thấy `sync_all()` crash NGAY LẬP TỨC mỗi chu kỳ poll kể từ lúc
+      restart, kể cả sau khi reset dữ liệu test ở mục ngay trên:
+      ```
+      TypeError: can't compare offset-naive and offset-aware datetimes
+        File "human_bot/data_sync.py", line 876, in sync_all
+          next_comment_time = max(next_comment_time, enforced_comment_floor)
+      ```
+      **Không liên quan gì tới đợt "ngày nghiệp vụ" vừa làm hôm nay** —
+      lỗi nằm ở đoạn "kẹp sàn" cho comment gap đã thêm SỚM HƠN trong buổi
+      (commit "Prevent comment scheduling collisions across sync_all()
+      polls"). `RateLimiter.next_allowed_at()` (`safety.py`) luôn trả về
+      datetime NAIVE (mọi timestamp trong log của `record()` đều ghi bằng
+      `datetime.utcnow()`, không bao giờ có timezone — xác nhận bằng
+      `grep` toàn file, nhất quán khắp nơi), trong khi `next_comment_time`
+      ở `data_sync.py` lại là AWARE (`datetime.now(timezone.utc)`). So
+      sánh 2 loại khác nhau bằng `max()` ném `TypeError` ngay lập tức.
+      **Lỗi này đã "ngủ yên" từ lúc thêm (chưa từng lộ ra) vì chỉ kích
+      hoạt khi tài khoản đã có ít nhất 1 comment từng đăng thật** (để
+      `next_allowed_at()` trả về giá trị khác `None`) — `tu_iizuki` hội
+      đủ điều kiện đó từ lâu trong buổi làm việc này, nên crash ngay khi
+      restart.
+      **Vì sao "im lặng" với người vận hành:** `service.py`'s vòng lặp
+      poll chỉ `logger.exception("data_sync.sync_all failed")` rồi tiếp
+      tục vòng lặp — không có gì hiển thị trên `/admin`, trông y hệt như
+      "chạy nhưng không tìm thấy dữ liệu mới" thay vì "đang crash".
+      Sửa: chuẩn hoá `enforced_comment_floor` sang aware UTC trước khi
+      so sánh (`if enforced_comment_floor.tzinfo is None:
+      enforced_comment_floor = enforced_comment_floor.replace(tzinfo=timezone.utc)`)
+      — cùng cách chuẩn hoá đã dùng ở `daily_limits.py`'s
+      `count_since_business_day_start()` cho đúng lý do tương tự.
+      Verify bằng dữ liệu thật `tu_iizuki`: `next_allowed_at()` xác nhận
+      trả về naive (`tzinfo=None`); sau khi chuẩn hoá, `max()` chạy đúng
+      không còn lỗi. Thêm 2 test hồi quy khoá chặt đúng hợp đồng này
+      (`next_allowed_at()` luôn naive; so sánh trực tiếp phải raise,
+      sau chuẩn hoá thì không) — **110 test, tất cả pass.**
+      **Chưa xác nhận trên service thật sau fix** — cần restart để nạp
+      code mới, quan sát `sync_all()` không còn crash trong log.
