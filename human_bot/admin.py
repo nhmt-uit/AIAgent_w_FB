@@ -948,6 +948,27 @@ _PAGE_STYLE = """
       pad(d.getDate()) + "-" + pad(d.getMonth() + 1) + "-" + d.getFullYear();
   }
 
+  // Fills the "Giới hạn tốc độ" modal's number inputs from a quick-apply
+  // age-tier button's own data-* attributes (see admin.py's
+  // _rate_limits_modal_body_html()) — CLIENT-SIDE ONLY, no request sent,
+  // nothing persists until the modal's own "Lưu" button is pressed
+  // (2026-09-11, owner request — clicking a tier used to save
+  // immediately, surprising when a value changed with no explicit save).
+  function initApplyTierButton(btn) {
+    if (btn.dataset.applyTierInit) return;
+    btn.dataset.applyTierInit = "1";
+    btn.addEventListener("click", function () {
+      var body = btn.closest("#rate-limits-body");
+      var form = body && body.querySelector('form[action="/admin/accounts/rate-limits"]');
+      if (!form) return;
+      Object.keys(btn.dataset).forEach(function (key) {
+        if (key === "applyTier" || key === "applyTierInit") return;
+        var input = form.querySelector('[name="' + key + '"]');
+        if (input) input.value = btn.dataset[key];
+      });
+    });
+  }
+
   function setHidden(form, name, value) {
     var el = form.querySelector('input[type=hidden][name="' + name + '"]');
     if (!el) {
@@ -964,6 +985,7 @@ _PAGE_STYLE = """
     root.querySelectorAll("[data-repeatable-blocks]").forEach(initRepeatableBlocks);
     root.querySelectorAll("[data-schedule-field]").forEach(initScheduleField);
     root.querySelectorAll("[data-local-dt]").forEach(initLocalDateTime);
+    root.querySelectorAll("[data-apply-tier]").forEach(initApplyTierButton);
     root.querySelectorAll("[data-preserve-post-form]").forEach(initPreservePostForm);
     root.querySelectorAll("[data-tabs]").forEach(initTabs);
   }
@@ -1561,19 +1583,23 @@ def _rate_limits_modal_body_html(account_id: str, limits: RateLimits, is_overrid
     )
     # Quick-apply buttons per age tier — for when an account ages into the
     # next tier (e.g. crosses 1 month old) and its limits should loosen a
-    # bit, without typing 6 numbers by hand each time. Each posts straight
-    # to a dedicated route rather than filling the form client-side, so
-    # the numbers applied always match ACCOUNT_AGE_TIERS exactly. Targets
-    # just #rate-limits-body (this function's own wrapper below), not the
-    # whole modal — see this function's docstring.
+    # bit, without typing 6 numbers by hand each time. CLIENT-SIDE ONLY
+    # (2026-09-11, owner request: clicking a tier used to save immediately
+    # via a round-trip to /admin/accounts/rate-limits/apply-tier — surprised
+    # the owner mid-investigation when a value changed without an explicit
+    # "Lưu" click) — each button just fills the form's number inputs via
+    # initRateLimitTierButtons() below, nothing persists until "Lưu" is
+    # pressed. The exact values still come from ACCOUNT_AGE_TIERS (server-
+    # rendered into data-* attributes, one per editable field except
+    # max_groups_per_post — tier presets don't cover that field at all, so
+    # a tier click must leave whatever the account currently has there
+    # untouched, same as the save route already does), so JS never
+    # hardcodes or risks drifting from the real preset numbers.
     tier_buttons = "".join(
-        f'''<form method="post" action="/admin/accounts/rate-limits/apply-tier" style="display:inline;"
-        hx-post="/admin/accounts/rate-limits/apply-tier" hx-target="#rate-limits-body" hx-swap="innerHTML">
-  <input type="hidden" name="account_id" value="{html.escape(account_id)}">
-  <input type="hidden" name="age_tier" value="{tier_key}">
-  <button type="submit" class="btn-small btn-secondary" style="margin:2px;">{html.escape(label)} ({rl.posts_per_day} bài/ngày)</button>
-</form>'''
-        for tier_key, (label, rl) in ACCOUNT_AGE_TIERS.items()
+        f'''<button type="button" class="btn-small btn-secondary" style="margin:2px;" data-apply-tier
+        {" ".join(f'data-{field}="{getattr(rl, field)}"' for field in _RATE_LIMITS_LABELS if field != "max_groups_per_post")}
+        >{html.escape(label)} ({rl.posts_per_day} bài/ngày)</button>'''
+        for _tier_key, (label, rl) in ACCOUNT_AGE_TIERS.items()
     )
     return f"""<div id="rate-limits-body">
     {reset_note}
@@ -1662,14 +1688,14 @@ def _sync_content_html(saved: bool = False, oob: bool = False) -> str:
         elif entry.get("status") == "ok":
             last_run_cell = (
                 f'<span class="badge" style="background:#ecfdf5;color:#059669;">✅ OK</span> '
-                f'{_fmt_jst(entry.get("last_run_at"))} — '
+                f'{_local_dt_html(entry.get("last_run_at"))} — '
                 f'{entry.get("jobs_fetched", 0)} job, {entry.get("candidates_fetched", 0)} candidate lấy về, '
                 f'{entry.get("scheduled_posts", 0)} bài + {entry.get("scheduled_comments", 0)} comment mới lên lịch'
             )
         else:
             last_run_cell = (
                 f'<span class="badge" style="background:#fef2f2;color:#dc2626;">⚠️ Lỗi</span> '
-                f'{_fmt_jst(entry.get("last_run_at"))} — {html.escape(str(entry.get("error", "")))}'
+                f'{_local_dt_html(entry.get("last_run_at"))} — {html.escape(str(entry.get("error", "")))}'
             )
 
         rows.append(f"""
@@ -1697,6 +1723,28 @@ def _sync_content_html(saved: bool = False, oob: bool = False) -> str:
   {table}
 </div>
 </div>"""
+
+
+def _account_age_tier_label(rl: RateLimits) -> str:
+    """Which ACCOUNT_AGE_TIERS preset (if any) this account's current
+    posts_per_day/comments_per_day matches — shown in the accounts list
+    (2026-09-11, owner request: "hiển thị tuổi tài khoản cho dễ biết")
+    so the current tier is visible without opening the "⏱️ Giới hạn"
+    modal. Matched on posts_per_day + comments_per_day only, the same 2
+    fields the modal's own tier buttons show next to their label
+    ("{label} (N bài/ngày)") — comments_per_hour/likes_per_hour/the gap
+    fields are all DERIVED from those two in every preset (see
+    ACCOUNT_AGE_TIERS's own comment in config.py), so matching on just
+    these two is equivalent to matching the whole preset in practice.
+    Falls back to "Tuỳ chỉnh" (custom) when nothing matches — a manually
+    edited value, or max_groups_per_post alone was changed (that field
+    isn't part of any tier preset at all, so it never affects this
+    match) — not an error, just means the account isn't sitting exactly
+    on one of the 5 standard tiers."""
+    for label, preset in ACCOUNT_AGE_TIERS.values():
+        if rl.posts_per_day == preset.posts_per_day and rl.comments_per_day == preset.comments_per_day:
+            return label
+    return "Tuỳ chỉnh"
 
 
 def _accounts_content_html(saved: bool = False, error: str | None = None, oob: bool = False) -> str:
@@ -1737,12 +1785,12 @@ def _accounts_content_html(saved: bool = False, error: str | None = None, oob: b
             info = get_pause_info(aid)
             if info:
                 reason_txt = html.escape(info["reason"] or "không rõ (tạm dừng thủ công)")
-                when_txt = _fmt_jst(info["paused_at"])
+                when_txt = _local_dt_html(info["paused_at"])
                 status_detail = f'<div class="row-url">từ {when_txt} — {reason_txt}</div>'
         else:
             cooldown = get_resume_cooldown_info(aid)
             if cooldown:
-                until_txt = _fmt_jst(cooldown.get("until"))
+                until_txt = _local_dt_html(cooldown.get("until"))
                 reason_txt = html.escape(cooldown.get("reason") or "không rõ")
                 status_detail = (
                     f'<div class="row-url">🧊 Hạ nhiệt tới {until_txt} (giới hạn thấp) '
@@ -1796,11 +1844,13 @@ def _accounts_content_html(saved: bool = False, error: str | None = None, oob: b
             f'hx-get="/admin/accounts/rate-limits-modal?account_id={html.escape(aid)}" '
             f'hx-target="#modal-root" hx-swap="innerHTML">⏱️ Giới hạn</button>'
         )
+        age_tier_label = html.escape(_account_age_tier_label(a.rate_limits))
         rows.append(f"""
 <tr>
   <td>{html.escape(a.display_name)}<div class="row-url">{html.escape(aid)}</div></td>
   <td>{status_badge}{status_detail}</td>
   <td>{session_badge}</td>
+  <td><span class="badge">{age_tier_label}</span></td>
   <td class="row-url">{html.escape(source)}</td>
   <td class="col-actions">{status_action} {rate_limits_btn} {delete_btn}</td>
 </tr>""")
@@ -1808,8 +1858,8 @@ def _accounts_content_html(saved: bool = False, error: str | None = None, oob: b
     table = f"""
 <div class="table-scroll">
   <table class="data-table">
-    <thead><tr><th>Tài khoản</th><th>Trạng thái</th><th>Phiên đăng nhập</th><th>Nguồn</th><th></th></tr></thead>
-    <tbody>{"".join(rows) or '<tr><td colspan="5" class="empty-state">Chưa có tài khoản nào</td></tr>'}</tbody>
+    <thead><tr><th>Tài khoản</th><th>Trạng thái</th><th>Phiên đăng nhập</th><th>Tuổi tài khoản</th><th>Nguồn</th><th></th></tr></thead>
+    <tbody>{"".join(rows) or '<tr><td colspan="6" class="empty-state">Chưa có tài khoản nào</td></tr>'}</tbody>
   </table>
 </div>"""
 
@@ -2045,49 +2095,6 @@ async def accounts_rate_limits_save(request: Request, _: None = Depends(_require
     save_rate_limits_overrides(account_id, values)
     if _is_htmx(request):
         return HTMLResponse(_accounts_content_html(saved=True, oob=True))
-    return RedirectResponse(url="/admin/accounts?saved=1", status_code=303)
-
-
-@router.post("/accounts/rate-limits/apply-tier")
-async def accounts_rate_limits_apply_tier(request: Request, _: None = Depends(_require_auth)):
-    """One of the quick-apply buttons in _rate_limits_modal_body_html() —
-    sets the account's rate-limit override to exactly one of
-    ACCOUNT_AGE_TIERS' presets (human_bot/config.py), for when an account
-    ages into the next tier and its limits should loosen a bit without
-    hand-typing 6 numbers. The htmx branch returns just the BODY partial
-    (targets #rate-limits-body, not #modal-root) so repeated clicks don't
-    unmount/remount the whole modal — see
-    _rate_limits_modal_body_html()'s docstring."""
-    form = await request.form()
-    account_id = str(form.get("account_id", "")).strip()
-    age_tier = str(form.get("age_tier", "")).strip()
-    accounts = get_all_accounts()
-    if account_id not in accounts:
-        err = "Không tìm thấy tài khoản này"
-        if _is_htmx(request):
-            return HTMLResponse(_rate_limits_modal_body_html(account_id, RateLimits(), is_override=False, error=err))
-        from urllib.parse import urlencode
-        return RedirectResponse(url=f"/admin/accounts?{urlencode({'error': err})}", status_code=303)
-    if age_tier not in ACCOUNT_AGE_TIERS:
-        err = "Tuổi tài khoản không hợp lệ"
-        if _is_htmx(request):
-            return HTMLResponse(_rate_limits_modal_body_html(account_id, accounts[account_id].rate_limits, is_override=True, error=err))
-        from urllib.parse import urlencode
-        return RedirectResponse(url=f"/admin/accounts?{urlencode({'error': err})}", status_code=303)
-    _, preset = ACCOUNT_AGE_TIERS[age_tier]
-    # ACCOUNT_AGE_TIERS presets don't specify max_groups_per_post (that's
-    # a spam-pattern control, an orthogonal dimension from age-based
-    # speed/count tuning) — every preset only sets the OTHER fields, so
-    # naively dataclasses.asdict(preset) would silently reset whatever the
-    # admin had already customized for max_groups_per_post back to
-    # RateLimits' bare class default (3) on every tier click. Preserve the
-    # account's current value explicitly instead.
-    values = dataclasses.asdict(preset)
-    values["max_groups_per_post"] = accounts[account_id].rate_limits.max_groups_per_post
-    save_rate_limits_overrides(account_id, values)
-    display = dataclasses.replace(preset, max_groups_per_post=values["max_groups_per_post"])
-    if _is_htmx(request):
-        return HTMLResponse(_rate_limits_modal_body_html(account_id, display, is_override=True))
     return RedirectResponse(url="/admin/accounts?saved=1", status_code=303)
 
 
@@ -2371,22 +2378,6 @@ async def post_schedule_groups(request: Request, _: None = Depends(_require_auth
 
 
 # --- Schedule (side-B data-sync poller output) ------------------------------
-
-def _fmt_dt(iso: str | None) -> str:
-    """Human-friendly display of an ISO 8601 UTC timestamp — HH:MM:SS
-    DD-MM-YYYY, used everywhere a raw created_at/scheduled_at would
-    otherwise leak into the UI as-is (e.g. "2026-09-04T08:37:54.787563
-    +00:00"). Falls back to the raw string if it doesn't parse cleanly
-    rather than hiding a value the caller might still need to debug."""
-    if not iso:
-        return "—"
-    try:
-        from datetime import datetime
-        dt = datetime.fromisoformat(iso.replace("Z", "+00:00"))
-        return dt.strftime("%H:%M:%S %d-%m-%Y") + " UTC"
-    except (ValueError, AttributeError):
-        return iso
-
 
 def _fmt_jst(iso: str | None) -> str:
     """Same instant as `iso`, in Japan Standard Time (JST, UTC+9) —
@@ -3370,7 +3361,7 @@ def _reports_content_html(
     if recent_rows:
         recent_html = "".join(
             f"""<tr>
-  <td>{_fmt_dt(r['created_at'])}</td>
+  <td>{_local_dt_html(r['created_at'])}</td>
   <td>{html.escape(_account_label(r['account_id'], accounts))}</td>
   <td>{html.escape(_ACTION_LABELS.get(r['action'], r['action']))}</td>
   <td class="row-url">{html.escape((r['target_group_name'] or r['target_url'] or '—'))}</td>
@@ -3383,7 +3374,7 @@ def _reports_content_html(
         )
         recent_table = f"""
 <div class="table-scroll" style="max-height:420px; overflow-y:auto;"><table class="data-table">
-  <thead><tr><th>Thời gian (UTC)</th><th>Tài khoản</th><th>Hành động</th><th>Đích</th><th>KQ</th><th>Nguồn</th><th>Ảnh</th><th>Ghi chú</th><th>Thao tác</th></tr></thead>
+  <thead><tr><th>Thời gian</th><th>Tài khoản</th><th>Hành động</th><th>Đích</th><th>KQ</th><th>Nguồn</th><th>Ảnh</th><th>Ghi chú</th><th>Thao tác</th></tr></thead>
   <tbody>{recent_html}</tbody>
 </table></div>"""
     else:
