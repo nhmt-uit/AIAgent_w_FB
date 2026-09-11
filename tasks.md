@@ -1259,3 +1259,129 @@
       `total=32, succeeded=18, failed=14, success_rate=56.2%` (khớp
       42-10=32); `action_type_counts()` cộng lại đúng 32; bảng "Hoạt
       động gần đây" hiện đúng 10 dòng icon ⏳. 79 test vẫn pass.
+- [x] **Điều tra sâu 2 câu hỏi thật của owner về `comments_per_day` —
+      cả 2 đều tìm ra nguyên nhân thật + sửa, không phải bug ở chỗ owner
+      nghĩ ban đầu:**
+
+      **(1) "Lúc lên lịch đã kiểm tra còn slot hay không, sao vẫn dư?"**
+      — Xác nhận lớp LÊN LỊCH (`_count_scheduled_actions_by_day()`,
+      `data_sync.py`) hoạt động ĐÚNG: đếm theo NGÀY DƯƠNG LỊCH (UTC),
+      chưa bao giờ xếp quá 7 comment/ngày cho `tu_iizuki` (kiểm tra
+      thật: 2026-09-09=1, 09-10=6, 09-11=4, đúng cả). Vấn đề thật nằm ở
+      lớp ENFORCEMENT (`safety.py`'s `RateLimiter.can_proceed()`) — đếm
+      theo CỬA SỔ TRƯỢT 24 GIỜ tính từ lúc kiểm tra, KHÔNG phải theo
+      ngày dương lịch. Vì `auto_fire_enabled` tắt phần lớn thời gian
+      (task dồn lại thành pending qua nhiều ngày), khi cuối cùng bắn ra
+      (bật auto-fire tạm/bấm tay), các comment lên lịch cho 2 NGÀY
+      DƯƠNG LỊCH khác nhau (09-10 và 09-11) lại rơi vào CÙNG một cửa sổ
+      24h thực tế lúc đăng — xác nhận bằng log thật: 7 comment tính vào
+      cửa sổ trượt trải từ `2026-09-10T08:12` đến `2026-09-11T00:18`
+      (~16 tiếng thực), đủ 7 nên chặn. Đây là 2 định nghĩa "1 ngày"
+      không khớp nhau giữa 2 lớp — cùng bản chất với vụ x₁/x_safety đã
+      bàn trước đó cho gap, nhưng lần này là cho GIỚI HẠN SỐ LƯỢNG.
+      **Chưa sửa lớp này** (đúng tinh thần "ghi nhận, có thể chưa cần
+      vá ngay" như x_safety) — chỉ ghi nhận nguyên nhân thật ở đây và
+      FB_Post_Assistant.md.
+
+      **(2) "Sao dính limit rồi vẫn cứ đăng lại?"** — Bug thật, ĐÃ SỬA.
+      Thêm `safety.py`'s `rate_limit_hard_cap_message()` (song song
+      `rate_limit_wait_message()` sẵn có nhưng chỉ biết về soft gap) —
+      phát hiện đang bị chặn bởi hard cap (posts_per_day/
+      comments_per_hour/comments_per_day/likes_per_hour), trả về câu
+      gợi ý dời lịch tiếng Việt (không tính giờ chính xác được vì cửa
+      sổ trượt, chỉ nói chung "dời sang thời điểm khác"). Wire vào pre-
+      check của `fire_due_tasks()` (`data_sync.py`) — giờ SKIP hẳn
+      `run_task()` (và cả bước AI rewrite tốn tiền thật trước đó) khi
+      dính hard cap, y hệt cách đã làm cho soft gap từ trước, thay vì
+      lặp lại mỗi phút vô nghĩa (xác nhận thật: 44 dòng
+      `rate_limited:comments_per_day` + tốn 44 lần gọi AI thật trong 24
+      phút, do pre-check cũ chỉ biết `rate_limit_wait_message()` — hàm
+      đó CHỈ xử lý soft gap, không hề biết gì về hard cap). Cùng sửa
+      `schedule_fire_now()` ("Đăng ngay") và `reports_repost()` ("Đăng
+      lại") ở `admin.py` để dùng chung `rate_limit_hard_cap_message()`
+      thay vì rơi vào lỗi chung/thô. Đã kiểm tra `posts_per_day` — cùng
+      lỗi y hệt (2 dòng `rate_limited:posts_per_day limit reached`
+      thật trong DB), cùng 1 pre-check sửa chung cho mọi loại action
+      (post/comment/like), không cần sửa riêng.
+      Verify bằng dữ liệu thật: `rate_limit_hard_cap_message(tu_iizuki,
+      "comment")` trả đúng câu gợi ý; mô phỏng lại đúng pre-check mới
+      cho 2 task comment đang due xác nhận sẽ SKIP `run_task()`. 79
+      test vẫn pass.
+
+## Đợt làm việc 2026-09-11 (tiếp) — Chặn spam nhiều nhóm: bỏ tài khoản 0 nhóm, giới hạn 3 nhóm/job
+
+- [x] **2 lỗi thật + 1 điểm xác nhận đã đúng, phát hiện qua trao đổi sâu
+      với owner về việc "1 job phát vào TẤT CẢ nhóm đã tham gia" bị coi
+      là dấu hiệu spam rõ (10 nhóm = 10 bài, dù đã viết lại nội dung
+      vẫn là cross-posting pattern dễ nhận ra):**
+
+      **(a) Bug thật — tài khoản 0 nhóm vẫn được chia job, job đó mất
+      vĩnh viễn.** `job_capacities` (`data_sync.py`) chỉ tính theo
+      `posts_per_day`, không kiểm tra `get_joined_groups(aid)`. Xác
+      nhận bằng test thật:
+      `_water_fill_distribute(['job1','job2'], {'acc_no_group':5,
+      'acc_has_group':5})` → `job1` rơi vào `acc_no_group` → vòng lặp
+      `for group in groups` chạy 0 lần (groups=[]) → không tạo task
+      nào → nhưng `_mark_seen(jid,"job")` vẫn chạy (nằm ngoài vòng lặp
+      nhóm) → **job1 mất vĩnh viễn, không ai đăng, không quay lại lần
+      sau** — đồng thời "cướp" mất phần chia đều lẽ ra dành cho
+      `acc_has_group`. Sửa: loại tài khoản 0 nhóm khỏi `job_capacities`
+      ngay từ đầu (`if get_joined_groups(aid)`).
+
+      **(b) Gap thật — chưa có giới hạn số nhóm/job.**
+      `content_strategist.template_variants()` trả đúng `len(groups)`
+      biến thể — không cap. Thêm `DataSyncConfig.max_groups_per_post`
+      (mặc định 3, sửa được qua `/admin/config` tab Đồng bộ, dùng
+      chung cơ chế cast kiểu tự động theo dataclass field đã có sẵn ở
+      `config_save()` — không cần code riêng). Chọn nhóm theo
+      **round-robin dựa trên `last_group_post_at`** (đã có sẵn, tính từ
+      `_last_scheduled_time_per_group()`) — ưu tiên nhóm **lâu chưa
+      đăng nhất** (nhóm chưa từng đăng = ưu tiên cao nhất,
+      `datetime.min`), không phải random (có thể bỏ quên nhóm dài hạn
+      hoặc trúng lặp) hay cố định N nhóm đầu (không bao giờ xoay
+      vòng). `last_group_post_at` được cập nhật ngay trong vòng lặp
+      nên tự xoay vòng đúng cả khi nhiều job xử lý trong CÙNG 1 lần
+      poll. Verify bằng dữ liệu thật `tu_iizuki` (4 nhóm): chọn đúng 3
+      nhóm lâu chưa đăng nhất, loại đúng 1 nhóm vừa đăng gần nhất.
+
+      **(c) Đã kiểm tra, KHÔNG phải bug — 1 job có bao giờ bị phân phối
+      cho >1 tài khoản không?** Test thật xác nhận KHÔNG:
+      `_water_fill_distribute()` chia theo **list item**, mỗi job chỉ
+      rơi vào đúng 1 tài khoản (không nhân bản); `_mark_seen()` dùng
+      cache toàn cục theo id nên 1 khi đã gán cho 1 tài khoản, không
+      bao giờ được xét lại cho tài khoản khác ở poll sau. Giữ nguyên,
+      không sửa.
+
+      Test suite (79) vẫn pass sau (a)+(b).
+- [x] **Chuyển `max_groups_per_post` từ cấu hình TOÀN CỤC sang RIÊNG TỪNG
+      TÀI KHOẢN** — owner phản hồi ngay sau khi (b) xong: muốn tài khoản
+      A giới hạn 3 nhóm/job, tài khoản B giới hạn 5 nhóm/job, không thể
+      làm được nếu để chung 1 giá trị toàn hệ thống ở `DataSyncConfig`.
+      Bỏ hẳn field vừa thêm ở `DataSyncConfig`/tab "Đồng bộ", chuyển
+      sang `RateLimits` (`config.py`) — cùng nhóm với `posts_per_day`/
+      `comments_per_day` đã có sẵn cơ chế override riêng từng tài khoản
+      (`EDITABLE_RATE_LIMITS_FIELDS`, modal "⏱️ Giới hạn" ở
+      `/admin/accounts`) — tận dụng nguyên cơ chế generic có sẵn
+      (form render qua `_RATE_LIMITS_LABELS`, parse/validate qua vòng
+      lặp `EDITABLE_RATE_LIMITS_FIELDS` trong `accounts_rate_limits_save()`),
+      không cần code riêng cho field mới. `data_sync.py` đổi
+      `cfg.max_groups_per_post` → `account.rate_limits.max_groups_per_post`.
+
+      **Phát hiện + sửa thêm 1 gotcha trong lúc làm (chưa ai hỏi,
+      tự phát hiện khi cài đặt đúng):** nút "Áp nhanh theo tuổi tài
+      khoản" (quick-apply `ACCOUNT_AGE_TIERS`) dùng
+      `dataclasses.asdict(preset)` để lưu — nhưng các preset tuổi tài
+      khoản KHÔNG hề khai báo `max_groups_per_post` (đây là trục kiểm
+      soát spam, khác hẳn trục tốc độ/số lượng theo tuổi), nên bấm nút
+      này sẽ ÂM THẦM RESET `max_groups_per_post` về mặc định cứng (3)
+      dù admin vừa chỉnh riêng thành 5 — đúng kiểu mất dữ liệu ngầm dự
+      án này luôn tránh. Sửa: giữ nguyên giá trị `max_groups_per_post`
+      hiện tại của tài khoản khi áp tier, không lấy từ preset.
+
+      Verify: đọc/ghi override qua **file cấu hình cách ly hoàn toàn**
+      (không đụng `runtime_config.json` thật — sửa lỗi nhỏ tự mắc phải
+      lúc đầu test bằng account id không tồn tại `tu_test2`, khôi phục
+      lại file thật từ backup ngay khi phát hiện), xác nhận
+      `tu_iizuki` giữ mặc định 3, override thử nghiệm lên 5 hoạt động
+      đúng và không ảnh hưởng tài khoản khác. Render modal thật xác
+      nhận field hiện đúng. 79 test vẫn pass.
