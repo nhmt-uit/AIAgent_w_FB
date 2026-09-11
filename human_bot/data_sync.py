@@ -702,10 +702,19 @@ async def sync_all(account_ids: list[str], cfg: DataSyncConfig | None = None) ->
         if jid and jid not in seen:
             new_jobs.append(job)
 
+    # Accounts with NO joined groups excluded entirely (2026-09-11, project
+    # owner's call) — confirmed live as a real bug: such an account still
+    # got a water-fill share of new jobs (job_capacities only checked
+    # posts_per_day, nothing about groups), but the per-group posting loop
+    # below has nothing to iterate (get_joined_groups(aid) == []), so the
+    # job silently produced zero posts and was still _mark_seen()'d right
+    # after — permanently lost, never retried, while also taking a share
+    # away from another account that actually had groups to post into.
     job_capacities = {
         aid: acc.rate_limits.posts_per_day
         - _count_scheduled_actions_by_day(aid, {"post_to_group"}).get(today, 0)
         for aid, acc in accounts.items()
+        if get_joined_groups(aid)
     }
     job_assignment, deferred_jobs = _water_fill_distribute(new_jobs, job_capacities)
 
@@ -802,7 +811,28 @@ async def sync_all(account_ids: list[str], cfg: DataSyncConfig | None = None) ->
 
         for job in job_assignment.get(aid, []):
             jid = str(job.get("id") or "")
-            groups = get_joined_groups(aid)
+            # Capped to account.rate_limits.max_groups_per_post — PER
+            # ACCOUNT, not a global setting (2026-09-11, project owner's
+            # call: an account in fewer/newer groups may want a tighter
+            # cap than one with many established groups, same as every
+            # other RateLimits field). Broadcasting one job to EVERY
+            # joined group unconditionally (previous behavior) is a
+            # cross-posting pattern real anti-spam systems recognize
+            # regardless of how much the content is reworded per group.
+            # Round-robin by longest-since-last-posted (last_group_post_at,
+            # seeded above from schedule_store and updated live as this
+            # loop runs, so it also rotates correctly across multiple jobs
+            # in the SAME sync_all() call) rather than random or a fixed
+            # first-N — random risks some groups going long unfed while a
+            # couple get hit repeatedly; a fixed first-N never rotates
+            # past whichever groups happen to sort first. A group never
+            # posted to at all (not in last_group_post_at) sorts first
+            # (datetime.min), i.e. always gets priority over one posted to
+            # recently.
+            groups = sorted(
+                get_joined_groups(aid),
+                key=lambda g: last_group_post_at.get(g.url) or datetime.min.replace(tzinfo=timezone.utc),
+            )[:account.rate_limits.max_groups_per_post]
             # Template only here, at SCHEDULE time — never AI (2026-09-10,
             # AI drafting moved to fire_due_tasks(), see
             # content_strategist.draft_single_post()'s docstring for why).
@@ -937,7 +967,7 @@ async def fire_due_tasks(cfg: SchedulingConfig | None = None) -> dict[str, Any]:
         return {"due": len(due), "fired": 0, "reason": "auto_fire_enabled is False"}
 
     from human_bot.agent import TaskRequest, run_task, rate_limit_bucket_for, resolve_group_name  # local import — avoid import cycle at module load
-    from human_bot.safety import rate_limit_wait_message
+    from human_bot.safety import rate_limit_hard_cap_message, rate_limit_wait_message
 
     data_sync_cfg = get_data_sync_config()
     fired = 0
@@ -957,9 +987,25 @@ async def fire_due_tasks(cfg: SchedulingConfig | None = None) -> dict[str, Any]:
         # several hours) — e.g. ~120 rows for a 2h wait — even though the
         # outcome was already knowable without attempting anything. Only
         # calls run_task() for real once the gap has actually elapsed.
+        #
+        # ALSO checks the hard posts_per_day/comments_per_hour/
+        # comments_per_day/likes_per_hour caps (2026-09-11 — a real
+        # incident: rate_limit_wait_message() only ever covers the soft
+        # min_delay_seconds gap, so a task blocked by a HARD cap sailed
+        # straight past this pre-check every single cycle — 44 rows in
+        # 24 minutes for one blocked comment task, each one paying for a
+        # full AI rewrite call first. A hard cap can stay blocked far
+        # longer than the soft gap (up to the whole rolling 24h/1h
+        # window), so skipping run_task() here matters even more for
+        # this case, not less. rate_limit_hard_cap_message() explains why
+        # in more detail, including why this can trigger even though
+        # data_sync.py's own scheduler never over-books a single calendar
+        # day.
         account = get_account(task.account_id)
         bucket = rate_limit_bucket_for(task.action)
-        warning = rate_limit_wait_message(account, bucket) if account and bucket else None
+        warning = None
+        if account and bucket:
+            warning = rate_limit_wait_message(account, bucket) or rate_limit_hard_cap_message(account, bucket)
         if warning:
             schedule_store.update(task.task_id, last_warning=warning)
             continue

@@ -1533,6 +1533,7 @@ _RATE_LIMITS_LABELS: dict[str, str] = {
     "post_max_delay_seconds": "Khoảng chờ tối đa giữa 2 BÀI ĐĂNG (giây)",
     "comment_min_delay_seconds": "Khoảng chờ tối thiểu giữa 2 COMMENT (giây)",
     "comment_max_delay_seconds": "Khoảng chờ tối đa giữa 2 COMMENT (giây)",
+    "max_groups_per_post": "Số nhóm tối đa mỗi tin tuyển dụng được phát vào",
 }
 
 
@@ -2074,9 +2075,19 @@ async def accounts_rate_limits_apply_tier(request: Request, _: None = Depends(_r
         from urllib.parse import urlencode
         return RedirectResponse(url=f"/admin/accounts?{urlencode({'error': err})}", status_code=303)
     _, preset = ACCOUNT_AGE_TIERS[age_tier]
-    save_rate_limits_overrides(account_id, dataclasses.asdict(preset))
+    # ACCOUNT_AGE_TIERS presets don't specify max_groups_per_post (that's
+    # a spam-pattern control, an orthogonal dimension from age-based
+    # speed/count tuning) — every preset only sets the OTHER fields, so
+    # naively dataclasses.asdict(preset) would silently reset whatever the
+    # admin had already customized for max_groups_per_post back to
+    # RateLimits' bare class default (3) on every tier click. Preserve the
+    # account's current value explicitly instead.
+    values = dataclasses.asdict(preset)
+    values["max_groups_per_post"] = accounts[account_id].rate_limits.max_groups_per_post
+    save_rate_limits_overrides(account_id, values)
+    display = dataclasses.replace(preset, max_groups_per_post=values["max_groups_per_post"])
     if _is_htmx(request):
-        return HTMLResponse(_rate_limits_modal_body_html(account_id, preset, is_override=True))
+        return HTMLResponse(_rate_limits_modal_body_html(account_id, display, is_override=True))
     return RedirectResponse(url="/admin/accounts?saved=1", status_code=303)
 
 
@@ -2755,7 +2766,7 @@ async def schedule_fire_now(request: Request, _: None = Depends(_require_auth)):
         return _schedule_redirect(account_id, page, page_size=page_size, error=err)
 
     from human_bot.agent import rate_limit_bucket_for
-    from human_bot.safety import RateLimiter, is_gap_reason, rate_limit_wait_message
+    from human_bot.safety import RateLimiter, is_gap_reason, rate_limit_hard_cap_message, rate_limit_wait_message
     account = get_all_accounts().get(task.account_id)
     bucket = rate_limit_bucket_for(task.action)
     if account and bucket and not force:
@@ -2777,6 +2788,18 @@ async def schedule_fire_now(request: Request, _: None = Depends(_require_auth)):
                 # separately via an OOB swap into #modal-root.
                 modal_oob = f'<div id="modal-root" hx-swap-oob="true">{_fire_now_confirm_modal_html(task_id, account_id, page, page_size, warning)}</div>'
                 return HTMLResponse(_schedule_content_html(account_id=account_id, page=page, page_size=page_size) + modal_oob)
+            return _schedule_redirect(account_id, page, page_size=page_size, error=warning)
+        if not allowed:
+            # A hard count cap (posts_per_day/comments_per_hour/
+            # comments_per_day/likes_per_hour) — never overridable, not
+            # even by `force` (see can_proceed()'s docstring), so there's
+            # no modal to offer here, just skip the doomed-to-fail
+            # run_task() call and show the reschedule suggestion directly
+            # (2026-09-11 — same investigation as fire_due_tasks()'s
+            # matching pre-check).
+            warning = rate_limit_hard_cap_message(account, bucket) or reason
+            if _is_htmx(request):
+                return HTMLResponse(_schedule_content_html(account_id=account_id, page=page, page_size=page_size, error=warning) + _MODAL_CLOSE_OOB)
             return _schedule_redirect(account_id, page, page_size=page_size, error=warning)
 
     result = await run_task(TaskRequest(
@@ -2803,7 +2826,9 @@ async def schedule_fire_now(request: Request, _: None = Depends(_require_auth)):
         # account's last action (or hit a hard count cap — never
         # overridable) — keep it in pending/ with a warning instead of
         # failed/.
-        warning = rate_limit_wait_message(account, bucket) if account and bucket else None
+        warning = None
+        if account and bucket:
+            warning = rate_limit_wait_message(account, bucket) or rate_limit_hard_cap_message(account, bucket)
         schedule_store.update(task_id, last_warning=warning or result.message)
         if _is_htmx(request):
             return HTMLResponse(_schedule_content_html(account_id=account_id, page=page, page_size=page_size, error=warning or result.message) + _MODAL_CLOSE_OOB)
@@ -3559,17 +3584,22 @@ async def reports_repost(request: Request, _: None = Depends(_require_auth)):
         return _reports_redirect(account_id, days, page, page_size=page_size, posted=msg)
     if result.message.startswith("rate_limited:"):
         # Same reasoning as /admin/schedule's schedule_fire_now(): firing
-        # too soon after this account's last action of the same type
-        # isn't a real failure of the repost — it's the rate-limiter
-        # doing its job. Owner asked (2026-09-11) that this stop being
-        # shown as a red "Đăng lại thất bại" error; rate_limit_wait_message()
-        # gives the human-readable "thử lại sau HH:MM" version when
+        # too soon (or hitting a hard per-day/per-hour count cap) after
+        # this account's last action of the same type isn't a real
+        # failure of the repost — it's the rate-limiter doing its job.
+        # Owner asked (2026-09-11) that this stop being shown as a red
+        # "Đăng lại thất bại" error; rate_limit_wait_message()/
+        # rate_limit_hard_cap_message() give a human-readable explanation
+        # (with a reschedule suggestion for the hard-cap case) when
         # possible, falling back to the raw reason otherwise.
         from human_bot.agent import rate_limit_bucket_for
-        from human_bot.safety import rate_limit_wait_message
+        from human_bot.safety import rate_limit_hard_cap_message, rate_limit_wait_message
         account = get_all_accounts().get(row["account_id"])
         bucket = rate_limit_bucket_for(row["action"])
-        warning = (rate_limit_wait_message(account, bucket) if account and bucket else None) or result.message
+        warning = None
+        if account and bucket:
+            warning = rate_limit_wait_message(account, bucket) or rate_limit_hard_cap_message(account, bucket)
+        warning = warning or result.message
         if _is_htmx(request):
             return HTMLResponse(_reports_content_html(account_id=account_id, days=days, page=page, page_size=page_size, warning=warning))
         return _reports_redirect(account_id, days, page, page_size=page_size, warning=warning)
