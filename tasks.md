@@ -1011,3 +1011,251 @@
       đã ghi nhớ trong hội thoại trước đó, không có dữ liệu nào mất vĩnh
       viễn — nhưng là lời nhắc: `save_*_overrides()` luôn cần đọc giá trị
       hiện tại trước rồi merge tay, không được gọi với chỉ 1 field.
+
+## Đợt làm việc 2026-09-10 (tiếp) — Thêm nhãn "Nenshuu", giữ nguyên nội dung lịch khi AI đăng bài lỗi
+
+- [x] **Thêm nhãn lương "Nenshuu"/"年収" cho lương THEO NĂM** — owner hỏi
+      "Về tay" lấy ở đâu (trả lời: đã có sẵn trong `_SALARY_LABELS`,
+      1 trong 5 nhãn được chọn ngẫu nhiên cho dòng lương) và đề nghị thêm
+      2 từ mượn tiếng Nhật quen thuộc với cộng đồng đi làm ở Nhật. Thêm
+      `_SALARY_LABELS_YEAR_EXTRA = ["Nenshuu", "年収"]`
+      (`content_strategist.py`), **chỉ cộng vào pool nhãn khi
+      `period == "year"`** — không thêm vào lương tháng/giờ/ngày vì
+      "Nenshuu" nghĩa đúng là "thu nhập cả năm", gắn cho lương tháng sẽ
+      sai nghĩa chứ không chỉ là khác văn phong. 2 test mới xác nhận: có
+      xuất hiện Nenshuu/年収 khi period=year, không bao giờ xuất hiện khi
+      period=month (dùng `monkeypatch` ép `random.choice` chọn phần tử
+      cuối để chắc chắn test được cả trường hợp hiếm).
+- [x] **Sửa lỗi thật: AI đăng bài lỗi/thiếu key thì tạo bản template MỚI
+      ngẫu nhiên thay vì giữ nguyên nội dung đã hiển thị ở Lịch đăng —
+      mất luôn nội dung admin đã tự tay sửa.** Owner phát hiện qua thực
+      tế: sửa nội dung 1 task ở `/admin/schedule`, nhưng lúc đăng nếu bật
+      công tắc AI mà AI lỗi/hết key, `draft_single_post()` gọi lại
+      `_draft_job_post_placeholder()` với `variant_seed` ngẫu nhiên MỚI —
+      ra một bản hoàn toàn khác, đè mất bản admin vừa sửa. Sửa bằng cách
+      đổi chữ ký `draft_single_post(job, existing_content, group_name,
+      ai_enabled)` — nhận thêm `existing_content` (chính là
+      `task.content` hiện tại, có thể đã bị admin sửa tay), và **trả về
+      nguyên `existing_content` ở MỌI nhánh không dùng được AI** (tắt
+      công tắc / thiếu key / gọi AI lỗi) thay vì tự soạn lại — cùng
+      nguyên tắc "không bao giờ mất nội dung đã có" mà
+      `rewrite_candidate_reply()` (nhánh reply ứng viên) vốn đã áp dụng
+      từ trước, giờ áp dụng nhất quán cho cả nhánh job post.
+      `data_sync.py`'s `fire_due_tasks()` cập nhật lời gọi tương ứng.
+      4 test cập nhật/thêm mới trong `test_content_strategist.py`
+      (tắt AI / thiếu key / AI lỗi đều trả đúng nguyên `existing_content`;
+      thêm 1 test xác nhận AI thành công thì vẫn dùng đúng bài AI soạn).
+      **Tổng bộ test giờ là 79.**
+- [x] **Xác nhận bug thật (chưa xác nhận fix) — dấu hiệu "bài chờ duyệt
+      admin nhóm" chưa từng bắt được ca thật nào.** Owner đăng thật vào
+      nhóm bật duyệt bài, gửi ảnh chụp toast Facebook thật: "Thanks for
+      your post! It's been submitted to group admins for approval."
+      Tra lại task tương ứng (`scheduled/posted/20260910T150503Z_80e521d1.result.txt`,
+      account `tu_iizuki`, group "Việc làm Kỹ Sư Nhật Bản (Uy tín hàng
+      đầu)") xác nhận code lúc đó trả về `posted_to_group` — KHÔNG phải
+      `posted_to_group_pending_approval` — chứng minh danh sách
+      `_PENDING_APPROVAL_TEXT_SIGNALS` (`actions.py`) cũ (toàn suy đoán,
+      không khớp text thật) đã bỏ sót ca chờ duyệt này. `success=True`
+      vẫn đúng, chỉ message sai. Đã thêm
+      `"submitted to group admins for approval"` làm signal đầu tiên,
+      bỏ nhãn UNVERIFIED trong comment.
+- [x] **Xác nhận text + timing của fix bằng Codegen thật** — owner chạy
+      `python3 -m playwright codegen ... codegen_verify_pending_approval.py`
+      trên đúng group đó, đăng 1 bài test. File ghi lại
+      `page.get_by_text("Thanks for your post! It's").click()` — chứng
+      minh text toast nằm trong DOM dạng text thường, định vị được bằng
+      Playwright (không phải canvas/ảnh). Owner quan sát toast tồn tại
+      ~3-5 giây trước khi tự ẩn; code đọc `page.inner_text("body")`
+      ngay sau khi Post button ẩn (gần tức thời), nên nằm gọn trong
+      khung đó. Text + timing của fix hợp lý về nguyên lý.
+      **Vẫn thiếu bước cuối:** chưa chạy 1 task `post_to_group` thật
+      qua chính bot (end-to-end, không phải Codegen tay) để xác nhận
+      `result.txt` ra đúng `posted_to_group_pending_approval`.
+- [ ] **(TẠM HOÃN — owner chủ động rewind, chờ xác nhận có phải lỗi code
+      thật không)** `comment_on_group_post` timeout 30s khi
+      `page.goto(post_url)` vào permalink bài trong nhóm
+      (`Page.goto: Timeout 30000ms exceeded... waiting until "load"`,
+      task thật gây lỗi: `scheduled/failed/20260910T114429Z_c2545f89`,
+      group "vieclamtimnguoi", account đã tham gia nhóm — không phải
+      lỗi chưa join). Chẩn đoán ban đầu: Facebook giữ kết nối nền gần
+      vô hạn trên trang permalink, nên sự kiện `"load"` mặc định của
+      Playwright có thể không bao giờ bắn dù nội dung đã hiển thị
+      xong. Từng áp dụng fix (đổi `wait_until="domcontentloaded"` + dời
+      `pause_after_page_load()` lên trước 2 bước kiểm tra
+      anomaly/unavailable) nhưng **owner chủ động rewind lại
+      `actions.py` (2026-09-10)** — chưa chắc chắn đây là lỗi code thật
+      hay chỉ mạng/Facebook chậm nhất thời, muốn xem task đó chạy lại
+      với code gốc trước khi quyết định vá.
+
+      **Đã thử "Đăng lại" 1 lần (2026-09-10) — KHÔNG phải bằng chứng
+      hợp lệ, đã sửa nhầm lẫn của assistant ở đây:** tra
+      `human_bot.db`'s `action_log` (đầy đủ hơn
+      `scheduled/failed/*.result.txt`, vốn chỉ ghi lại đúng lần fail
+      GỐC, không cập nhật khi repost vì "Đăng lại" tạo task mới qua
+      `run_task()` chứ không đụng file cũ) cho thấy: lần "Đăng lại" đó
+      (`source=manual`, 12:46:20 UTC) bị CHÍNH rate-limiter của hệ
+      thống chặn (`rate_limited:min_delay_seconds gap not elapsed yet,
+      wait ~5280s`) — chưa hề chạm tới `page.goto()`. Assistant lúc đó
+      nhầm mtime của file cũ (chỉ phản ánh lần fail gốc lúc 12:25:04
+      UTC) là kết quả của lần repost, kết luận sai "timeout lặp lại".
+      **Thực tế mới có đúng 1 lần fail thật chạm goto** (id #62 trong
+      `action_log`, 12:25:04 UTC, `schedule_auto`) — cần thử "Đăng lại"
+      thêm 1 lần nữa SAU khi qua mốc rate-limit (~14:14 UTC hôm đó) để
+      mới thật sự có dữ liệu thứ 2 kiểm chứng có lặp lại hay không.
+- [x] **Sửa lỗi thật: comment lên lịch quá gần nhau giữa các lần poll
+      `sync_all()` khác nhau — thêm "kẹp sàn" cho comment scheduling.**
+      Owner phát hiện 3 comment cùng tài khoản chỉ cách nhau 5-20 phút
+      dù `comment_min/max_delay_seconds` đặt 90-180 phút. Nguyên nhân:
+      `next_comment_time` (`data_sync.py`) chỉ cộng dồn ngẫu nhiên
+      TRONG PHẠM VI 1 LẦN `sync_all()` — sang lần poll kế (~15 phút
+      sau) khởi tạo lại từ `now` mới, không biết gì về comment đã lên
+      lịch từ lần poll trước.
+      Thêm `_last_scheduled_comment_time(account_id)` (soi comment
+      pending/posted từ các lần poll trước, kẹp theo TÀI KHOẢN — khác
+      `_last_scheduled_time_per_group()` của bài đăng vốn kẹp theo
+      từng NHÓM, vì rate-limit comment enforce theo tài khoản) và kẹp
+      thêm `RateLimiter(account).next_allowed_at("comment")` — sàn
+      enforcement thật từ lần comment gần nhất đã THỰC SỰ đăng xong.
+      Cả 2 sàn áp dụng ngay sau khi tính `next_comment_time` ban đầu
+      trong `sync_all()`, trước vòng lặp gán cho từng candidate.
+      79 test hiện có vẫn pass (chưa có test riêng cho `data_sync.py`).
+      **Vẫn CHƯA xử lý** (theo yêu cầu owner, chỉ ghi nhận lại): va chạm
+      giữa gap lên lịch (x₁, biết trước) và gap enforcement thật
+      (x_safety, chỉ random SAU KHI comment trước đăng xong, không thể
+      biết trước ở thời điểm lên lịch) — xem chi tiết + các hướng đã
+      bàn (A: chấp nhận tự dò lại / B: gộp 2 lớp random / cố định
+      x_safety = min) ở FB_Post_Assistant.md mục 4.13.
+
+## Đợt làm việc 2026-09-11 — Phân trang Lịch đăng
+
+- [x] **Thêm nút "Trang đầu"/"Trang cuối" + ô nhảy tới trang bất kỳ ở
+      `/admin/schedule`** — owner phản ánh chỉ có 2 nút Trang trước/Trang
+      sau, bất tiện khi muốn từ trang 1 nhảy thẳng tới trang 10 hoặc
+      trang cuối. Thêm `«« Đầu`/`Cuối »»` (tái dùng `_schedule_page_link()`
+      có sẵn) và 1 form nhỏ (ô số + nút "Đi") gửi GET
+      `/admin/schedule?page=N` qua htmx — `_schedule_content_html()` đã
+      tự kẹp `page` vào `[1, total_pages]` từ trước (dòng
+      `page = min(max(page, 1), total_pages)`) nên nhập số ngoài phạm vi
+      tự động về đúng trang gần nhất, không cần validate thêm.
+      **Chưa xác nhận sống** — service thật đang chạy (24/7, đã nạp code
+      cũ vào bộ nhớ), cần restart mới thấy hiệu lực trên trang thật;
+      chưa restart vì đây là service đang có phiên trình duyệt Facebook
+      sống, để owner quyết định thời điểm.
+- [x] **Làm đẹp ô "đi tới trang" + thêm chọn số item/trang** (owner phản
+      hồi: ô nhập số trang lúc mới thêm chưa đẹp, và không biết/chỉnh
+      được mỗi trang có bao nhiêu item). Gộp "Trang X/Y" + ô nhập + nút
+      "Đi" thành 1 khối duy nhất kiểu pill ("Trang `[_]`/23 `[Đi]`",
+      nền xám nhạt bo góc — cùng ngôn ngữ hình ảnh với các khối khác
+      trong `admin.py`) thay vì 3 phần tử rời rạc.
+      Thêm `_SCHEDULE_PAGE_SIZE_CHOICES = (10, 20, 50, 100)` + dropdown
+      "Hiển thị" cạnh bộ lọc tài khoản — chọn thẳng, không cần form
+      submit riêng (`hx-trigger=change`). `page_size` xuyên suốt mọi
+      nơi `page`/`account_id` đã có: `_schedule_content_html()`,
+      `_schedule_page_link()`, `_schedule_form_filter()` (giờ trả
+      3-tuple thay vì 2), `_schedule_redirect()` (đã nhận **kwargs sẵn
+      nên không cần đổi chữ ký), route `schedule_list`, và 3 handler
+      `schedule_update`/`schedule_cancel`/`schedule_fire_now` +
+      `_fire_now_confirm_modal_html()` — để đổi trang/thao tác (Lưu,
+      Huỷ, Đăng ngay) không âm thầm reset số item/trang về mặc định.
+      2 dropdown (tài khoản + số item/trang) dùng `hx-include` trỏ vào
+      nhau qua id để đổi cái này không làm mất giá trị đang chọn của
+      cái kia. `_clamp_schedule_page_size()` chặn giá trị lạ (VD sửa
+      tay URL) rơi về mặc định 20 thay vì render hàng nghìn item.
+      Verify bằng cách gọi thẳng `_schedule_content_html()` qua Python
+      (không cần trình duyệt) — `page_size=10` → đúng 23 trang cho
+      227 task pending thật; `page=999` → tự kẹp về trang 23. 79 test
+      vẫn pass. **Chưa xác nhận trên UI thật** — cùng lý do chưa restart
+      service ở mục ngay trên.
+- [x] **Nới rộng ô nhập số trang** (`/admin/schedule`, owner phản hồi
+      ô nhập số quá hẹp) — `width:48px` → `64px`, đủ chỗ nhập 3-4 chữ số.
+- [x] **Áp dụng y hệt bộ phân trang (Đầu/Cuối + ô nhảy trang dạng pill +
+      chọn số item/trang) sang `/admin/reports`'s bảng "Hoạt động gần
+      đây".** Thêm `_REPORTS_PAGE_SIZE_CHOICES = (10, 15, 30, 50, 100)`
+      + `_clamp_reports_page_size()` (giữ mặc định 15 như cũ, không đổi
+      hành vi khi không truyền `page_size`). Cùng cách xuyên suốt
+      `page_size` như `/admin/schedule`: `_reports_content_html()`,
+      closure `_recent_page_link()` (thêm Đầu/Cuối), route
+      `reports_page`, handler `reports_repost` (parse + truyền qua mọi
+      nhánh redirect/re-render), `_repost_button_html()`'s hidden
+      field. 3 dropdown lọc (tài khoản/khoảng thời gian/số item) dùng
+      `hx-include` trỏ chéo lẫn nhau qua id để đổi 1 cái không làm mất
+      2 cái còn lại. Verify qua Python trực tiếp: 42 mục thật,
+      `page_size=10` → đúng 5 trang; `page=999` → kẹp về trang 5;
+      `page_size=999` (không hợp lệ) → tự về mặc định 15 → 3 trang;
+      không truyền `page_size` → vẫn ra 3 trang y hệt hành vi cũ. 79
+      test vẫn pass. **Chưa xác nhận trên UI thật** — cùng lý do chưa
+      restart service.
+- [x] **Owner restart service, xác nhận sống 2 mục trên (đã thấy trên
+      UI thật) — sau đó phản hồi 3 điểm tiếp theo về thiết kế
+      `/admin/reports`, cả 3 đã sửa:**
+      1. Khối KPI (Tổng số/Thành công/Thất bại/Tỉ lệ/Tài khoản hoạt
+         động) trước đây `display:flex` nên 5 ô rộng không đều — đổi
+         sang `display:grid; grid-template-columns:repeat(auto-fit,
+         minmax(150px, 1fr))` để chia đều, vẫn tự co cột trên màn hình
+         hẹp thay vì tràn ngang.
+      2. Bảng "Tỉ lệ thành công/thất bại theo hành động" trước đây lặp
+         2 dòng/hành động (cột "Kết quả" chỉ 1 giá trị) — pivot lại
+         trong Python (`db.action_type_counts()`'s SQL giữ nguyên,
+         không cần đổi) thành đúng 1 dòng/hành động, 2 cột riêng
+         "Thành công"/"Thất bại".
+      3. Dropdown "Hiển thị" (số item/trang) của khối "Hoạt động gần
+         đây" trước đặt chung hàng với bộ lọc tài khoản/khoảng thời
+         gian ở trên cùng — dời xuống footer của chính khối đó, cạnh
+         phân trang, vì nó chỉ ảnh hưởng khối này chứ không phải lọc
+         toàn trang. Luôn hiển thị kể cả khi chỉ có 1 trang (trước đây
+         phân trang ẩn hẳn khi ≤1 trang). `hx-include` giữa 3 dropdown
+         vẫn hoạt động bình thường dù đổi vị trí DOM (tham chiếu theo
+         id, không phụ thuộc cùng cha).
+      Verify qua Python trực tiếp: grid layout đúng, header bảng pivot
+      đúng `Hành động|Thành công|Thất bại`, dropdown page_size không
+      còn nằm trong khối filter trên cùng mà chỉ còn tham chiếu qua
+      `hx-include`. 79 test vẫn pass. **Chưa xác nhận trên UI thật.**
+- [x] **Chỉnh tiếp giao diện phân trang Báo cáo theo 2 phản hồi liên
+      tiếp của owner (2026-09-11):** (1) label "Hiển thị" bị xuống 2
+      dòng, dời "{N} mục" lên cùng hàng — thêm `white-space:nowrap` +
+      `flex-shrink:0` cho khối bên phải, dời dropdown `page_size` từ
+      footer lên cùng hàng tiêu đề "🕒 Hoạt động gần đây" (owner: footer
+      "xấu quá"), bỏ dòng "mục" trùng lặp ở footer (chỉ còn nav khi
+      >1 trang, ẩn hẳn nếu chỉ có 1 trang thay vì để trống).
+- [x] **"Đăng lại" bị rate-limit không còn tính là lỗi** — owner phản
+      hồi: nút "Đăng lại" ở Báo cáo khi dính rate-limit hiển thị y hệt
+      lỗi thật ("Đăng lại thất bại: rate_limited:..."), trong khi đây
+      chỉ là rate-limiter đang làm đúng việc của nó (giống hệt
+      "Đăng ngay" ở Lịch đăng, vốn đã tách riêng từ trước — mục 4.12).
+      Thêm tham số `warning` riêng cho `_reports_content_html()` (class
+      CSS `.warning` màu hổ phách có sẵn, trước đó chưa dùng ở trang
+      Báo cáo — khác `.error` màu đỏ), route `reports_page` nhận thêm
+      query `warning`. `reports_repost()` giờ bắt riêng
+      `result.message.startswith("rate_limited:")` TRƯỚC khi rơi vào
+      nhánh lỗi chung, tra `rate_limit_wait_message(account, bucket)`
+      để hiện gợi ý giờ thử lại bằng tiếng Việt (giống hệt cách
+      `schedule_fire_now()` đã làm), chỉ fallback về `result.message`
+      thô nếu không tra được. Verify qua Python: `warning=` render đúng
+      `<p class="warning">`, không lẫn với `.error`. 79 test vẫn pass.
+      **Chưa xác nhận trên UI thật.**
+- [x] **Đồng bộ dữ liệu thống kê Báo cáo với quyết định "rate-limit
+      không phải lỗi" ở trên** — owner hỏi thẳng: sửa UI của nút
+      "Đăng lại" rồi, còn phần DỮ LIỆU báo cáo (KPI, bảng theo hành
+      động, "Hoạt động gần đây") có sửa theo không, vì trước đó MỌI
+      task bị `rate_limited:` (không riêng từ "Đăng lại" — cả
+      `schedule_auto`/`schedule_manual` cũng bị) đều ghi `success=0`
+      vào `action_log` giống hệt lỗi thật (selector gãy, timeout...),
+      làm KPI "Thất bại"/"Tỉ lệ thành công" bị kéo lệch bởi thứ vốn
+      chưa từng thực sự thử làm gì (rate-limit chặn TRƯỚC khi
+      `run_task()` mở trình duyệt — xem `agent.py`'s `run_task()`,
+      `can_proceed()` chạy trước `get_session()`).
+      Sửa `human_bot/db.py`: `summary_stats()` và `action_type_counts()`
+      giờ loại trừ dòng `message LIKE 'rate_limited:%'` khỏi
+      total/succeeded/failed (SQL, không phải lọc tay ở Python) —
+      `active_accounts` CỐ Ý giữ nguyên tính trên mọi dòng kể cả
+      rate-limited (tài khoản bị rate-limit vẫn tính là "có hoạt
+      động"). Bảng "Hoạt động gần đây" (`admin.py`) KHÔNG bị lọc bỏ
+      dòng nào (vẫn cần thấy để biết mà "Đăng lại") nhưng đổi icon cột
+      KQ: rate_limited giờ hiện ⏳ riêng biệt, không còn dùng chung ⚠️
+      với lỗi thật.
+      Verify bằng dữ liệu THẬT trong `human_bot.db` (không phải mock,
+      theo đúng nguyên tắc không ghi đè config thật nhưng ĐỌC thì được):
+      42 dòng thật, 10 dòng `rate_limited:` — `summary_stats()` mới ra
+      `total=32, succeeded=18, failed=14, success_rate=56.2%` (khớp
+      42-10=32); `action_type_counts()` cộng lại đúng 32; bảng "Hoạt
+      động gần đây" hiện đúng 10 dòng icon ⏳. 79 test vẫn pass.
