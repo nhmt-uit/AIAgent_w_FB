@@ -2418,13 +2418,26 @@ def _local_dt_html(iso: str | None) -> str:
 
 
 _SCHEDULE_PAGE_SIZE = 20
+# Choices offered by the "items per page" <select> — added 2026-09-11,
+# owner request. Bounded/allowlisted rather than a free-typed number so a
+# stray huge value (or someone hand-editing the URL) can't render
+# thousands of items at once; _clamp_schedule_page_size() below falls back
+# to _SCHEDULE_PAGE_SIZE for anything outside this list.
+_SCHEDULE_PAGE_SIZE_CHOICES = (10, 20, 50, 100)
 
 
-def _schedule_page_link(account_id: str | None, target_page: int, label: str, enabled: bool) -> str:
+def _clamp_schedule_page_size(raw: int) -> int:
+    return raw if raw in _SCHEDULE_PAGE_SIZE_CHOICES else _SCHEDULE_PAGE_SIZE
+
+
+def _schedule_page_link(account_id: str | None, target_page: int, label: str, enabled: bool, page_size: int = _SCHEDULE_PAGE_SIZE) -> str:
     if not enabled:
         return f'<span class="btn-secondary btn-small" style="opacity:.45; pointer-events:none;">{label}</span>'
     from urllib.parse import urlencode
-    qs = urlencode({k: v for k, v in {"account_id": account_id, "page": target_page}.items() if v})
+    qs = urlencode({k: v for k, v in {
+        "account_id": account_id, "page": target_page,
+        "page_size": page_size if page_size != _SCHEDULE_PAGE_SIZE else None,
+    }.items() if v})
     return (
         f'<a class="btn-secondary btn-small" href="/admin/schedule?{qs}" '
         f'hx-get="/admin/schedule?{qs}" hx-target="#schedule-content" hx-swap="outerHTML" hx-push-url="true">{label}</a>'
@@ -2432,8 +2445,10 @@ def _schedule_page_link(account_id: str | None, target_page: int, label: str, en
 
 
 def _schedule_content_html(
-    account_id: str | None = None, page: int = 1, saved: bool = False, error: str | None = None
+    account_id: str | None = None, page: int = 1, page_size: int = _SCHEDULE_PAGE_SIZE,
+    saved: bool = False, error: str | None = None,
 ) -> str:
+    page_size = _clamp_schedule_page_size(page_size)
     accounts = get_all_accounts()
     if account_id and account_id not in accounts:
         account_id = None  # unknown/stale filter falls back to "all", never a hard error
@@ -2441,28 +2456,41 @@ def _schedule_content_html(
     tasks = [t for t in all_tasks if not account_id or t.account_id == account_id]
 
     total = len(tasks)
-    total_pages = max(1, -(-total // _SCHEDULE_PAGE_SIZE))  # ceil division
+    total_pages = max(1, -(-total // page_size))  # ceil division
     page = min(max(page, 1), total_pages)
-    start = (page - 1) * _SCHEDULE_PAGE_SIZE
-    page_tasks = tasks[start:start + _SCHEDULE_PAGE_SIZE]
+    start = (page - 1) * page_size
+    page_tasks = tasks[start:start + page_size]
 
     flash = '<p class="flash">✅ Đã cập nhật.</p>' if saved else ""
     err = f'<p class="error">⚠️ {html.escape(error)}</p>' if error else ""
 
     # Filtering by account is what keeps this page workable once the
     # schedule gets busy (many accounts/groups) — switching accounts
-    # always jumps back to page 1 (this <select> never sends a `page`
-    # param), so a filter change never lands on a now-out-of-range page.
+    # always jumps back to page 1 (neither <select> below ever sends a
+    # `page` param), so a filter change never lands on a now-out-of-range
+    # page. The two selects include each other's current value via
+    # hx-include (by id) so switching one doesn't silently reset the
+    # other back to its default — added 2026-09-11 alongside the
+    # page-size select itself (owner request: no way to see/change how
+    # many items render per page).
     account_options = '<option value="">— Tất cả tài khoản —</option>' + "".join(
         f'<option value="{html.escape(aid)}"{" selected" if aid == account_id else ""}>{html.escape(a.display_name)} ({html.escape(aid)})</option>'
         for aid, a in accounts.items()
     )
+    page_size_options = "".join(
+        f'<option value="{size}"{" selected" if size == page_size else ""}>{size}/trang</option>'
+        for size in _SCHEDULE_PAGE_SIZE_CHOICES
+    )
     filter_html = f"""
 <div class="account-filter">
   <label for="schedule-account-select">Tài khoản</label>
-  <select name="account_id" id="schedule-account-select"
+  <select name="account_id" id="schedule-account-select" hx-include="#schedule-pagesize-select"
           hx-get="/admin/schedule" hx-target="#schedule-content" hx-swap="outerHTML"
           hx-trigger="change" hx-push-url="true">{account_options}</select>
+  <label for="schedule-pagesize-select">Hiển thị</label>
+  <select name="page_size" id="schedule-pagesize-select" hx-include="#schedule-account-select"
+          hx-get="/admin/schedule" hx-target="#schedule-content" hx-swap="outerHTML"
+          hx-trigger="change" hx-push-url="true">{page_size_options}</select>
   <span class="badge">{total} bài đang chờ</span>
 </div>"""
 
@@ -2482,6 +2510,7 @@ def _schedule_content_html(
             filter_fields = (
                 f'<input type="hidden" name="account_id" value="{html.escape(account_id or "")}">'
                 f'<input type="hidden" name="page" value="{page}">'
+                f'<input type="hidden" name="page_size" value="{page_size}">'
             )
             url_row_html = ""
             if t.target_url:
@@ -2537,11 +2566,41 @@ def _schedule_content_html(
 
     pagination_html = ""
     if total_pages > 1:
+        # First/last jump buttons (added 2026-09-11, owner request: from
+        # page 1 there was no fast way to reach page 10 or the last page,
+        # only one-page-at-a-time prev/next) + a "go to page N" input for
+        # anything in between, styled as one pill ("Trang [_]/12 [Đi]")
+        # instead of a bare number box — first version looked out of
+        # place next to the button-styled prev/next links, same visual
+        # language as the switch/config boxes elsewhere in this file
+        # (background + border + rounded corners). All reuse the same GET
+        # /admin/schedule?... route _schedule_page_link already uses, so
+        # htmx swap/push-url behavior stays identical; page_size threads
+        # through everywhere page already does so changing page never
+        # silently resets it back to the default.
+        jump_hidden_fields = (
+            (f'<input type="hidden" name="account_id" value="{html.escape(account_id)}">' if account_id else "")
+            + f'<input type="hidden" name="page_size" value="{page_size}">'
+        )
         pagination_html = f"""
-<div style="display:flex; justify-content:space-between; align-items:center; margin-top:14px;">
-  {_schedule_page_link(account_id, page - 1, "← Trang trước", page > 1)}
-  <span class="muted">Trang {page}/{total_pages}</span>
-  {_schedule_page_link(account_id, page + 1, "Trang sau →", page < total_pages)}
+<div style="display:flex; justify-content:space-between; align-items:center; margin-top:14px; flex-wrap:wrap; gap:8px;">
+  <div style="display:flex; gap:8px; align-items:center;">
+    {_schedule_page_link(account_id, 1, "«« Đầu", page > 1, page_size)}
+    {_schedule_page_link(account_id, page - 1, "← Trang trước", page > 1, page_size)}
+  </div>
+  <form hx-get="/admin/schedule" hx-target="#schedule-content" hx-swap="outerHTML" hx-push-url="true"
+        style="display:flex; gap:6px; align-items:center; background:#f9fafb; border:1px solid #e5e7eb; border-radius:8px; padding:5px 10px;">
+    {jump_hidden_fields}
+    <span class="muted">Trang</span>
+    <input type="number" name="page" min="1" max="{total_pages}" value="{page}"
+           style="width:64px; text-align:center;" aria-label="Đi đến trang">
+    <span class="muted">/ {total_pages}</span>
+    <button type="submit" class="btn-secondary btn-small">Đi</button>
+  </form>
+  <div style="display:flex; gap:8px; align-items:center;">
+    {_schedule_page_link(account_id, page + 1, "Trang sau →", page < total_pages, page_size)}
+    {_schedule_page_link(account_id, total_pages, "Cuối »»", page < total_pages, page_size)}
+  </div>
 </div>"""
 
     return f"""<div id="schedule-content">
@@ -2557,11 +2616,12 @@ async def schedule_list(
     request: Request,
     account_id: str | None = None,
     page: int = 1,
+    page_size: int = _SCHEDULE_PAGE_SIZE,
     saved: bool = False,
     error: str | None = None,
     _: None = Depends(_require_auth),
 ) -> str:
-    content = _schedule_content_html(account_id=account_id, page=page, saved=saved, error=error)
+    content = _schedule_content_html(account_id=account_id, page=page, page_size=page_size, saved=saved, error=error)
     if _is_htmx(request):
         return content
     return _layout(f"""
@@ -2579,19 +2639,23 @@ def _schedule_redirect(account_id: str | None, page: int, **params) -> RedirectR
     return RedirectResponse(url=f"/admin/schedule?{urlencode(query)}", status_code=303)
 
 
-def _schedule_form_filter(form) -> tuple[str | None, int]:
+def _schedule_form_filter(form) -> tuple[str | None, int, int]:
     account_id = str(form.get("account_id", "")).strip() or None
     try:
         page = int(str(form.get("page", "1")))
     except ValueError:
         page = 1
-    return account_id, page
+    try:
+        page_size = _clamp_schedule_page_size(int(str(form.get("page_size", _SCHEDULE_PAGE_SIZE))))
+    except ValueError:
+        page_size = _SCHEDULE_PAGE_SIZE
+    return account_id, page, page_size
 
 
 @router.post("/schedule/update")
 async def schedule_update(request: Request, _: None = Depends(_require_auth)):
     form = await request.form()
-    account_id, page = _schedule_form_filter(form)
+    account_id, page, page_size = _schedule_form_filter(form)
     task_id = str(form.get("task_id", ""))
     content = str(form.get("content", ""))
     scheduled_at = str(form.get("scheduled_at", ""))
@@ -2603,22 +2667,22 @@ async def schedule_update(request: Request, _: None = Depends(_require_auth)):
     if updated is None:
         err = "Không tìm thấy mục này (có thể đã được đăng hoặc huỷ)"
         if _is_htmx(request):
-            return HTMLResponse(_schedule_content_html(account_id=account_id, page=page, error=err))
-        return _schedule_redirect(account_id, page, error=err)
+            return HTMLResponse(_schedule_content_html(account_id=account_id, page=page, page_size=page_size, error=err))
+        return _schedule_redirect(account_id, page, page_size=page_size, error=err)
     if _is_htmx(request):
-        return HTMLResponse(_schedule_content_html(account_id=account_id, page=page, saved=True))
-    return _schedule_redirect(account_id, page, saved=1)
+        return HTMLResponse(_schedule_content_html(account_id=account_id, page=page, page_size=page_size, saved=True))
+    return _schedule_redirect(account_id, page, page_size=page_size, saved=1)
 
 
 @router.post("/schedule/cancel")
 async def schedule_cancel(request: Request, _: None = Depends(_require_auth)):
     form = await request.form()
-    account_id, page = _schedule_form_filter(form)
+    account_id, page, page_size = _schedule_form_filter(form)
     task_id = str(form.get("task_id", ""))
     schedule_store.cancel(task_id)
     if _is_htmx(request):
-        return HTMLResponse(_schedule_content_html(account_id=account_id, page=page, saved=True))
-    return _schedule_redirect(account_id, page, saved=1)
+        return HTMLResponse(_schedule_content_html(account_id=account_id, page=page, page_size=page_size, saved=True))
+    return _schedule_redirect(account_id, page, page_size=page_size, saved=1)
 
 
 # Closes the "Vẫn đăng ngay?" rate-limit modal (see
@@ -2628,7 +2692,7 @@ async def schedule_cancel(request: Request, _: None = Depends(_require_auth)):
 _MODAL_CLOSE_OOB = '<div id="modal-root" hx-swap-oob="true"></div>'
 
 
-def _fire_now_confirm_modal_html(task_id: str, account_id: str | None, page: int, warning: str) -> str:
+def _fire_now_confirm_modal_html(task_id: str, account_id: str | None, page: int, page_size: int, warning: str) -> str:
     """Renders the #modal-root swap for schedule_fire_now()'s rate-limit
     confirmation prompt — shown ONLY when the sole thing blocking the
     post is the soft min-gap pacing check (human_bot/safety.py's
@@ -2640,6 +2704,7 @@ def _fire_now_confirm_modal_html(task_id: str, account_id: str | None, page: int
     filter_fields = (
         f'<input type="hidden" name="account_id" value="{html.escape(account_id or "")}">'
         f'<input type="hidden" name="page" value="{page}">'
+        f'<input type="hidden" name="page_size" value="{page_size}">'
     )
     return f"""
 <div class="modal-backdrop" onclick="if(event.target===this) this.remove()">
@@ -2679,15 +2744,15 @@ async def schedule_fire_now(request: Request, _: None = Depends(_require_auth)):
     human_bot/safety.py's can_proceed(ignore_gap=...) docstring for why
     the two are treated differently. Requested 2026-09-09."""
     form = await request.form()
-    account_id, page = _schedule_form_filter(form)
+    account_id, page, page_size = _schedule_form_filter(form)
     task_id = str(form.get("task_id", ""))
     force = str(form.get("force", "")) == "1"
     task = schedule_store.get(task_id)
     if task is None:
         err = "Không tìm thấy mục này"
         if _is_htmx(request):
-            return HTMLResponse(_schedule_content_html(account_id=account_id, page=page, error=err) + _MODAL_CLOSE_OOB)
-        return _schedule_redirect(account_id, page, error=err)
+            return HTMLResponse(_schedule_content_html(account_id=account_id, page=page, page_size=page_size, error=err) + _MODAL_CLOSE_OOB)
+        return _schedule_redirect(account_id, page, page_size=page_size, error=err)
 
     from human_bot.agent import rate_limit_bucket_for
     from human_bot.safety import RateLimiter, is_gap_reason, rate_limit_wait_message
@@ -2710,9 +2775,9 @@ async def schedule_fire_now(request: Request, _: None = Depends(_require_auth)):
                 # click — the bug reported 2026-09-09). #schedule-content
                 # must stay present as the primary swap; the modal goes in
                 # separately via an OOB swap into #modal-root.
-                modal_oob = f'<div id="modal-root" hx-swap-oob="true">{_fire_now_confirm_modal_html(task_id, account_id, page, warning)}</div>'
-                return HTMLResponse(_schedule_content_html(account_id=account_id, page=page) + modal_oob)
-            return _schedule_redirect(account_id, page, error=warning)
+                modal_oob = f'<div id="modal-root" hx-swap-oob="true">{_fire_now_confirm_modal_html(task_id, account_id, page, page_size, warning)}</div>'
+                return HTMLResponse(_schedule_content_html(account_id=account_id, page=page, page_size=page_size) + modal_oob)
+            return _schedule_redirect(account_id, page, page_size=page_size, error=warning)
 
     result = await run_task(TaskRequest(
         action=task.action,
@@ -2730,8 +2795,8 @@ async def schedule_fire_now(request: Request, _: None = Depends(_require_auth)):
     if result.success:
         schedule_store.mark_posted(task_id, result.message)
         if _is_htmx(request):
-            return HTMLResponse(_schedule_content_html(account_id=account_id, page=page, saved=True) + _MODAL_CLOSE_OOB)
-        return _schedule_redirect(account_id, page, saved=1)
+            return HTMLResponse(_schedule_content_html(account_id=account_id, page=page, page_size=page_size, saved=True) + _MODAL_CLOSE_OOB)
+        return _schedule_redirect(account_id, page, page_size=page_size, saved=1)
     if result.message.startswith("rate_limited:"):
         # Same reasoning as data_sync.py's fire_due_tasks(): this isn't a
         # real failure of the post, it just fired too soon after the
@@ -2741,12 +2806,12 @@ async def schedule_fire_now(request: Request, _: None = Depends(_require_auth)):
         warning = rate_limit_wait_message(account, bucket) if account and bucket else None
         schedule_store.update(task_id, last_warning=warning or result.message)
         if _is_htmx(request):
-            return HTMLResponse(_schedule_content_html(account_id=account_id, page=page, error=warning or result.message) + _MODAL_CLOSE_OOB)
-        return _schedule_redirect(account_id, page, error=warning or result.message)
+            return HTMLResponse(_schedule_content_html(account_id=account_id, page=page, page_size=page_size, error=warning or result.message) + _MODAL_CLOSE_OOB)
+        return _schedule_redirect(account_id, page, page_size=page_size, error=warning or result.message)
     schedule_store.mark_failed(task_id, result.message)
     if _is_htmx(request):
-        return HTMLResponse(_schedule_content_html(account_id=account_id, page=page, error=f"Đăng thất bại: {result.message}") + _MODAL_CLOSE_OOB)
-    return _schedule_redirect(account_id, page, error=f"Đăng thất bại: {result.message}")
+        return HTMLResponse(_schedule_content_html(account_id=account_id, page=page, page_size=page_size, error=f"Đăng thất bại: {result.message}") + _MODAL_CLOSE_OOB)
+    return _schedule_redirect(account_id, page, page_size=page_size, error=f"Đăng thất bại: {result.message}")
 
 
 # --- Joined group URLs (per-account, used by the data-sync poller) ---------
@@ -3046,6 +3111,16 @@ _REPORTS_DAYS_LABELS: dict[str, str] = {
     "90": "90 ngày qua",
 }
 _REPORTS_RECENT_PAGE_SIZE = 15
+# Choices offered by the "Hoạt động gần đây" items-per-page <select> —
+# added 2026-09-11, same pattern (and same owner request) as
+# /admin/schedule's _SCHEDULE_PAGE_SIZE_CHOICES above; default (15) kept
+# as-is rather than switched to match schedule's default, so a bare
+# /admin/reports (no page_size in the URL) renders exactly as before.
+_REPORTS_PAGE_SIZE_CHOICES = (10, 15, 30, 50, 100)
+
+
+def _clamp_reports_page_size(raw: int) -> int:
+    return raw if raw in _REPORTS_PAGE_SIZE_CHOICES else _REPORTS_RECENT_PAGE_SIZE
 
 # Actions "Đăng lại" (repost) can resubmit from a past action_log row —
 # the ones that post free-form `content` somewhere (own profile / a group)
@@ -3076,12 +3151,21 @@ def _reports_since(days: str | None) -> str | None:
 
 def _reports_content_html(
     account_id: str | None = None, days: str | None = None, page: int = 1,
-    posted: str | None = None, error: str | None = None,
+    page_size: int = _REPORTS_RECENT_PAGE_SIZE,
+    posted: str | None = None, error: str | None = None, warning: str | None = None,
 ) -> str:
+    page_size = _clamp_reports_page_size(page_size)
     accounts = get_all_accounts()
     since = _reports_since(days)
     flash = f'<p class="flash">✅ {html.escape(posted)}</p>' if posted else ""
     err = f'<p class="error">⚠️ {html.escape(error)}</p>' if error else ""
+    # Separate from `error` (2026-09-11, owner request): "Đăng lại" hitting
+    # the account's own rate-limit gap isn't a real failure — the repost
+    # just fired too soon, exactly like /admin/schedule's "Đăng ngay" hitting
+    # the same gap (see reports_repost() below) — so it gets the neutral
+    # `.warning` style (amber) instead of `.error` (red), same distinction
+    # schedule_fire_now() already makes with rate_limit_wait_message().
+    warn = f'<p class="warning">⏳ {html.escape(warning)}</p>' if warning else ""
 
     account_options = '<option value="">— Tất cả tài khoản —</option>' + "".join(
         f'<option value="{html.escape(aid)}"{" selected" if aid == account_id else ""}>{html.escape(a.display_name)} ({html.escape(aid)})</option>'
@@ -3091,24 +3175,49 @@ def _reports_content_html(
         f'<option value="{html.escape(key)}"{" selected" if (days or "") == key else ""}>{html.escape(label)}</option>'
         for key, label in _REPORTS_DAYS_LABELS.items()
     )
+    page_size_options = "".join(
+        f'<option value="{size}"{" selected" if size == page_size else ""}>{size}/trang</option>'
+        for size in _REPORTS_PAGE_SIZE_CHOICES
+    )
+    # The page-size <select> itself renders inside the "Hoạt động gần
+    # đây" card's own header row, next to that card's title (owner
+    # request 2026-09-11, twice: first moved out of the page-wide
+    # account/days filter row since it only affects this one card, then
+    # out of the card's footer too — "xấu quá" — up next to the title
+    # instead) — but its markup and hx-include wiring live together right
+    # here since both selects need each other's id, and this is where
+    # account_options/days_options are already in scope.
+    # #reports-pagesize-select still gets found by hx-include regardless
+    # of where in the DOM it ends up.
+    page_size_select_html = f"""<label for="reports-pagesize-select" class="muted">Hiển thị</label>
+  <select name="page_size" id="reports-pagesize-select"
+          hx-get="/admin/reports" hx-target="#reports-content" hx-swap="outerHTML"
+          hx-trigger="change" hx-include="#reports-account-select, #reports-days-select" hx-push-url="true">{page_size_options}</select>"""
+    # The 2 page-wide selects include the page-size one via hx-include so
+    # switching account/days never silently resets it back to default.
     filter_html = f"""
 <div class="account-filter">
   <label for="reports-account-select">Tài khoản</label>
   <select name="account_id" id="reports-account-select"
           hx-get="/admin/reports" hx-target="#reports-content" hx-swap="outerHTML"
-          hx-trigger="change" hx-include="#reports-days-select" hx-push-url="true">{account_options}</select>
+          hx-trigger="change" hx-include="#reports-days-select, #reports-pagesize-select" hx-push-url="true">{account_options}</select>
   <label for="reports-days-select">Khoảng thời gian</label>
   <select name="days" id="reports-days-select"
           hx-get="/admin/reports" hx-target="#reports-content" hx-swap="outerHTML"
-          hx-trigger="change" hx-include="#reports-account-select" hx-push-url="true">{days_options}</select>
+          hx-trigger="change" hx-include="#reports-account-select, #reports-pagesize-select" hx-push-url="true">{days_options}</select>
 </div>"""
 
     # --- KPI summary — glance-and-go health check before the detail tables ---
     stats = db.summary_stats(account_id=account_id, since=since)
     rate_display = f"{stats['success_rate']}%" if stats["success_rate"] is not None else "—"
+    # Equal-width 5-column grid (owner request 2026-09-11 — the previous
+    # flex/gap layout let each tile take only as much width as its own
+    # content needed, so the 5 tiles ended up visibly uneven). auto-fit +
+    # minmax still divides evenly on narrow screens (fewer, wider columns)
+    # instead of overflowing.
     summary_html = f"""
 <div class="card">
-  <div style="display:flex; gap:24px; flex-wrap:wrap;">
+  <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(150px, 1fr)); gap:24px;">
     <div><div class="muted" style="font-size:12px;">Tổng số hành động</div><div style="font-size:22px; font-weight:700;">{stats['total']}</div></div>
     <div><div class="muted" style="font-size:12px;">Thành công</div><div style="font-size:22px; font-weight:700; color:#059669;">{stats['succeeded']}</div></div>
     <div><div class="muted" style="font-size:12px;">Thất bại</div><div style="font-size:22px; font-weight:700; color:#dc2626;">{stats['failed']}</div></div>
@@ -3151,16 +3260,26 @@ def _reports_content_html(
 
     action_rows = db.action_type_counts(account_id=account_id, since=since)
     if action_rows:
+        # Pivot db.action_type_counts()'s (action, success, total) rows —
+        # one row per (action, success/fail) combo — into one row per
+        # action with separate Thành công/Thất bại columns (owner request
+        # 2026-09-11: easier to scan than a repeated "Kết quả" column).
+        # dict preserves first-seen order, which matches the query's own
+        # `ORDER BY action, success DESC`.
+        pivoted: dict[str, dict[str, int]] = {}
+        for r in action_rows:
+            entry = pivoted.setdefault(r["action"], {"succeeded": 0, "failed": 0})
+            entry["succeeded" if r["success"] else "failed"] = r["total"]
         action_html = "".join(
             f"""<tr>
-  <td>{html.escape(_ACTION_LABELS.get(r['action'], r['action']))}</td>
-  <td>{'✅ Thành công' if r['success'] else '⚠️ Thất bại'}</td>
-  <td>{r['total']}</td>
-</tr>""" for r in action_rows
+  <td>{html.escape(_ACTION_LABELS.get(action, action))}</td>
+  <td style="color:#059669;">{counts['succeeded']}</td>
+  <td style="color:#dc2626;">{counts['failed']}</td>
+</tr>""" for action, counts in pivoted.items()
         )
         action_table = f"""
 <div class="table-scroll"><table class="data-table">
-  <thead><tr><th>Hành động</th><th>Kết quả</th><th>Số lần</th></tr></thead>
+  <thead><tr><th>Hành động</th><th>Thành công</th><th>Thất bại</th></tr></thead>
   <tbody>{action_html}</tbody>
 </table></div>"""
     else:
@@ -3171,11 +3290,11 @@ def _reports_content_html(
     # history exists — see the conversation that raised "4 khối khá dài,
     # nhất là Hoạt động gần đây".
     recent_total = db.recent_activity_count(account_id=account_id, since=since)
-    recent_total_pages = max(1, -(-recent_total // _REPORTS_RECENT_PAGE_SIZE))
+    recent_total_pages = max(1, -(-recent_total // page_size))
     page = min(max(page, 1), recent_total_pages)
     recent_rows = db.recent_activity(
-        limit=_REPORTS_RECENT_PAGE_SIZE,
-        offset=(page - 1) * _REPORTS_RECENT_PAGE_SIZE,
+        limit=page_size,
+        offset=(page - 1) * page_size,
         account_id=account_id,
         since=since,
     )
@@ -3198,6 +3317,7 @@ def _reports_content_html(
             f'<input type="hidden" name="account_id" value="{html.escape(account_id or "")}">'
             f'<input type="hidden" name="days" value="{html.escape(days or "")}">'
             f'<input type="hidden" name="page" value="{page}">'
+            f'<input type="hidden" name="page_size" value="{page_size}">'
             f'<input type="hidden" name="log_id" value="{r["id"]}">'
         )
         return f"""<form method="post" action="/admin/reports/repost" style="display:inline;"
@@ -3207,6 +3327,18 @@ def _reports_content_html(
   <button type="submit" class="btn-secondary btn-small" title="Đăng lại">↻</button>
 </form>"""
 
+    def _recent_result_icon(r: sqlite3.Row) -> str:
+        # Distinct from a real failure (2026-09-11, same reasoning as
+        # summary_stats()/action_type_counts() in db.py) — a rate_limited
+        # row was never actually attempted, so lumping it in with ⚠️ next
+        # to genuine broken-selector/timeout failures made the "KQ" column
+        # misleading at a glance.
+        if r["success"]:
+            return "✅"
+        if (r["message"] or "").startswith("rate_limited:"):
+            return "⏳"
+        return "⚠️"
+
     if recent_rows:
         recent_html = "".join(
             f"""<tr>
@@ -3214,7 +3346,7 @@ def _reports_content_html(
   <td>{html.escape(_account_label(r['account_id'], accounts))}</td>
   <td>{html.escape(_ACTION_LABELS.get(r['action'], r['action']))}</td>
   <td class="row-url">{html.escape((r['target_group_name'] or r['target_url'] or '—'))}</td>
-  <td>{'✅' if r['success'] else '⚠️'}</td>
+  <td>{_recent_result_icon(r)}</td>
   <td>{html.escape(_SOURCE_LABELS.get(r['source'], r['source']))}</td>
   <td>{_screenshot_link_html(r['screenshot_path'] if 'screenshot_path' in r.keys() else None)}</td>
   <td class="muted">{_expandable_text(r['message'])}</td>
@@ -3229,29 +3361,69 @@ def _reports_content_html(
     else:
         recent_table = '<div class="empty-state">Chưa có hoạt động nào được ghi nhận.</div>'
 
-    recent_pagination_html = ""
+    # Footer row for the "Hoạt động gần đây" card (item count + nav) — the
+    # page-size select itself now renders up in this card's own header
+    # row, next to the "🕒 Hoạt động gần đây" title (2026-09-11: an
+    # earlier version put it down here in the footer, owner found that
+    # placement "xấu" — moved up so it reads as "controls for this card"
+    # rather than buried at the bottom). The Đầu/Trước/jump/Sau/Cuối nav
+    # below only renders once there's more than 1 page.
+    nav_html = ""
     if recent_total_pages > 1:
         from urllib.parse import urlencode
 
+        # First/last buttons + a pretty single-pill "go to page" jump —
+        # same pattern (and same owner request) as /admin/schedule's
+        # pagination; page_size threads through so navigating never
+        # silently resets it back to the default.
         def _recent_page_link(target_page: int, label: str, enabled: bool) -> str:
             if not enabled:
                 return f'<span class="btn-secondary btn-small" style="opacity:.45; pointer-events:none;">{label}</span>'
-            qs = urlencode({k: v for k, v in {"account_id": account_id, "days": days, "page": target_page}.items() if v})
+            qs = urlencode({k: v for k, v in {
+                "account_id": account_id, "days": days, "page": target_page,
+                "page_size": page_size if page_size != _REPORTS_RECENT_PAGE_SIZE else None,
+            }.items() if v})
             return (
                 f'<a class="btn-secondary btn-small" href="/admin/reports?{qs}" '
                 f'hx-get="/admin/reports?{qs}" hx-target="#reports-content" hx-swap="outerHTML" hx-push-url="true">{label}</a>'
             )
 
-        recent_pagination_html = f"""
-<div style="display:flex; justify-content:space-between; align-items:center; margin-top:10px;">
-  {_recent_page_link(page - 1, "← Trang trước", page > 1)}
-  <span class="muted">Trang {page}/{recent_total_pages} · {recent_total} mục</span>
-  {_recent_page_link(page + 1, "Trang sau →", page < recent_total_pages)}
-</div>"""
+        jump_hidden_fields = (
+            (f'<input type="hidden" name="account_id" value="{html.escape(account_id)}">' if account_id else "")
+            + (f'<input type="hidden" name="days" value="{html.escape(days)}">' if days else "")
+            + f'<input type="hidden" name="page_size" value="{page_size}">'
+        )
+        nav_html = f"""
+  <div style="display:flex; gap:8px; align-items:center;">
+    {_recent_page_link(1, "«« Đầu", page > 1)}
+    {_recent_page_link(page - 1, "← Trang trước", page > 1)}
+  </div>
+  <form hx-get="/admin/reports" hx-target="#reports-content" hx-swap="outerHTML" hx-push-url="true"
+        style="display:flex; gap:6px; align-items:center; background:#f9fafb; border:1px solid #e5e7eb; border-radius:8px; padding:5px 10px;">
+    {jump_hidden_fields}
+    <span class="muted">Trang</span>
+    <input type="number" name="page" min="1" max="{recent_total_pages}" value="{page}"
+           style="width:64px; text-align:center;" aria-label="Đi đến trang">
+    <span class="muted">/ {recent_total_pages}</span>
+    <button type="submit" class="btn-secondary btn-small">Đi</button>
+  </form>
+  <div style="display:flex; gap:8px; align-items:center;">
+    {_recent_page_link(page + 1, "Trang sau →", page < recent_total_pages)}
+    {_recent_page_link(recent_total_pages, "Cuối »»", page < recent_total_pages)}
+  </div>"""
+
+    # Item count ("N mục") moved up to the card header next to "Hiển thị"
+    # (2026-09-11) — this footer only needs to render at all once there's
+    # actual nav (>1 page) to show.
+    recent_pagination_html = f"""
+<div style="display:flex; justify-content:space-between; align-items:center; margin-top:10px; flex-wrap:wrap; gap:8px;">
+  {nav_html}
+</div>""" if nav_html else ""
 
     return f"""<div id="reports-content">
 {flash}
 {err}
+{warn}
 {filter_html}
 {summary_html}
 
@@ -3271,7 +3443,13 @@ def _reports_content_html(
 </div>
 
 <div class="card">
-  <h2>🕒 Hoạt động gần đây</h2>
+  <div style="display:flex; justify-content:space-between; align-items:center; gap:16px; flex-wrap:wrap;">
+    <h2 style="margin:0; white-space:nowrap;">🕒 Hoạt động gần đây</h2>
+    <div style="display:flex; gap:10px; align-items:center; white-space:nowrap; flex-shrink:0;">
+      {page_size_select_html}
+      <span class="muted">{recent_total} mục</span>
+    </div>
+  </div>
   {recent_table}
   {recent_pagination_html}
 </div>
@@ -3301,11 +3479,13 @@ async def reports_page(
     account_id: str | None = None,
     days: str | None = None,
     page: int = 1,
+    page_size: int = _REPORTS_RECENT_PAGE_SIZE,
     posted: str | None = None,
     error: str | None = None,
+    warning: str | None = None,
     _: None = Depends(_require_auth),
 ) -> str:
-    content = _reports_content_html(account_id=account_id, days=days, page=page, posted=posted, error=error)
+    content = _reports_content_html(account_id=account_id, days=days, page=page, page_size=page_size, posted=posted, error=error, warning=warning)
     if _is_htmx(request):
         return content
     return _layout(f"""
@@ -3337,21 +3517,25 @@ async def reports_repost(request: Request, _: None = Depends(_require_auth)):
     except ValueError:
         page = 1
     try:
+        page_size = _clamp_reports_page_size(int(str(form.get("page_size", _REPORTS_RECENT_PAGE_SIZE))))
+    except ValueError:
+        page_size = _REPORTS_RECENT_PAGE_SIZE
+    try:
         log_id = int(str(form.get("log_id", "")))
     except ValueError:
-        return _reports_redirect(account_id, days, page, error="Thiếu id bản ghi")
+        return _reports_redirect(account_id, days, page, page_size=page_size, error="Thiếu id bản ghi")
 
     row = db.get_action_log(log_id)
     if row is None:
         err = "Không tìm thấy bản ghi này"
         if _is_htmx(request):
-            return HTMLResponse(_reports_content_html(account_id=account_id, days=days, page=page, error=err))
-        return _reports_redirect(account_id, days, page, error=err)
+            return HTMLResponse(_reports_content_html(account_id=account_id, days=days, page=page, page_size=page_size, error=err))
+        return _reports_redirect(account_id, days, page, page_size=page_size, error=err)
     if row["action"] not in _REPOSTABLE_ACTIONS or row["success"] or not (row["content"] or "").strip():
         err = "Hành động này không thể đăng lại"
         if _is_htmx(request):
-            return HTMLResponse(_reports_content_html(account_id=account_id, days=days, page=page, error=err))
-        return _reports_redirect(account_id, days, page, error=err)
+            return HTMLResponse(_reports_content_html(account_id=account_id, days=days, page=page, page_size=page_size, error=err))
+        return _reports_redirect(account_id, days, page, page_size=page_size, error=err)
 
     try:
         result = await run_task(TaskRequest(
@@ -3365,15 +3549,31 @@ async def reports_repost(request: Request, _: None = Depends(_require_auth)):
     except ValueError as exc:
         err = str(exc)
         if _is_htmx(request):
-            return HTMLResponse(_reports_content_html(account_id=account_id, days=days, page=page, error=err))
-        return _reports_redirect(account_id, days, page, error=err)
+            return HTMLResponse(_reports_content_html(account_id=account_id, days=days, page=page, page_size=page_size, error=err))
+        return _reports_redirect(account_id, days, page, page_size=page_size, error=err)
 
     if result.success:
         msg = "Đã đăng lại."
         if _is_htmx(request):
-            return HTMLResponse(_reports_content_html(account_id=account_id, days=days, page=page, posted=msg))
-        return _reports_redirect(account_id, days, page, posted=msg)
+            return HTMLResponse(_reports_content_html(account_id=account_id, days=days, page=page, page_size=page_size, posted=msg))
+        return _reports_redirect(account_id, days, page, page_size=page_size, posted=msg)
+    if result.message.startswith("rate_limited:"):
+        # Same reasoning as /admin/schedule's schedule_fire_now(): firing
+        # too soon after this account's last action of the same type
+        # isn't a real failure of the repost — it's the rate-limiter
+        # doing its job. Owner asked (2026-09-11) that this stop being
+        # shown as a red "Đăng lại thất bại" error; rate_limit_wait_message()
+        # gives the human-readable "thử lại sau HH:MM" version when
+        # possible, falling back to the raw reason otherwise.
+        from human_bot.agent import rate_limit_bucket_for
+        from human_bot.safety import rate_limit_wait_message
+        account = get_all_accounts().get(row["account_id"])
+        bucket = rate_limit_bucket_for(row["action"])
+        warning = (rate_limit_wait_message(account, bucket) if account and bucket else None) or result.message
+        if _is_htmx(request):
+            return HTMLResponse(_reports_content_html(account_id=account_id, days=days, page=page, page_size=page_size, warning=warning))
+        return _reports_redirect(account_id, days, page, page_size=page_size, warning=warning)
     err = f"Đăng lại thất bại: {result.message}"
     if _is_htmx(request):
-        return HTMLResponse(_reports_content_html(account_id=account_id, days=days, page=page, error=err))
-    return _reports_redirect(account_id, days, page, error=err)
+        return HTMLResponse(_reports_content_html(account_id=account_id, days=days, page=page, page_size=page_size, error=err))
+    return _reports_redirect(account_id, days, page, page_size=page_size, error=err)

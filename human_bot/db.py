@@ -216,10 +216,17 @@ def group_post_counts(account_id: str | None = None, since: str | None = None) -
 def action_type_counts(account_id: str | None = None, since: str | None = None) -> list[sqlite3.Row]:
     """Success/failure breakdown per action type — a quick health check
     (e.g. a spike in failed post_to_group could mean a broken selector or
-    an account restriction, see docs/agents/safety-monitor.md)."""
+    an account restriction, see docs/agents/safety-monitor.md).
+
+    `rate_limited:` rows excluded (2026-09-11, same reasoning as
+    summary_stats() above) — otherwise a busy account's normal rate-limit
+    defers pile up under "Thất bại" next to actual broken-selector/timeout
+    failures, with no way to tell them apart in this table."""
     conn = _connect()
     try:
         where, params = _base_where(account_id, since)
+        extra = "(message IS NULL OR message NOT LIKE 'rate_limited:%')"
+        where = f"{where} AND {extra}" if where else f"WHERE {extra}"
         cur = conn.execute(
             f"""
             SELECT action, success, COUNT(*) AS total
@@ -240,15 +247,27 @@ def summary_stats(account_id: str | None = None, since: str | None = None) -> di
     successful/failed actions in the filtered window, the resulting
     success rate, and how many distinct accounts had any activity at all
     — a glance-and-go answer to "is everything roughly healthy" before
-    reading the detailed tables below."""
+    reading the detailed tables below.
+
+    `rate_limited:` rows excluded from total/succeeded/failed/success_rate
+    (2026-09-11, owner request — see /admin/reports' "Đăng lại" warning
+    fix, same conversation) — a run_task() call refused by RateLimiter
+    before ever opening a browser (see agent.py's run_task(): the
+    can_proceed() check happens before get_session()/action_fn()) isn't a
+    real attempt at anything, so it shouldn't drag down "Thất bại"/"Tỉ lệ
+    thành công" the same way an actual broken-selector or timeout failure
+    does. `active_accounts` stays computed from ALL rows including
+    rate-limited ones — an account that got rate-limited still clearly had
+    activity, just not a completed one."""
     conn = _connect()
     try:
         where, params = _base_where(account_id, since)
+        not_rate_limited = "(message IS NULL OR message NOT LIKE 'rate_limited:%')"
         cur = conn.execute(
             f"""
             SELECT
-                COUNT(*) AS total,
-                SUM(success) AS succeeded,
+                SUM(CASE WHEN {not_rate_limited} THEN 1 ELSE 0 END) AS total,
+                SUM(CASE WHEN {not_rate_limited} AND success THEN 1 ELSE 0 END) AS succeeded,
                 COUNT(DISTINCT account_id) AS active_accounts
             FROM action_log
             {where}
