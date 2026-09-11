@@ -309,13 +309,15 @@ async def post_to_own_profile(
 
 # Best-effort text signals for "your post is awaiting admin approval"
 # rather than already published — see docs/skills/group-targeting.md,
-# "Post approval". UNVERIFIED (2026-09-04): the group used to record
-# post_to_group did not have approval enabled, so this list was written
-# from general knowledge of Facebook's own wording, not observed directly.
-# Re-verify (and fix this list) the first time this actually runs against
-# an approval-required group — see docs/skills/facebook-custom-actions.md,
-# "How selectors get filled in".
+# "Post approval". VERIFIED (2026-09-10): observed live against group
+# "Việc làm Kỹ Sư Nhật Bản (Uy tín hàng đầu)" (approval-required), which
+# showed the toast "Thanks for your post! It's been submitted to group
+# admins for approval." None of the previously-guessed phrases below
+# matched that live text, so this list was still catching zero real
+# pending-approval posts until now — kept the old guesses in case FB
+# A/B-tests different wording, but the confirmed phrase is first.
 _PENDING_APPROVAL_TEXT_SIGNALS = [
+    "submitted to group admins for approval",
     "pending approval",
     "awaiting approval",
     "post is being reviewed",
