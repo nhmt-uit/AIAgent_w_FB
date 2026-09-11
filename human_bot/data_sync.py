@@ -56,6 +56,7 @@ from human_bot.config import AccountConfig, get_account
 from human_bot.data_sync_config import DataSyncConfig
 from human_bot.scheduling_config import SchedulingConfig
 from human_bot.runtime_config import get_data_sync_config, get_joined_groups, get_scheduling_config
+from human_bot.safety import RateLimiter
 
 CACHE_ROOT = Path(__file__).resolve().parent.parent / "data_sync_cache"
 STATE_PATH = CACHE_ROOT / "_state.json"
@@ -454,6 +455,34 @@ def _last_scheduled_time_per_group(account_id: str) -> dict[str, datetime]:
     return latest
 
 
+def _last_scheduled_comment_time(account_id: str) -> datetime | None:
+    """Most recent scheduled_at (pending or posted) among this account's
+    OWN comment tasks (_COMMENT_ACTIONS) — same "seed from a PREVIOUS
+    sync_all() call, not just the current one" reasoning as
+    _last_scheduled_time_per_group() above, but account-wide rather than
+    per-group: unlike posts, the comment gap floor (RateLimits.
+    comment_min/max_delay_seconds, see safety.py's RateLimiter) is
+    enforced per ACCOUNT, not per target post/group — see
+    RateLimiter.next_allowed_at()'s docstring.
+
+    Added 2026-09-10 after a real observed case: 3 comment tasks for the
+    same account, scheduled from 3 separate sync_all() polls, landed only
+    5-20 minutes apart despite comment_gap_min/max being 90-180 minutes —
+    each poll's `next_comment_time` started fresh from that poll's own
+    `now`, with nothing checking what a PRIOR poll had already queued."""
+    latest: datetime | None = None
+    for task in schedule_store.list_pending() + schedule_store.list_posted():
+        if task.account_id != account_id or task.action not in _COMMENT_ACTIONS:
+            continue
+        try:
+            scheduled = datetime.fromisoformat(task.scheduled_at.replace("Z", "+00:00"))
+        except ValueError:
+            continue
+        if latest is None or scheduled > latest:
+            latest = scheduled
+    return latest
+
+
 def _next_available_post_slot(
     dt: datetime,
     cfg: DataSyncConfig,
@@ -729,6 +758,41 @@ async def sync_all(account_ids: list[str], cfg: DataSyncConfig | None = None) ->
         )
         next_post_time = now + timedelta(minutes=random.uniform(post_gap_min, post_gap_max))
         next_comment_time = now + timedelta(minutes=random.uniform(comment_gap_min, comment_gap_max))
+
+        # Floor next_comment_time against two things this poll's fresh
+        # `now + random(...)` above knows nothing about — added 2026-09-10
+        # alongside _last_scheduled_comment_time() (see its docstring for
+        # the observed 3-comments-5-minutes-apart incident this fixes):
+        #   1. A comment already queued by a PREVIOUS sync_all() poll —
+        #      without this, each poll's own next_comment_time starts
+        #      fresh from ITS now, so two polls' independently-random
+        #      gaps can land close together by chance.
+        #   2. This account's REAL RateLimiter floor for the comment
+        #      bucket (safety.py's next_allowed_at("comment")) — the last
+        #      comment that actually FIRED may have posted later than its
+        #      own scheduled_at (rate-limit wait, quiet hours, a service
+        #      restart, ...), so its real enforcement floor can be later
+        #      than "that task's scheduled_at + comment_gap_min" would
+        #      suggest. Read-only (RateLimiter.next_allowed_at() never
+        #      appends to the action log), safe to call just to peek.
+        # NOTE: this does NOT eliminate every possible collision — a
+        # comment that hasn't fired YET will only get its own real
+        # RateLimiter floor recorded once it actually posts (safety.py's
+        # record() rolls that gap fresh, at fire time, independently of
+        # whatever this scheduler guessed) — see the conversation this
+        # was written from for the full reasoning. Deliberately left
+        # unaddressed for now (project owner's call, 2026-09-10): fixing
+        # that would mean pinning record()'s gap to a value decided here
+        # at schedule time instead of re-rolling it fresh at fire time,
+        # which trades away the point of having a fire-time-independent
+        # safety net at all — not done without a separate decision.
+        last_comment_at = _last_scheduled_comment_time(aid)
+        if last_comment_at is not None:
+            next_comment_time = max(next_comment_time, last_comment_at + timedelta(minutes=comment_gap_min))
+        enforced_comment_floor = RateLimiter(account).next_allowed_at("comment")
+        if enforced_comment_floor is not None:
+            next_comment_time = max(next_comment_time, enforced_comment_floor)
+
         scheduled_posts = 0
         scheduled_comments = 0
 
@@ -942,11 +1006,9 @@ async def fire_due_tasks(cfg: SchedulingConfig | None = None) -> dict[str, Any]:
             # is on; task.content (the template stashed at schedule time)
             # is left untouched otherwise, no wasted recomputation.
             group_name = resolve_group_name(task.account_id, task.target_url)
-            fresh_content = await content_strategist.draft_single_post(
-                task.job_data, group_name, ai_enabled=True,
+            content = await content_strategist.draft_single_post(
+                task.job_data, content, group_name, ai_enabled=True,
             )
-            if fresh_content:
-                content = fresh_content
 
         request = TaskRequest(
             action=task.action,
