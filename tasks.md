@@ -1412,3 +1412,212 @@
       `test_record_writes_next_allowed_at_within_configured_range` vẫn
       đúng vì kiểm tra dạng khoảng `[95,205]`, không phụ thuộc có
       random hay không).
+
+## Đợt làm việc 2026-09-11 (tiếp) — Kẹp sàn số lượng theo cửa sổ trượt 24h thật, bỏ tràn-ngày
+
+- [x] **Triển khai đúng thiết kế đã thống nhất qua nhiều lượt trao đổi:
+      lên lịch kiểm tra capacity theo cửa sổ trượt 24h THẬT (không chỉ
+      theo ngày dương lịch), bỏ hẳn cơ chế "tràn sang ngày mai" cho bài
+      đăng, đăng vừa đủ số nhóm còn slot thay vì hoãn cả job.**
+
+      1. **`safety.py`:** thêm `RateLimiter.recent_count(action_type,
+         window) -> int` (đọc log thật, không ghi gì) — tách ra từ logic
+         đếm sẵn có trong `can_proceed()`, giờ `can_proceed()` gọi lại
+         chính hàm này (DRY, không có 2 chỗ đếm khác nhau).
+      2. **`data_sync.py`'s `_next_available_post_slot()`:** bỏ hẳn
+         tham số `daily_limit`/`day_counts` và nhánh "tràn sang ngày
+         mai" — giờ chỉ còn xử lý giờ yên tĩnh + khoảng cách tối thiểu
+         giữa 2 bài cùng 1 nhóm. Lý do bắt buộc phải bỏ CÙNG LÚC với
+         việc kẹp sàn (không thể tách riêng — đã phân tích kỹ trong
+         nhiều lượt trao đổi trước): cách đếm theo ngày dương lịch cũ
+         CHỈ TĂNG (giữ đúng thứ tự công bằng vì "đầy" là đầy vĩnh viễn
+         cho ngày đó); cách đếm theo cửa sổ trượt thật CÓ THỂ GIẢM (khi
+         hoạt động cũ trôi khỏi 24h) — nếu vẫn giữ tràn-ngày, job cũ bị
+         đẩy sang mai sẽ kẹt vĩnh viễn trong khi job mới hơn có thể
+         "nẫng" slot vừa mở ra giữa ngày, gây đảo thứ tự.
+      3. **`job_capacities`/`comment_capacities`:** đổi từ chỉ đếm theo
+         `_count_scheduled_actions_by_day()` (ngày dương lịch) sang
+         `max(theo ngày dương lịch, RateLimiter.recent_count() thật
+         trong 24h)` — "kẹp sàn". Áp dụng cho CẢ post lẫn comment (owner
+         xác nhận cùng 1 vấn đề gốc cho cả 2 loại).
+      4. **Vòng lặp job trong `sync_all()`:** thêm biến `available`
+         (kẹp sàn, tính LẠI mỗi job vì `day_post_counts` tăng dần trong
+         cùng 1 lần poll, còn `real_recent_posts` đóng băng cho cả lần
+         poll vì việc lên lịch không tự tạo hoạt động thật). Logic theo
+         đúng ví dụ owner đưa ra (còn 2 slot, cap 3 → đăng 2, không
+         phải 0 hay 3):
+         - `available <= 0` → **hoãn cả job** (không tạo task, không
+           `_mark_seen()`, lấy lại nguyên vẹn ở poll sau).
+         - `available > 0` → chọn `min(max_groups_per_post, available)`
+           nhóm theo round-robin, đăng, **coi job đã xử lý xong**
+           (mark_seen) dù có thể chưa phủ đủ số nhóm dự kiến — KHÔNG
+           cố đăng nốt phần thiếu ở poll sau.
+      5. **Comment không cần logic "đăng vừa đủ"** — 1 candidate luôn
+         tạo đúng 1 task (không "nở" ra nhiều nhóm như job), nên chỉ
+         cần sửa đúng con số `comment_capacities` là
+         `_water_fill_distribute()` đã tự defer đúng phần vượt quá vào
+         `deferred_candidates` (cơ chế có sẵn, không cần sửa gì thêm).
+      6. **Bug tự phát hiện khi cài đặt (chưa ai hỏi):** job bị hoãn
+         BÊN TRONG vòng lặp (do `available<=0` giữa chừng, không phải
+         bị water-fill loại từ đầu) không nằm trong `deferred_jobs`
+         (list ngoài) — nếu không merge vào, cursor lấy dữ liệu từ bên
+         B sẽ không được giữ lại đúng mốc, job có thể KHÔNG BAO GIỜ
+         được lấy lại (khác với việc chỉ "chưa mark_seen" — nếu cursor
+         trôi qua mốc thời gian của nó, bên B sẽ không trả về nó nữa ở
+         lần gọi API sau). Thêm `deferred_jobs_inner` theo từng tài
+         khoản, `.extend()` vào `deferred_jobs` (list ngoài, cùng
+         reference) trước khi tính cursor.
+
+      Verify: gọi `_next_available_post_slot()` với chữ ký mới (4 tham
+      số, không còn `daily_limit`/`day_counts`) chạy đúng; mô phỏng lại
+      chính xác công thức `available`/`groups_to_post` đã cài vào code
+      khớp đúng ví dụ owner đưa ra (2 slot, cap 3 → đăng 2; đầy hẳn →
+      hoãn). 79 test vẫn pass. **Chưa có test tự động riêng cho
+      `data_sync.py`** (gap đã ghi nhận từ trước, không phải mới) và
+      **chưa chạy `sync_all()` thật qua service** (cần restart + có dữ
+      liệu mới từ bên B mới quan sát được).
+- [x] **Thay hẳn cơ chế enforcement SỐ LƯỢNG (posts_per_day/comments_per_day)
+      từ cửa sổ trượt 24h sang "ngày nghiệp vụ" 2h sáng JST → 2h sáng JST
+      hôm sau — sau khi phát hiện qua trao đổi: đặt cứng job vào đúng 1
+      giờ tính được (VD 19h) sẽ tạo khuôn mẫu lặp lại mỗi ngày (19h hôm
+      qua, 19h hôm nay) — mất hẳn tính ngẫu nhiên, một dấu hiệu bất
+      thường rõ hơn cả việc thiếu slot.**
+
+      **Vì sao chọn mốc 2h sáng, không phải nửa đêm:** 2h-6h sáng JST là
+      khung giờ yên tĩnh có sẵn (`DataSyncConfig.quiet_hour_start_local`),
+      không bao giờ có hoạt động nào diễn ra — reset đúng lúc đó nằm gọn
+      trong "vùng chết", loại bỏ hẳn nguy cơ dồn cục 2 phía mốc reset
+      (VD 7 bài trước 2h + 7 bài ngay sau 6h) mà nửa đêm (giữa giờ hoạt
+      động) sẽ không tránh được. Cộng thêm khoảng nghỉ tối thiểu nhiều
+      giờ giữa 2 hành động cùng loại đã có sẵn khiến việc dồn cục kiểu
+      đó càng bất khả thi về mặt toán học.
+
+      **Quyết định kiến trúc quan trọng của owner: `safety.py` GIỮ
+      NGUYÊN, KHÔNG XOÁ, chỉ không còn được gọi cho phần đếm SỐ LƯỢNG
+      nữa** — để đọc lại/quay về sau nếu cần. Triển khai:
+      1. File mới `human_bot/daily_limits.py` — `_business_day_start()`
+         (tìm mốc 2h sáng JST gần nhất, verify bằng 3 mốc giờ thật:
+         đúng ranh giới, ngay trước ranh giới, giữa ngày — cả 3 đúng),
+         `count_since_business_day_start()` (đọc THẲNG cùng file log
+         JSONL mà `safety.py` đang dùng, không tạo nguồn dữ liệu mới),
+         `can_proceed()` (thay thế 1-1 cho `RateLimiter.can_proceed()`
+         — chỉ đổi phần `posts_per_day`/`comments_per_day`, phần gap và
+         `comments_per_hour`/`likes_per_hour` TÁI DÙNG NGUYÊN
+         `RateLimiter`, không đổi), `hard_cap_message()` (thay
+         `safety.py`'s `rate_limit_hard_cap_message()`).
+      2. `safety.py`: thêm `RateLimiter.gap_ok()` — wrapper public nhỏ
+         lộ ra `_last_action_gap_ok()` để `daily_limits.py` tái dùng
+         được phần gap mà không cần đi qua `can_proceed()`.
+         `can_proceed()` và `rate_limit_hard_cap_message()` giữ nguyên
+         y hệt logic cũ, chỉ thêm docstring "NOT CALLED ANYWHERE as of
+         2026-09-11" + trỏ sang `daily_limits.py` — đúng yêu cầu
+         "trích dẫn tới file safety.py để sau này cần thì đọc lại".
+      3. Đổi đúng 3 nơi thật sự gọi `RateLimiter.can_proceed()`/
+         `rate_limit_hard_cap_message()` (rà bằng `grep`, xác nhận
+         không phải 5 như ước lượng ban đầu): `agent.py`'s `run_task()`
+         (điểm chốt duy nhất mọi hành động thật đều đi qua),
+         `admin.py`'s `schedule_fire_now()` (2 lượt gọi trong cùng hàm
+         — pre-check trước và fallback sau khi `run_task()` chạy),
+         `admin.py`'s `reports_repost()`, `data_sync.py`'s
+         `fire_due_tasks()` pre-check.
+      Verify bằng dữ liệu THẬT `tu_iizuki`: đếm kiểu cũ (cửa sổ trượt)
+      ra 7, đếm kiểu mới (ngày nghiệp vụ) ra 4 — khác nhau đúng như dự
+      kiến vì phạm vi thời gian khác nhau; `can_proceed()`/
+      `hard_cap_message()` mới chạy đúng cho cả 3 loại action (post
+      đang bị chặn bởi gap mềm — `hard_cap_message=None` đúng, không
+      lẫn với hard cap; comment/like đang được phép). `grep` xác nhận
+      sạch — không còn nơi nào gọi thẳng `RateLimiter.can_proceed()`
+      hay `safety.rate_limit_hard_cap_message()` ngoài định nghĩa gốc
+      và bên trong `daily_limits.py`. 79 test vẫn pass.
+- [x] **Đồng bộ lớp LÊN LỊCH sang cùng "ngày nghiệp vụ" (2h sáng JST)
+      với lớp enforcement vừa đổi, rồi mang lại cơ chế tràn-ngày cho
+      bài đăng — owner tự nhận ra: khi 2 lớp đã thống nhất 1 định
+      nghĩa "ngày" duy nhất (không còn cửa sổ trượt tự trôi), việc
+      khoá 1 job vào ngày mai không còn rủi ro đảo thứ tự đã phân tích
+      kỹ trước đó — có thể bỏ hẳn cách "hoãn cả job, chờ poll sau",
+      biết chắc chắn và set lịch thẳng luôn.**
+
+      1. `daily_limits.py`: thêm 2 hàm public — `business_day_start()`
+         (wrapper public của `_business_day_start()` nội bộ) và
+         `business_day_key(dt) -> date` (ngày dương lịch JST của mốc
+         bắt đầu ngày nghiệp vụ chứa `dt` — dùng làm key nhóm theo
+         đúng "ngày nghiệp vụ", không phải ngày dương lịch UTC thô).
+      2. `data_sync.py`'s `_count_scheduled_actions_by_day()`: đổi key
+         từ `scheduled.date()` (ngày dương lịch UTC) sang
+         `daily_limits.business_day_key(scheduled)`. `today` (biến
+         dùng khắp `sync_all()`) đổi từ `_utc_today()` sang
+         `daily_limits.business_day_key(now)`.
+      3. `job_capacities`/`comment_capacities`'s "kẹp sàn": phần "thật"
+         đổi từ `RateLimiter.recent_count(action, 24h)` (cửa sổ trượt)
+         sang `daily_limits.count_since_business_day_start()` (cùng
+         định nghĩa "ngày" với lớp enforcement) — khớp đúng ý nghĩa so
+         sánh, không còn so 2 khái niệm khác nhau như trước.
+      4. **Mang lại tràn-ngày:** hàm mới
+         `_next_available_business_day(dt, daily_limit, day_counts,
+         today_key, real_used_today)` — đẩy `dt` sang ĐẦU ngày nghiệp
+         vụ kế tiếp (`daily_limits.business_day_start() + 1 ngày`, mốc
+         2h sáng JST — KHÔNG phải nửa đêm UTC như bản gốc trước đây),
+         lặp tối đa 60 ngày tìm ngày còn slot. `_next_available_post_slot()`
+         giữ nguyên KHÔNG có logic capacity (chỉ giờ yên tĩnh + gap
+         cùng nhóm) — capacity giờ tách hẳn ra hàm riêng, gọi 1 lần
+         cho mỗi job TRƯỚC khi chọn nhóm, không còn logic "hoãn cả
+         job" nữa (trừ trường hợp bệnh lý vượt 60 ngày tìm kiếm).
+      5. **Logic "đăng vừa đủ" (còn 2 slot, cap 3 → đăng 2) GIỮ NGUYÊN
+         không đổi** — chỉ áp dụng cho NGÀY được `_next_available_business_day()`
+         tìm ra (có thể là hôm nay hoặc ngày mai), không đổi công thức
+         `min(max_groups_per_post, available)`.
+      Verify bằng test thật (gọi trực tiếp hàm mới, không mock): kịch
+      bản "hôm nay đầy 3/3" → nhảy đúng sang ngày nghiệp vụ kế tiếp,
+      full lại 3 slot (chưa có gì xảy ra ở đó); qua tiếp
+      `_next_available_post_slot()` (giờ yên tĩnh) → đúng ~6h24 sáng
+      JST (không phải giờ cố định tuyệt đối, có biến thiên tự nhiên
+      nhờ phần random sẵn có trong `apply_quiet_hours()`); kịch bản
+      "còn 2 slot, cap 3" → vẫn đúng `available=2`, không tràn ngày vì
+      còn slot — công thức "đăng vừa đủ" không bị ảnh hưởng. 79 test
+      vẫn pass.
+- [x] **Rà soát kỹ toàn bộ đợt thay đổi "ngày nghiệp vụ" + tràn-ngày ở
+      trên, theo yêu cầu owner — cộng thêm bộ test tự động đầu tiên cho
+      `daily_limits.py` và `data_sync.py` (2 module trước đây CHƯA từng
+      có test riêng, gap đã ghi nhận nhiều lần).**
+
+      Rà bằng `grep` từng điểm nối dây: `_next_available_post_slot()`
+      chỉ còn đúng 1 nơi gọi (chữ ký mới, 4 tham số); 4 lượt gọi thật
+      của `daily_limits.can_proceed()`/`hard_cap_message()` (agent.py,
+      admin.py x2, data_sync.py) đều đã đổi, không sót `RateLimiter(...).can_proceed()`
+      hay `safety.rate_limit_hard_cap_message()` cũ nào ngoài định
+      nghĩa gốc; `deferred_jobs_inner` → merge vào `deferred_jobs` →
+      vào cursor bên B: còn nguyên, đúng thứ tự; không import thừa.
+
+      **Test mới:**
+      - `tests/test_daily_limits.py` (17 test) — `business_day_start()`/
+        `business_day_key()` (3 mốc giờ biên đúng/sai), `can_proceed()`
+        (daily cap theo ngày nghiệp vụ KHÁC rolling window — verify
+        đúng cả 2 chiều: dòng SAU mốc 2h sáng có tính, dòng TRƯỚC mốc
+        không tính; `comments_per_hour` vẫn dùng rolling window như cũ,
+        không đổi; gap check vẫn hoạt động; `ignore_gap` chỉ bỏ qua gap
+        chứ không bỏ qua daily cap), `hard_cap_message()`.
+      - `tests/test_data_sync.py` (12 test) — `_next_available_post_slot()`
+        (giờ yên tĩnh, gap cùng nhóm/khác nhóm), `_next_available_business_day()`
+        (không tràn khi còn slot — **đúng khớp ví dụ owner đưa ra: 5
+        slot, dùng 3, còn 2, cap 3 → đăng 2**; tràn đúng ngày nghiệp vụ
+        kế tiếp khi đầy; ngày tương lai bỏ qua `real_used_today` của
+        hôm nay đúng như thiết kế; dừng đúng sau 60 ngày tìm kiếm nếu
+        cấu hình bệnh lý; điểm rơi sau tràn đúng 2h sáng JST — không
+        phải nửa đêm UTC), `_count_scheduled_actions_by_day()` (dùng
+        `monkeypatch` trên `schedule_store`, không đụng file thật) —
+        **test quan trọng nhất:** 1 task lúc `16:30 UTC` (=01:30 JST
+        ngày hôm sau, TRƯỚC mốc 2h sáng) phải tính đúng vào ngày
+        nghiệp vụ HÔM TRƯỚC chứ không phải ngày UTC thô — đúng ca mà
+        cách tính cũ (`_utc_today()`) sẽ đếm sai, xác nhận PASS.
+
+      **Phát hiện 1 lỗi khi viết test — lỗi TRONG TEST, không phải
+      trong code thật:** ban đầu giả lập dòng log bằng
+      `datetime.now(timezone.utc)` (có timezone), nhưng `safety.py`
+      thật luôn ghi `datetime.utcnow()` (KHÔNG timezone) — test fail
+      ngay vì so sánh naive/aware datetime. Xác nhận bằng `grep` toàn
+      bộ `safety.py`: nhất quán dùng naive khắp nơi, không phải bug
+      production — sửa lại test cho khớp đúng định dạng log thật.
+
+      **Kết quả cuối: 108/108 test pass (79 cũ + 29 mới), không file
+      cấu hình/dữ liệu thật nào bị đụng trong lúc test** (dùng
+      `tmp_path`/`monkeypatch` cách ly hoàn toàn).
