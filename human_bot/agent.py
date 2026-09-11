@@ -15,7 +15,7 @@ from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from typing import Awaitable, Callable
 
-from human_bot import actions, db, media, screenshots
+from human_bot import actions, daily_limits, db, media, screenshots
 from human_bot.actions import ActionResult, _group_id_from_url
 from human_bot.browser_pool import get_session
 from human_bot.config import AccountStatus, get_account
@@ -203,8 +203,12 @@ async def run_task(request: TaskRequest) -> TaskResult:
     ):
         request = replace(request, media_path=media.pick_random_meme())
 
+    # daily_limits.can_proceed() (2026-09-11), not RateLimiter.can_proceed()
+    # directly — same gap check, but posts_per_day/comments_per_day now
+    # count against a "business day" (2 AM JST boundary) instead of a
+    # rolling 24h window; see human_bot/daily_limits.py's module docstring.
     limiter = RateLimiter(account)
-    allowed, reason = limiter.can_proceed(rate_limit_bucket, ignore_gap=request.force_ignore_gap)
+    allowed, reason = daily_limits.can_proceed(account, rate_limit_bucket, ignore_gap=request.force_ignore_gap)
     if not allowed:
         message = f"rate_limited:{reason}"
         _log_result(request, False, message)

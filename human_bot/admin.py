@@ -2765,12 +2765,15 @@ async def schedule_fire_now(request: Request, _: None = Depends(_require_auth)):
             return HTMLResponse(_schedule_content_html(account_id=account_id, page=page, page_size=page_size, error=err) + _MODAL_CLOSE_OOB)
         return _schedule_redirect(account_id, page, page_size=page_size, error=err)
 
+    from human_bot import daily_limits
     from human_bot.agent import rate_limit_bucket_for
-    from human_bot.safety import RateLimiter, is_gap_reason, rate_limit_hard_cap_message, rate_limit_wait_message
+    from human_bot.safety import is_gap_reason, rate_limit_wait_message
     account = get_all_accounts().get(task.account_id)
     bucket = rate_limit_bucket_for(task.action)
     if account and bucket and not force:
-        allowed, reason = RateLimiter(account).can_proceed(bucket)
+        # daily_limits.can_proceed() (2026-09-11), not RateLimiter.can_proceed()
+        # directly — see human_bot/daily_limits.py's module docstring.
+        allowed, reason = daily_limits.can_proceed(account, bucket)
         if not allowed and is_gap_reason(reason):
             # Soft pacing gap only — offer the override modal instead of
             # failing outright. Doesn't record an attempt (can_proceed()
@@ -2797,7 +2800,7 @@ async def schedule_fire_now(request: Request, _: None = Depends(_require_auth)):
             # run_task() call and show the reschedule suggestion directly
             # (2026-09-11 — same investigation as fire_due_tasks()'s
             # matching pre-check).
-            warning = rate_limit_hard_cap_message(account, bucket) or reason
+            warning = daily_limits.hard_cap_message(account, bucket) or reason
             if _is_htmx(request):
                 return HTMLResponse(_schedule_content_html(account_id=account_id, page=page, page_size=page_size, error=warning) + _MODAL_CLOSE_OOB)
             return _schedule_redirect(account_id, page, page_size=page_size, error=warning)
@@ -2828,7 +2831,7 @@ async def schedule_fire_now(request: Request, _: None = Depends(_require_auth)):
         # failed/.
         warning = None
         if account and bucket:
-            warning = rate_limit_wait_message(account, bucket) or rate_limit_hard_cap_message(account, bucket)
+            warning = rate_limit_wait_message(account, bucket) or daily_limits.hard_cap_message(account, bucket)
         schedule_store.update(task_id, last_warning=warning or result.message)
         if _is_htmx(request):
             return HTMLResponse(_schedule_content_html(account_id=account_id, page=page, page_size=page_size, error=warning or result.message) + _MODAL_CLOSE_OOB)
@@ -3589,16 +3592,17 @@ async def reports_repost(request: Request, _: None = Depends(_require_auth)):
         # failure of the repost — it's the rate-limiter doing its job.
         # Owner asked (2026-09-11) that this stop being shown as a red
         # "Đăng lại thất bại" error; rate_limit_wait_message()/
-        # rate_limit_hard_cap_message() give a human-readable explanation
+        # daily_limits.hard_cap_message() give a human-readable explanation
         # (with a reschedule suggestion for the hard-cap case) when
         # possible, falling back to the raw reason otherwise.
+        from human_bot import daily_limits
         from human_bot.agent import rate_limit_bucket_for
-        from human_bot.safety import rate_limit_hard_cap_message, rate_limit_wait_message
+        from human_bot.safety import rate_limit_wait_message
         account = get_all_accounts().get(row["account_id"])
         bucket = rate_limit_bucket_for(row["action"])
         warning = None
         if account and bucket:
-            warning = rate_limit_wait_message(account, bucket) or rate_limit_hard_cap_message(account, bucket)
+            warning = rate_limit_wait_message(account, bucket) or daily_limits.hard_cap_message(account, bucket)
         warning = warning or result.message
         if _is_htmx(request):
             return HTMLResponse(_reports_content_html(account_id=account_id, days=days, page=page, page_size=page_size, warning=warning))
