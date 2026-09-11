@@ -8,7 +8,6 @@ unit-tested on its own.
 from __future__ import annotations
 
 import json
-import random
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -218,18 +217,53 @@ class RateLimiter:
         return True, "ok"
 
     def record(self, action_type: str, success: bool) -> None:
-        # Draws the randomized gap ONCE, right here, and persists it as
-        # next_allowed_at — rather than re-rolling it on every
+        # Persisted as next_allowed_at — rather than re-computed on every
         # can_proceed() check, which would let the required wait shrink
         # or grow each time it's checked. _last_action_gap_ok() above
         # just compares "now" against this stored value, scoped to the
         # last row of this SAME action_type (see next_allowed_at()'s
         # docstring) — so this next_allowed_at only ever gets compared
         # against a future action of the same type.
-        gap_min, gap_max = _gap_bounds(self.account.rate_limits, action_type)
+        #
+        # TẠM THỜI (2026-09-11, quyết định của chủ dự án) — dùng thẳng
+        # gap_min làm mốc, KHÔNG random.uniform(gap_min, gap_max) như
+        # trước nữa. Lý do: lịch (data_sync.py's next_post_time/
+        # next_comment_time) đã tự random ra một khoảng cách "x1" nằm
+        # TRONG [gap_min, gap_max] khi xếp 2 hành động liên tiếp — tức
+        # x1 luôn ≥ gap_min theo đúng định nghĩa, không cần chỗ này
+        # random THÊM một lần nữa. Trước đây record() tự random ra
+        # "x_safety" ĐỘC LẬP với x1 — vì x_safety chỉ tồn tại SAU KHI
+        # hành động trước đó chạy xong (một sự kiện tương lai tại thời
+        # điểm lên lịch), lịch không có cách nào biết trước để né, nên
+        # x1 < x_safety vẫn có thể xảy ra (~50% theo xác suất) — gây
+        # đúng tình huống "lên lịch tưởng ổn nhưng vẫn bị rate-limit
+        # chặn khi chạy thật" đã gặp thực tế (xem cuộc trao đổi
+        # 2026-09-11 bàn kỹ vụ này, và FB_Post_Assistant.md mục 4.13).
+        #
+        # Coi next_allowed_at giờ CHỈ còn ý nghĩa "mốc nghỉ tối thiểu
+        # tuyệt đối kể từ hành động vừa xong" — một lằn ranh cứng để
+        # bất kỳ đường nào khác (đặt lịch tay, "Đăng ngay"/"Đăng lại",
+        # hay tương lai có đường gọi run_task() trực tiếp nào khác) biết
+        # mà né ra, không phải nguồn tạo độ ngẫu nhiên chính (độ ngẫu
+        # nhiên thật của giờ đăng nằm ở lớp lên lịch, x1, vốn luôn thoả
+        # sẵn gap_min này).
+        #
+        # ĐÁNH ĐỔI CẦN GHI NHỚ (chưa giải quyết, "tạm thời"): với MỌI
+        # hành động không đi qua lớp lên lịch có random riêng — ví dụ
+        # bấm "Đăng ngay"/"Đăng lại" liên tiếp nhiều lần bằng tay, hoặc
+        # một đường gọi run_task() trực tiếp trong tương lai — khoảng
+        # cách enforcement thật sẽ luôn là ĐÚNG MỘT con số cố định
+        # (gap_min) mỗi lần, thay vì ngẫu nhiên trong khoảng — đúng kiểu
+        # "làm y hệt nhau mọi lần" mà chính dự án này từng nhận diện là
+        # dấu hiệu bất thường rõ hơn cả (xem lý do chọn 4 tier ở
+        # group-targeting). Rủi ro này được đánh giá là nhỏ (các đường
+        # đó do người thật bấm tay, không phải vòng lặp tự động lặp
+        # lại) nên chấp nhận đánh đổi này TẠM THỜI — nếu sau này có
+        # thêm đường gọi tự động lặp lại không qua lịch, cần xem lại.
+        gap_min, _gap_max = _gap_bounds(self.account.rate_limits, action_type)
         next_allowed_at = (
             datetime.utcnow()
-            + timedelta(seconds=random.uniform(gap_min, gap_max))
+            + timedelta(seconds=gap_min)
         ).isoformat()
         row = {
             "timestamp": datetime.utcnow().isoformat(),
