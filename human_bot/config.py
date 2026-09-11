@@ -89,6 +89,17 @@ class RateLimits:
     comment_min_delay_seconds: int = 900  # 0.25h
     comment_max_delay_seconds: int = 1800  # 0.5h
 
+    # Cap on how many of this account's joined groups a single job post
+    # broadcasts to (2026-09-11, project owner's call — moved here from a
+    # global DataSyncConfig field the same day, per-account instead: an
+    # account in fewer/newer groups might want a tighter cap than one with
+    # many established groups). Broadcasting one job to EVERY joined group
+    # unconditionally is a cross-posting pattern real anti-spam systems
+    # recognize regardless of how much the content is reworded per group
+    # — see data_sync.py's sync_all() for how the actual ≤N groups get
+    # picked (round-robin by longest-since-last-posted, not random/fixed).
+    max_groups_per_post: int = 3
+
 
 # --- Account-age rate-limit presets -----------------------------------------
 #

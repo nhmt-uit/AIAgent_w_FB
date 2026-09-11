@@ -739,6 +739,7 @@ EDITABLE_RATE_LIMITS_FIELDS: list[str] = [
     "post_max_delay_seconds",
     "comment_min_delay_seconds",
     "comment_max_delay_seconds",
+    "max_groups_per_post",
 ]
 
 
