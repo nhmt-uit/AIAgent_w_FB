@@ -272,3 +272,40 @@ def rate_limit_wait_message(account: AccountConfig, action_type: str) -> str | N
         f"giữa 2 {label} liên tiếp trên tài khoản này). Gợi ý: dời lịch sau "
         f"{jst.strftime('%H:%M %d-%m-%Y')} (giờ Nhật Bản)."
     )
+
+
+def rate_limit_hard_cap_message(account: AccountConfig, action_type: str) -> str | None:
+    """Human-readable (Vietnamese) notice when an account is blocked by one
+    of the HARD count caps (posts_per_day / comments_per_hour /
+    comments_per_day / likes_per_hour — see can_proceed()'s docstring for
+    why these are never overridable), as opposed to rate_limit_wait_message()
+    above which only covers the soft min_delay_seconds pacing gap. Returns
+    None if the account isn't currently blocked, or is blocked only by the
+    soft gap (that case stays rate_limit_wait_message()'s job — check
+    is_gap_reason() on can_proceed()'s own `reason` to tell them apart).
+
+    Deliberately does NOT compute an exact "unblocks at" time the way
+    rate_limit_wait_message() does for the soft gap: these caps are
+    enforced over a ROLLING window (the last 24h / 1h from whenever this
+    is checked, human_bot/safety.py's RateLimiter._read_recent()), not a
+    single next_allowed_at timestamp, and — critically — that rolling
+    window is a different "day" than the one human_bot/data_sync.py's
+    scheduler reasons about when spreading new tasks across calendar
+    dates (UTC midnight-to-midnight). A backlog of tasks scheduled across
+    several calendar days (e.g. while auto_fire_enabled was off) can
+    still all land inside the same rolling 24h window once they finally
+    fire, exceeding the daily cap even though each calendar day's own
+    schedule stayed under it — see the conversation this was added from,
+    2026-09-11, for the full investigation. So instead of promising a
+    specific clock time, this just tells the admin the cap is hit and to
+    reschedule by hand."""
+    allowed, reason = RateLimiter(account).can_proceed(action_type)
+    if allowed or is_gap_reason(reason):
+        return None
+    label = {"post": "bài đăng", "comment": "comment", "like": "lượt thích"}.get(action_type, action_type)
+    return (
+        f"⛔ Tài khoản này đã đạt giới hạn số lượng {label} tối đa (theo giờ hoặc theo ngày) — "
+        f"KHÔNG phải lỗi tạm thời, sẽ còn bị chặn cho tới khi hoạt động cũ đủ 24h/1h trôi qua. "
+        f"Gợi ý: dời lịch bài này sang một thời điểm khác (VD ngày mai) ở trang Lịch đăng, "
+        f"hoặc huỷ nếu không còn cần thiết."
+    )
