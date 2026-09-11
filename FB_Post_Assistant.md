@@ -406,6 +406,7 @@ Phần này liệt kê để cho thấy mức độ test thực tế của dự 
 * **Chống fingerprint đầy đủ hơn:** user-agent/Client Hints đồng bộ, múi giờ khớp IP thật, và quan trọng nhất — proxy/IP riêng theo từng tài khoản (mục 4.5) — đều chưa làm, chờ quyết định khi cần mở rộng quy mô.
 * **Thiết lập môi trường vận hành thật:** khoá API bên B thật, `TASKS_API_KEY` thật, proxy — chưa điền vào cấu hình production.
 * **Chọn nhóm theo chủ đề** (bài IT → nhóm IT, bài Tokutei → nhóm Tokutei...) thay vì luôn phát tán vào mọi nhóm đã tham gia — đang cân nhắc thêm.
+* **Báo cáo xem theo từng LẦN ĐĂNG (theo job), chưa làm — ghi chú theo yêu cầu owner 2026-09-11:** bảng "Hoạt động gần đây" hiện tại chỉ hiện từng dòng hành động rời rạc (1 dòng/1 nhóm), không có cách nào xem gộp "1 lần đăng job X đã phát vào bao nhiêu nhóm, mỗi nhóm nội dung gì, nhóm nào thành/bại, nội dung gốc trước khi soạn lại là gì". Phần lớn dữ liệu đã có sẵn trong `action_log` (gom theo `source_id`), riêng "nội dung gốc" thì CHƯA lưu vào DB (chỉ có trong file JSON `schedule_store`, không nối ngược lại được vì `action_log` chưa lưu `task_id`) — cần quyết định hướng trước khi làm (xem chi tiết ở tasks.md).
 
 # 7\. Kế hoạch tiếp theo
 

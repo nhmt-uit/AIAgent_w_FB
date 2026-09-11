@@ -1733,3 +1733,35 @@
       lẫn trường hợp tuỳ chỉnh; bảng Hoạt động gần đây không còn nhãn
       "(UTC)", có `data-local-dt`). 110 test vẫn pass. **Chưa xác nhận
       trên UI thật** — cần restart service.
+
+## Việc cần làm (chưa triển khai) — ghi chú theo yêu cầu owner 2026-09-11
+
+- [ ] **Thêm 1 dạng báo cáo MỚI — xem theo TỪNG LẦN ĐĂNG (theo job), không
+      phải theo từng dòng hành động rời rạc như "Hoạt động gần đây" hiện
+      tại.** Owner yêu cầu rõ cần hiển thị, cho 1 lần đăng (1 job từ bên
+      B):
+      - Nội dung đã đăng là gì, nội dung GỐC (trước khi soạn lại theo
+        từng nhóm/AI) là gì.
+      - Đăng vào lúc nào.
+      - Đăng vào bao nhiêu nhóm, mỗi nhóm cụ thể nội dung gì (có thể
+        khác nhau — xem `content_strategist.template_variants()`, mỗi
+        nhóm 1 biến thể riêng).
+      - Đã đăng vào NHỮNG nhóm nào cụ thể (tên/URL), nhóm nào thành
+        công, nhóm nào thất bại.
+      - Tài khoản nào thực hiện.
+
+      **Ghi chú kỹ thuật cho lúc triển khai (đã tra trước, không phải
+      đoán):** phần lớn dữ liệu đã có sẵn trong `human_bot.db`'s bảng
+      `action_log` — mỗi dòng có `source_id` (= id job bên B), nên gom
+      các dòng cùng `source_id` + `account_id` lại là ra đúng "1 lần
+      đăng" với đủ nhóm/nội dung/thời gian/kết quả từng nhóm, không cần
+      thu thập dữ liệu mới. **Riêng "nội dung GỐC" thì CHƯA có sẵn** —
+      `ScheduledTask.job_data` (title + attributes thô từ bên B) chỉ
+      lưu trong file JSON của `schedule_store` (`scheduled/posted/*.json`),
+      KHÔNG được lưu vào `action_log` khi bắn task — và `action_log`
+      hiện cũng không lưu `task_id` để nối ngược lại đúng file JSON đó.
+      Cần 1 trong 2 hướng trước khi làm báo cáo này: (a) thêm cột
+      `task_id`/`job_data` vào bảng `action_log` (đổi schema DB,
+      `db.log_action()`), hoặc (b) chấp nhận báo cáo chỉ hiển thị nội
+      dung ĐÃ đăng (không có bản gốc) cho các job đã bắn TRƯỚC khi sửa,
+      chỉ job bắn SAU khi sửa mới có đủ dữ liệu.
