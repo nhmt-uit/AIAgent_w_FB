@@ -62,7 +62,7 @@ from human_bot.config import (
     get_all_accounts,
     new_group_id,
 )
-from human_bot.data_sync import apply_quiet_hours, get_all_sync_statuses
+from human_bot.data_sync import apply_quiet_hours, get_all_sync_statuses, _format_attr
 from human_bot.data_sync_config import DataSyncConfig
 from human_bot.scheduling_config import SchedulingConfig
 from human_bot.media import MediaConfig
@@ -684,6 +684,15 @@ _PAGE_STYLE = """
   .account-filter { @apply flex items-center gap-2.5 mb-5 flex-wrap; }
   .account-filter select { @apply w-auto min-w-[260px]; }
   .account-filter label { @apply text-sm text-gray-500 font-semibold; }
+
+  /* _expandable_text()'s <details> — CSS-only truncate/expand (no JS,
+     no separate short/full markup) so opening it swaps STRAIGHT from
+     the ellipsis-clipped line to the full text in place, instead of
+     showing the short teaser above a second copy of the full text
+     (owner-reported 2026-09-12: the old <summary>+<div> version left
+     the truncated line visible above the expanded one). */
+  .expandable-text > summary { @apply cursor-pointer block whitespace-nowrap overflow-hidden text-ellipsis max-w-full; }
+  .expandable-text[open] > summary { @apply whitespace-pre-wrap overflow-visible max-w-full; }
 
   /* htmx: fade the swapped-in fragment in, and dim the target briefly
      while a request is in flight — the only visual cue a click "did
@@ -2139,6 +2148,12 @@ async def post_form(
     profile_content: str | None = None,
     profile_scheduled_at: str | None = None,
     tab: str | None = None,
+    # From /admin/reports' "📅 Đặt lịch" (owner request 2026-09-12) — a
+    # failed group-post or comment's original content/target, so the
+    # admin doesn't have to retype it here, just pick a date/time.
+    prefill_content: str | None = None,
+    prefill_target_url: str | None = None,
+    prefill_retry_of_log_id: int | None = None,
     _: None = Depends(_require_auth),
 ) -> str:
     accounts = get_all_accounts()
@@ -2200,7 +2215,7 @@ async def post_form(
     if groups:
         group_checkboxes = "".join(
             f'''<label style="display:flex; align-items:center; gap:6px; font-size:13px; background:#f9fafb; border:1px solid #e5e7eb; border-radius:8px; padding:6px 10px;">
-  <input type="checkbox" name="groups_0" value="{html.escape(g.url)}"> {html.escape(g.name or g.url)}
+  <input type="checkbox" name="groups_0" value="{html.escape(g.url)}"{" checked" if prefill_target_url and g.url == prefill_target_url else ""}> {html.escape(g.name or g.url)}
 </label>'''
             for g in groups
         )
@@ -2210,10 +2225,11 @@ async def post_form(
   <p class="page-desc">Có thể tạo nhiều khối nội dung khác nhau, mỗi khối đăng vào một tập nhóm riêng — ví dụ nội dung A cho 3 nhóm đầu, nội dung B cho nhóm còn lại. Hệ thống tự rải giờ đăng giữa TẤT CẢ các bài (kể cả giữa các khối khác nhau) theo khoảng cách đang cấu hình ở <a href="/admin/config?tab=sync">Cấu hình → Đồng bộ dữ liệu</a> — không đăng dồn một lúc dù chọn nhiều nhóm.</p>
   <form method="post" action="/admin/post/schedule-groups">
     <input type="hidden" name="account_id" value="{html.escape(account_id)}">
+    <input type="hidden" name="retry_of_log_id" value="{prefill_retry_of_log_id or ""}">
     <div data-repeatable-blocks>
       <div data-block-list>
         <div class="content-block" data-block style="border:1px solid #e5e7eb; border-radius:12px; padding:14px; margin-bottom:10px;">
-          <textarea name="content_0" placeholder="Nội dung cho các nhóm được chọn bên dưới..." required></textarea>
+          <textarea name="content_0" placeholder="Nội dung cho các nhóm được chọn bên dưới..." required>{html.escape(prefill_content or "")}</textarea>
           <div class="field-key" style="margin:8px 0 6px; display:flex; align-items:center; justify-content:space-between;">
             <span>Đăng vào nhóm:</span>
             <button type="button" class="btn-secondary btn-small" data-select-all-groups>Chọn tất cả</button>
@@ -2238,7 +2254,40 @@ async def post_form(
   <div class="empty-state">Tài khoản này chưa có nhóm nào — thêm ở <a href="/admin/groups?account_id={html.escape(account_id)}">/admin/groups</a> trước.</div>
 </div>"""
 
-    active_tab = tab if tab in ("profile", "group") else "profile"
+    # "💬 Bình luận" tab (2026-09-12) — added specifically so /admin/reports'
+    # "📅 Đặt lịch" has somewhere to land for a candidate comment
+    # (comment_on_group_post/comment_on_friend_post); no group-membership
+    # list to pick from like the post card above, since a comment always
+    # targets one specific existing FB post/profile URL, not a joined
+    # group — so target_url is a plain editable text field instead of
+    # checkboxes. Action (group vs friend) is inferred from the URL at
+    # submit time, same rule data_sync.py's sync_all() already uses
+    # ("/groups/" in url).
+    comment_post_card = f"""
+<div class="card">
+  <h2>💬 Đặt lịch bình luận — {html.escape(account_labels[account_id])}</h2>
+  <p class="page-desc">Bình luận vào MỘT bài đăng/hồ sơ Facebook cụ thể (dán URL bài đó bên dưới) — khác với "Đăng vào nhóm" ở trên vốn đăng bài mới, không phải bình luận vào bài có sẵn.</p>
+  <form method="post" action="/admin/post/schedule-comment">
+    <input type="hidden" name="account_id" value="{html.escape(account_id)}">
+    <input type="hidden" name="retry_of_log_id" value="{prefill_retry_of_log_id or ""}">
+    <div class="field-stack">
+      <div class="field-label">URL bài đăng/hồ sơ cần bình luận</div>
+      <div class="field-input">
+        <input type="url" name="target_url" placeholder="https://facebook.com/groups/.../posts/..." required
+               style="width:100%; box-sizing:border-box;"
+               value="{html.escape(prefill_target_url or "")}">
+      </div>
+    </div>
+    <textarea name="content" placeholder="Nội dung bình luận..." required style="margin-top:14px;">{html.escape(prefill_content or "")}</textarea>
+    <div class="field-stack" style="margin-top:14px;">
+      <div class="field-label">Đăng lúc</div>
+      <div class="field-input">{_datetime_picker_html("scheduled_at")}</div>
+    </div>
+    <div class="form-actions"><button type="submit">Lên lịch</button></div>
+  </form>
+</div>"""
+
+    active_tab = tab if tab in ("profile", "group", "comment") else "profile"
 
     def tab_btn(key: str, label: str) -> str:
         cls = "tab-btn active" if key == active_tab else "tab-btn"
@@ -2259,6 +2308,7 @@ async def post_form(
   <div class="tab-bar">
     {tab_btn("profile", "👤 Tường cá nhân")}
     {tab_btn("group", "👥 Đăng vào nhóm")}
+    {tab_btn("comment", "💬 Bình luận")}
   </div>
 
   <div class="tab-panel" id="tab-profile"{panel_attrs("profile")}>
@@ -2266,6 +2316,7 @@ async def post_form(
       <h2>👤 Đăng lên tường cá nhân — {html.escape(account_labels[account_id])}</h2>
       <form method="post" action="/admin/post/schedule-profile">
         <input type="hidden" name="account_id" value="{html.escape(account_id)}">
+        <input type="hidden" name="retry_of_log_id" value="{prefill_retry_of_log_id or ""}">
         <textarea name="content" placeholder="Nội dung bài đăng..." required data-preserve-profile-content>{html.escape(profile_content or "")}</textarea>
         <div class="field-stack" style="margin-top:14px;">
           <div class="field-label">Đối tượng xem</div>
@@ -2289,8 +2340,29 @@ async def post_form(
   <div class="tab-panel" id="tab-group"{panel_attrs("group")}>
     {group_post_card}
   </div>
+
+  <div class="tab-panel" id="tab-comment"{panel_attrs("comment")}>
+    {comment_post_card}
+  </div>
 </div>
 """, active="post")
+
+
+def _parse_retry_of_log_id(form) -> int | None:
+    """`retry_of_log_id` hidden field threaded through /admin/post's 3
+    compose forms (2026-09-12) — set only when the admin got here via
+    /admin/reports' "📅 Đặt lịch" (see _repost_choice_modal_html()'s
+    prefill_qs), so the task this creates still traces back to the
+    original failed report row once it fires (agent.py's TaskRequest.
+    retry_of_log_id → db.log_action()). Empty/missing means a task
+    composed fresh, not from a report row."""
+    raw = str(form.get("retry_of_log_id", "")).strip()
+    if not raw:
+        return None
+    try:
+        return int(raw)
+    except ValueError:
+        return None
 
 
 @router.post("/post/schedule-profile")
@@ -2314,6 +2386,7 @@ async def post_schedule_profile(request: Request, _: None = Depends(_require_aut
         content=content,
         audience=audience,
         reasoning="manual: composed at /admin/post",
+        retry_of_log_id=_parse_retry_of_log_id(form),
     )
     schedule_store.add(task)
     return RedirectResponse(url=f"/admin/post?account_id={account_id}&tab=profile&scheduled=1", status_code=303)
@@ -2350,6 +2423,7 @@ async def post_schedule_groups(request: Request, _: None = Depends(_require_auth
     if start_at is None:
         return RedirectResponse(url=f"/admin/post?account_id={account_id}&tab=group&error=Giờ+bắt+đầu+không+hợp+lệ", status_code=303)
 
+    retry_of_log_id = _parse_retry_of_log_id(form)
     cfg = get_data_sync_config()
     next_time = start_at
     scheduled_count = 0
@@ -2367,6 +2441,7 @@ async def post_schedule_groups(request: Request, _: None = Depends(_require_auth
                 content=content,
                 target_url=group_url,
                 reasoning="manual: composed at /admin/post",
+                retry_of_log_id=retry_of_log_id,
             )
             schedule_store.add(task)
             scheduled_count += 1
@@ -2375,6 +2450,40 @@ async def post_schedule_groups(request: Request, _: None = Depends(_require_auth
             )
 
     return RedirectResponse(url=f"/admin/post?account_id={account_id}&tab=group&scheduled={scheduled_count}", status_code=303)
+
+
+@router.post("/post/schedule-comment")
+async def post_schedule_comment(request: Request, _: None = Depends(_require_auth)) -> RedirectResponse:
+    """Schedules a comment onto a specific existing FB post/profile (not a
+    new post like schedule-groups above) — added 2026-09-12 so /admin/
+    reports' "📅 Đặt lịch" has a landing page for a candidate comment.
+    Action (group vs friend comment) is inferred from the URL, same rule
+    data_sync.py's sync_all() already uses for candidate replies."""
+    form = await request.form()
+    account_id = str(form.get("account_id", "")).strip()
+    target_url = str(form.get("target_url", "")).strip()
+    content = str(form.get("content", "")).strip()
+    if not target_url or not content:
+        return RedirectResponse(
+            url=f"/admin/post?account_id={account_id}&tab=comment&error=Cần+URL+và+nội+dung+bình+luận",
+            status_code=303,
+        )
+    scheduled_at = _parse_scheduled_at(str(form.get("scheduled_at", "")))
+    if scheduled_at is None:
+        return RedirectResponse(url=f"/admin/post?account_id={account_id}&tab=comment&error=Giờ+đăng+không+hợp+lệ", status_code=303)
+    action = "comment_on_group_post" if "/groups/" in target_url else "comment_on_friend_post"
+    task = schedule_store.ScheduledTask(
+        task_id=schedule_store.new_task_id(scheduled_at.isoformat()),
+        action=action,
+        account_id=account_id,
+        scheduled_at=scheduled_at.isoformat(),
+        content=content,
+        target_url=target_url,
+        reasoning="manual: composed at /admin/post",
+        retry_of_log_id=_parse_retry_of_log_id(form),
+    )
+    schedule_store.add(task)
+    return RedirectResponse(url=f"/admin/post?account_id={account_id}&tab=comment&scheduled=1", status_code=303)
 
 
 # --- Schedule (side-B data-sync poller output) ------------------------------
@@ -2807,6 +2916,11 @@ async def schedule_fire_now(request: Request, _: None = Depends(_require_auth)):
         source="schedule_manual",
         source_kind=task.source_kind,
         source_id=task.source_id,
+        # See data_sync.py's fire_due_tasks() for why: candidate tasks
+        # carry their origin data in task.candidate_data instead, never
+        # task.job_data — exactly one of the two is ever set.
+        job_data=task.job_data or task.candidate_data,
+        retry_of_log_id=task.retry_of_log_id,
         force_ignore_gap=force,
     ))
     if result.success:
@@ -3091,24 +3205,25 @@ _SOURCE_LABELS: dict[str, str] = {
 
 
 def _expandable_text(text: str | None, limit: int = 80) -> str:
-    """Show `text` truncated to `limit` chars, with a native <details>
-    disclosure (no JS needed) to expand and read the full thing — for
-    /admin/reports' "Ghi chú" column, where a Playwright error message can
-    run well past a single line (see the conversation that raised this:
-    truncating to 80 chars with no way to see the rest loses real debug
-    info). Only wraps in <details> when actually truncated; a short
-    message renders as plain text, no disclosure triangle for nothing."""
+    """Show `text` clipped to one line with a CSS ellipsis, with a native
+    <details> disclosure (no JS needed) to expand and read the full thing
+    — for /admin/reports' "Ghi chú"/"Nội dung đã đăng" columns, where a
+    Playwright error message or a full post can run well past a single
+    line. The FULL text is the only copy of the markup — always lives
+    inside <summary> — clipped via the `.expandable-text > summary` CSS
+    rule while closed, shown in full (no more clipping) once <details>
+    opens, so expanding swaps straight to the full text in place instead
+    of showing a short teaser stacked above a second, separate copy of
+    the same text (owner-reported 2026-09-12). Only wraps in <details>
+    when actually longer than `limit`; a short message renders as plain
+    text, no disclosure triangle for nothing."""
     text = text or ""
     if not text:
         return '<span class="muted">—</span>'
-    if len(text) <= limit:
-        return html.escape(text)
-    short = html.escape(text[:limit])
     full = html.escape(text)
-    return (
-        f'<details><summary style="cursor:pointer; display:inline;">{short}…</summary>'
-        f'<div style="white-space:pre-wrap; margin-top:4px; max-width:480px;">{full}</div></details>'
-    )
+    if len(text) <= limit:
+        return full
+    return f'<details class="expandable-text"><summary>{full}</summary></details>'
 
 
 def _screenshot_link_html(path: str | None) -> str:
@@ -3136,6 +3251,32 @@ _REPORTS_RECENT_PAGE_SIZE = 15
 # as-is rather than switched to match schedule's default, so a bare
 # /admin/reports (no page_size in the URL) renders exactly as before.
 _REPORTS_PAGE_SIZE_CHOICES = (10, 15, 30, 50, 100)
+# "Theo từng lần đăng" job-report page size (2026-09-12) — fixed rather
+# than a selectable choice like recent activity's: each row here expands
+# into a whole per-group sub-table, so even 10 jobs/page can already be a
+# tall card. No owner request yet for a selector, so kept simple.
+_JOB_REPORT_PAGE_SIZE = 10
+# "Theo từng lần bình luận" candidate-report page size (2026-09-12) — same
+# fixed-not-selectable reasoning as _JOB_REPORT_PAGE_SIZE above.
+_CANDIDATE_REPORT_PAGE_SIZE = 10
+
+# /admin/reports tab keys (2026-09-12, owner request — page had grown to 6
+# stacked cards, some with their own pagination, "quá nhiều nội dung").
+# "tables" (KPI + theo tuần/nhóm/hành động) is the default so a bare
+# /admin/reports with no `tab` in the URL renders exactly what it always
+# has, same "don't change behavior for old bookmarks/links" reasoning as
+# _REPORTS_RECENT_PAGE_SIZE's default above.
+_REPORTS_TABS = ("tables", "jobs", "candidates", "recent")
+_REPORTS_TAB_LABELS = {
+    "tables": "📊 Thống kê chi tiết",
+    "jobs": "📮 Bài đăng",
+    "candidates": "💬 Bình luận",
+    "recent": "🕒 Hoạt động gần đây",
+}
+
+
+def _clamp_reports_tab(raw: str | None) -> str:
+    return raw if raw in _REPORTS_TABS else "tables"
 
 
 def _clamp_reports_page_size(raw: int) -> int:
@@ -3154,6 +3295,246 @@ def _clamp_reports_page_size(raw: int) -> int:
 # posting a duplicate (per-project decision, 2026-09-09).
 _REPOSTABLE_ACTIONS = {"post_to_own_profile", "post_to_group", "comment_on_group_post"}
 
+# Human-readable labels for known side-B `attributes` keys — used by
+# _attrs_summary_html() below for BOTH "Bài đăng" (job) and "Bình luận"
+# (candidate) "Dữ liệu gốc" — job_data/candidate_data are the RAW,
+# UNFILTERED dict side B sent (see db.log_action()'s docstring), so any
+# key not listed here still renders (falls back to its own raw key name)
+# instead of silently disappearing — owner request 2026-09-12: "Phần nội
+# dung gốc nên đầy đủ hơn" (the old version only showed a hand-picked
+# subset — company/location/visaType/jlpt/salary for jobs,
+# desiredJobField/preferredRegion for candidates — dropping anything side
+# B sent outside that fixed list, `confidence`/`contact` included, even
+# though the full dict was already sitting in the DB the whole time).
+_ATTR_LABELS = {
+    "jobField": "Ngành nghề",
+    "company": "Công ty",
+    "location": "Địa điểm",
+    "visaType": "Loại visa",
+    "jlpt": "JLPT",
+    "salary": "Lương",
+    "confidence": "Độ tin cậy",
+    "desiredJobField": "Muốn làm",
+    "preferredRegion": "Khu vực mong muốn",
+    "contact": "Liên hệ",
+}
+
+
+def _attrs_summary_html(title, attrs: dict) -> str:
+    """Renders EVERY non-empty key in `attrs` (plus `title` if given) as
+    "Nhãn: giá trị" pairs — dynamic, not a fixed allowlist, so a field
+    side B adds later (or one this project just hasn't named yet) still
+    shows up, using its own key name as the label until _ATTR_LABELS
+    above is taught a nicer one. `confidence` (a 0-1 ML score) is
+    formatted as a percentage since the raw decimal reads oddly next to
+    everything else here."""
+    parts = []
+    if title:
+        parts.append(f"<b>{html.escape('Tiêu đề')}:</b> {html.escape(_format_attr(title))}")
+    for key, value in (attrs or {}).items():
+        if not value and value != 0:
+            continue
+        if key == "confidence":
+            try:
+                value = f"{float(value) * 100:.0f}%"
+            except (TypeError, ValueError):
+                pass
+        label = _ATTR_LABELS.get(key, key)
+        parts.append(f"<b>{html.escape(label)}:</b> {html.escape(_format_attr(value))}")
+    return " &nbsp;·&nbsp; ".join(parts) if parts else '<span class="muted">—</span>'
+
+
+def _suggest_reschedule_at(account, action: str) -> datetime:
+    """The "🔄 Lên lịch lại" suggestion (owner request 2026-09-12): the
+    earliest time this account could actually post/comment `action` again
+    without breaking posts_per_day/comments_per_day, its own min-gap
+    pacing, or quiet hours. Deliberately reuses the SAME primitives the
+    real auto-scheduler (data_sync.py) and enforcement (daily_limits.py/
+    safety.py) already use, rather than a separate ad-hoc rule.
+
+    MUST also count already-PENDING scheduled tasks (schedule_store), not
+    just past real attempts (daily_limits/RateLimiter only ever read
+    action_log, which a pending task hasn't reached yet) — owner-reported
+    bug 2026-09-12: suggesting "Lên lịch lại" twice in the same sitting
+    (nothing had actually fired yet in between) kept returning the exact
+    same slot both times, since neither daily_limits' business-day count
+    nor RateLimiter's next_allowed_at() had any way to see the first
+    suggestion the admin had just confirmed. Fixed by folding pending
+    tasks of the same account+bucket into both checks below:
+      1. Cap check — a business day's effective usage is REAL count
+         (daily_limits.count_since_business_day_start(), today only) +
+         however many pending tasks already land in that same business-
+         day window; walk forward a day at a time (same bounded-iteration
+         shape as data_sync.py's _next_available_business_day()) until a
+         day has room.
+      2. Gap check — same "kẹp sàn" as before via
+         RateLimiter.next_allowed_at() (last REAL action), but also
+         floored against the LATEST pending task's own scheduled_at +
+         this account's min_delay_seconds for this bucket — otherwise 2
+         reschedules in a row could still land back-to-back with no gap
+         at all between them.
+    Only a SUGGESTION — reports_reschedule_confirm() still re-checks
+    everything for real via schedule_store's normal fire-time path, this
+    is just what the admin sees before clicking "Xác nhận"."""
+    from human_bot import daily_limits, schedule_store
+    from human_bot.agent import rate_limit_bucket_for
+    from human_bot.safety import RateLimiter
+
+    bucket = rate_limit_bucket_for(action)
+    now = datetime.now(timezone.utc)
+
+    if bucket == "post":
+        sibling_actions = {"post_to_own_profile", "post_to_group"}
+        cap = account.rate_limits.posts_per_day
+        gap_seconds = account.rate_limits.post_min_delay_seconds
+    elif bucket == "comment":
+        sibling_actions = {"comment_on_group_post", "comment_on_friend_post"}
+        cap = account.rate_limits.comments_per_day
+        gap_seconds = account.rate_limits.comment_min_delay_seconds
+    else:
+        sibling_actions, cap, gap_seconds = set(), None, 0
+
+    def _parse_aware(iso: str) -> datetime | None:
+        try:
+            dt = datetime.fromisoformat(iso.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+        return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+
+    pending_times = sorted(
+        t for t in (
+            _parse_aware(p.scheduled_at) for p in schedule_store.list_pending()
+            if p.account_id == account.account_id and p.action in sibling_actions
+        ) if t is not None
+    )
+
+    def _pending_count_on(day_start: datetime) -> int:
+        day_end = day_start + timedelta(days=1)
+        return sum(1 for t in pending_times if day_start <= t < day_end)
+
+    today_start = daily_limits.business_day_start(now)
+    candidate_day_start = today_start
+    for _ in range(60):  # same bound as data_sync.py's own day-rollover loop
+        real_used = (
+            daily_limits.count_since_business_day_start(account, bucket)
+            if bucket and candidate_day_start == today_start else 0
+        )
+        used = real_used + _pending_count_on(candidate_day_start)
+        if cap is None or used < cap:
+            break
+        candidate_day_start = candidate_day_start + timedelta(days=1)
+
+    candidate = now if candidate_day_start == today_start else candidate_day_start
+    candidate = apply_quiet_hours(candidate, get_data_sync_config())
+
+    floors = []
+    if bucket:
+        real_floor = RateLimiter(account).next_allowed_at(bucket)
+        if real_floor is not None:
+            if real_floor.tzinfo is None:
+                real_floor = real_floor.replace(tzinfo=timezone.utc)
+            floors.append(real_floor)
+    if pending_times:
+        floors.append(pending_times[-1] + timedelta(seconds=gap_seconds))
+    if floors:
+        candidate = max(candidate, *floors)
+    return candidate
+
+
+def _repost_choice_button_html(
+    r: sqlite3.Row, *, account_id: str | None, days: str | None, page: int, page_size: int,
+    job_page: int, candidate_page: int, tab: str,
+) -> str:
+    """The "↻" trigger button — opens _repost_choice_modal_html() instead
+    of resubmitting directly (owner request 2026-09-12: offer "Đăng ngay"/
+    "Đặt lịch"/"Lên lịch lại" instead of only ever firing immediately).
+    Same eligibility rule as before (see _REPOSTABLE_ACTIONS above)."""
+    if r['action'] not in _REPOSTABLE_ACTIONS or r['success'] or not (r['content'] or '').strip():
+        return ""
+    from urllib.parse import urlencode
+    qs = urlencode({
+        "log_id": r["id"], "account_id": account_id or "", "days": days or "",
+        "page": page, "page_size": page_size, "job_page": job_page,
+        "candidate_page": candidate_page, "tab": tab,
+    })
+    return (
+        f'<button type="button" class="btn-secondary btn-small" title="Đăng lại" '
+        f'hx-get="/admin/reports/repost-choice?{qs}" hx-target="#modal-root" hx-swap="innerHTML">↻</button>'
+    )
+
+
+def _repost_choice_modal_html(
+    row: sqlite3.Row, *, account_id: str | None, days: str | None, page: int, page_size: int,
+    job_page: int, candidate_page: int, tab: str,
+) -> str:
+    """3-way choice modal for a FAILED repostable row (owner request
+    2026-09-12): "Đăng ngay" (unchanged immediate-fire via
+    /admin/reports/repost), "Đặt lịch" (opens /admin/post pre-filled,
+    admin picks the date/time by hand), "Lên lịch lại" (server suggests
+    the next slot that wouldn't break posts_per_day/comments_per_day —
+    see _suggest_reschedule_at() — admin confirms before it's actually
+    added to the schedule)."""
+    from urllib.parse import urlencode
+    filter_fields = (
+        f'<input type="hidden" name="account_id" value="{html.escape(account_id or "")}">'
+        f'<input type="hidden" name="days" value="{html.escape(days or "")}">'
+        f'<input type="hidden" name="page" value="{page}">'
+        f'<input type="hidden" name="page_size" value="{page_size}">'
+        f'<input type="hidden" name="job_page" value="{job_page}">'
+        f'<input type="hidden" name="candidate_page" value="{candidate_page}">'
+        f'<input type="hidden" name="tab" value="{html.escape(tab)}">'
+        f'<input type="hidden" name="log_id" value="{row["id"]}">'
+    )
+    is_comment = row["action"] in ("comment_on_group_post", "comment_on_friend_post")
+    label = "bình luận" if is_comment else "bài viết"
+    # post_to_own_profile has its OWN tab/prefill params on /admin/post
+    # (profile_content/profile_scheduled_at, predating this feature) —
+    # route it there instead of "group" (which is post_to_group only) or
+    # "comment" (comment_on_*_post only).
+    if row["action"] == "post_to_own_profile":
+        prefill_qs = urlencode({
+            "account_id": row["account_id"], "tab": "profile",
+            "profile_content": row["content"] or "",
+            "prefill_retry_of_log_id": row["id"],
+        })
+    else:
+        prefill_qs = urlencode({
+            "account_id": row["account_id"],
+            "tab": "comment" if is_comment else "group",
+            "prefill_content": row["content"] or "",
+            "prefill_target_url": row["target_url"] or "",
+            "prefill_retry_of_log_id": row["id"],
+        })
+    reschedule_qs = urlencode({
+        "log_id": row["id"], "account_id": account_id or "", "days": days or "",
+        "page": page, "page_size": page_size, "job_page": job_page,
+        "candidate_page": candidate_page, "tab": tab,
+    })
+    return f"""
+<div class="modal-backdrop" onclick="if(event.target===this) this.remove()">
+  <div class="modal-box">
+    <div class="modal-header">
+      <h2>↻ Đăng lại {label}</h2>
+      <button type="button" class="modal-close" onclick="this.closest('.modal-backdrop').remove()">✕</button>
+    </div>
+    <p class="muted">Bản ghi này đã thất bại — chọn cách xử lý:</p>
+    <ul style="font-size:13px; color:#6b7280; margin:0 0 16px; padding-left:18px; line-height:1.7;">
+      <li><b>Đăng ngay</b> — thử lại ngay bây giờ, vẫn kiểm tra đủ giới hạn số lượng/ngày và /giờ như bình thường.</li>
+      <li><b>Đặt lịch</b> — mở trang soạn bài với nội dung điền sẵn, bạn tự chọn ngày giờ.</li>
+      <li><b>Lên lịch lại</b> — hệ thống tự tìm giờ trống gần nhất còn đủ hạn mức, bạn xác nhận trước khi thêm vào lịch.</li>
+    </ul>
+    <div style="display:flex; flex-direction:column; gap:8px;">
+      <form method="post" action="/admin/reports/repost" hx-post="/admin/reports/repost" hx-target="#reports-content" hx-swap="outerHTML">
+        {filter_fields}
+        <button type="submit" style="width:100%;">🚀 Đăng ngay</button>
+      </form>
+      <a class="btn-secondary" style="width:100%; text-align:center; box-sizing:border-box;" href="/admin/post?{prefill_qs}">📅 Đặt lịch</a>
+      <button type="button" class="btn-secondary" style="width:100%;"
+              hx-get="/admin/reports/reschedule-suggest?{reschedule_qs}" hx-target="#modal-root" hx-swap="innerHTML">🔄 Lên lịch lại</button>
+    </div>
+  </div>
+</div>"""
+
 
 def _reports_since(days: str | None) -> str | None:
     """`days` (from the "Khoảng thời gian" filter, e.g. "30") to an ISO
@@ -3170,10 +3551,12 @@ def _reports_since(days: str | None) -> str | None:
 
 def _reports_content_html(
     account_id: str | None = None, days: str | None = None, page: int = 1,
-    page_size: int = _REPORTS_RECENT_PAGE_SIZE,
+    page_size: int = _REPORTS_RECENT_PAGE_SIZE, job_page: int = 1, candidate_page: int = 1,
+    tab: str | None = None,
     posted: str | None = None, error: str | None = None, warning: str | None = None,
 ) -> str:
     page_size = _clamp_reports_page_size(page_size)
+    tab = _clamp_reports_tab(tab)
     accounts = get_all_accounts()
     since = _reports_since(days)
     flash = f'<p class="flash">✅ {html.escape(posted)}</p>' if posted else ""
@@ -3211,19 +3594,47 @@ def _reports_content_html(
     page_size_select_html = f"""<label for="reports-pagesize-select" class="muted">Hiển thị</label>
   <select name="page_size" id="reports-pagesize-select"
           hx-get="/admin/reports" hx-target="#reports-content" hx-swap="outerHTML"
-          hx-trigger="change" hx-include="#reports-account-select, #reports-days-select" hx-push-url="true">{page_size_options}</select>"""
+          hx-trigger="change" hx-include="#reports-account-select, #reports-days-select"
+          hx-vals='{{"tab": "recent"}}' hx-push-url="true">{page_size_options}</select>"""
     # The 2 page-wide selects include the page-size one via hx-include so
     # switching account/days never silently resets it back to default.
+    # hx-vals carries the currently active tab through (2026-09-12) — these
+    # selects render above every tab, so without it, changing the account/
+    # days filter would silently snap back to the default "tables" tab.
     filter_html = f"""
 <div class="account-filter">
   <label for="reports-account-select">Tài khoản</label>
   <select name="account_id" id="reports-account-select"
           hx-get="/admin/reports" hx-target="#reports-content" hx-swap="outerHTML"
-          hx-trigger="change" hx-include="#reports-days-select, #reports-pagesize-select" hx-push-url="true">{account_options}</select>
+          hx-trigger="change" hx-include="#reports-days-select, #reports-pagesize-select"
+          hx-vals='{{"tab": "{tab}"}}' hx-push-url="true">{account_options}</select>
   <label for="reports-days-select">Khoảng thời gian</label>
   <select name="days" id="reports-days-select"
           hx-get="/admin/reports" hx-target="#reports-content" hx-swap="outerHTML"
-          hx-trigger="change" hx-include="#reports-account-select, #reports-pagesize-select" hx-push-url="true">{days_options}</select>
+          hx-trigger="change" hx-include="#reports-account-select, #reports-pagesize-select"
+          hx-vals='{{"tab": "{tab}"}}' hx-push-url="true">{days_options}</select>
+</div>"""
+
+    def _reports_tab_link(tab_key: str) -> str:
+        from urllib.parse import urlencode as _urlencode_tab
+        active = tab_key == tab
+        qs = _urlencode_tab({k: v for k, v in {
+            "account_id": account_id, "days": days, "tab": tab_key,
+            "page_size": page_size if page_size != _REPORTS_RECENT_PAGE_SIZE else None,
+        }.items() if v})
+        style = (
+            "border-bottom:2px solid #111827; font-weight:600; color:#111827;" if active
+            else "border-bottom:2px solid transparent; color:#6b7280;"
+        )
+        return (
+            f'<a href="/admin/reports?{qs}" hx-get="/admin/reports?{qs}" '
+            f'hx-target="#reports-content" hx-swap="outerHTML" hx-push-url="true" '
+            f'style="padding:8px 4px; text-decoration:none; {style}">{_REPORTS_TAB_LABELS[tab_key]}</a>'
+        )
+
+    tab_nav_html = f"""
+<div style="display:flex; gap:20px; margin-bottom:18px; border-bottom:1px solid #e5e7eb;">
+  {"".join(_reports_tab_link(k) for k in _REPORTS_TABS)}
 </div>"""
 
     # --- KPI summary — glance-and-go health check before the detail tables ---
@@ -3245,174 +3656,414 @@ def _reports_content_html(
   </div>
 </div>"""
 
-    weekly_rows = db.weekly_post_counts(account_id=account_id, since=since)
-    if weekly_rows:
-        weekly_html = "".join(
-            f"<tr><td>{html.escape(r['week'])}</td><td>{html.escape(_account_label(r['account_id'], accounts))}</td><td>{r['total']}</td></tr>"
-            for r in weekly_rows
-        )
-        weekly_table = f"""
+    # Which failed rows already have a pending (not-yet-fired) retry task
+    # queued via "📅 Đặt lịch"/"🔄 Lên lịch lại" (2026-09-12) — one cheap
+    # directory scan, reused by whichever tab actually renders below, so
+    # those rows show "⏳ Đã lên lịch lại" instead of the "↻" button
+    # again. Pairs with db.successful_retry_log_ids() (per-tab, batched
+    # over just the rows that tab is about to render) for the "✅ Đã đăng
+    # lại" case — see _repost_action_cell_html() below.
+    pending_retry_ids = {
+        t.retry_of_log_id for t in schedule_store.list_pending() if t.retry_of_log_id
+    }
+
+    # Tab "tables" only (2026-09-12) — skip these 3 queries entirely on the
+    # other 2 tabs, same reasoning as the job/recent sections below: no
+    # point querying data a tab switch won't even render.
+    if tab == "tables":
+        weekly_rows = db.weekly_post_counts(account_id=account_id, since=since)
+        if weekly_rows:
+            weekly_html = "".join(
+                f"<tr><td>{html.escape(r['week'])}</td><td>{html.escape(_account_label(r['account_id'], accounts))}</td><td>{r['total']}</td></tr>"
+                for r in weekly_rows
+            )
+            weekly_table = f"""
 <div class="table-scroll"><table class="data-table">
   <thead><tr><th>Tuần</th><th>Tài khoản</th><th>Số bài đăng thành công</th></tr></thead>
   <tbody>{weekly_html}</tbody>
 </table></div>"""
-    else:
-        weekly_table = '<div class="empty-state">Chưa có bài đăng thành công nào được ghi nhận.</div>'
+        else:
+            weekly_table = '<div class="empty-state">Chưa có bài đăng thành công nào được ghi nhận.</div>'
 
-    group_rows = db.group_post_counts(account_id=account_id, since=since)
-    if group_rows:
-        group_html = "".join(
-            f"""<tr>
+        group_rows = db.group_post_counts(account_id=account_id, since=since)
+        if group_rows:
+            group_html = "".join(
+                f"""<tr>
   <td>{html.escape(_account_label(r['account_id'], accounts))}</td>
   <td>{html.escape(r['target_group_name']) if r['target_group_name'] else '<span class="muted">(chưa rõ tên)</span>'}</td>
   <td class="row-url"><a href="{html.escape(r['target_url'] or '')}" target="_blank" rel="noopener">{html.escape(r['target_url'] or '')}</a></td>
   <td>{r['total']}</td>
 </tr>""" for r in group_rows
-        )
-        group_table = f"""
+            )
+            group_table = f"""
 <div class="table-scroll"><table class="data-table">
   <thead><tr><th>Tài khoản</th><th>Tên nhóm</th><th>URL nhóm</th><th>Số bài đăng thành công</th></tr></thead>
   <tbody>{group_html}</tbody>
 </table></div>"""
-    else:
-        group_table = '<div class="empty-state">Chưa có bài đăng nhóm nào được ghi nhận.</div>'
+        else:
+            group_table = '<div class="empty-state">Chưa có bài đăng nhóm nào được ghi nhận.</div>'
 
-    action_rows = db.action_type_counts(account_id=account_id, since=since)
-    if action_rows:
-        # Pivot db.action_type_counts()'s (action, success, total) rows —
-        # one row per (action, success/fail) combo — into one row per
-        # action with separate Thành công/Thất bại columns (owner request
-        # 2026-09-11: easier to scan than a repeated "Kết quả" column).
-        # dict preserves first-seen order, which matches the query's own
-        # `ORDER BY action, success DESC`.
-        pivoted: dict[str, dict[str, int]] = {}
-        for r in action_rows:
-            entry = pivoted.setdefault(r["action"], {"succeeded": 0, "failed": 0})
-            entry["succeeded" if r["success"] else "failed"] = r["total"]
-        action_html = "".join(
-            f"""<tr>
+        action_rows = db.action_type_counts(account_id=account_id, since=since)
+        if action_rows:
+            # Pivot db.action_type_counts()'s (action, success, total) rows —
+            # one row per (action, success/fail) combo — into one row per
+            # action with separate Thành công/Thất bại columns (owner request
+            # 2026-09-11: easier to scan than a repeated "Kết quả" column).
+            # dict preserves first-seen order, which matches the query's own
+            # `ORDER BY action, success DESC`.
+            pivoted: dict[str, dict[str, int]] = {}
+            for r in action_rows:
+                entry = pivoted.setdefault(r["action"], {"succeeded": 0, "failed": 0})
+                entry["succeeded" if r["success"] else "failed"] = r["total"]
+            action_html = "".join(
+                f"""<tr>
   <td>{html.escape(_ACTION_LABELS.get(action, action))}</td>
   <td style="color:#059669;">{counts['succeeded']}</td>
   <td style="color:#dc2626;">{counts['failed']}</td>
 </tr>""" for action, counts in pivoted.items()
-        )
-        action_table = f"""
+            )
+            action_table = f"""
 <div class="table-scroll"><table class="data-table">
   <thead><tr><th>Hành động</th><th>Thành công</th><th>Thất bại</th></tr></thead>
   <tbody>{action_html}</tbody>
 </table></div>"""
-    else:
-        action_table = '<div class="empty-state">Chưa có dữ liệu.</div>'
+        else:
+            action_table = '<div class="empty-state">Chưa có dữ liệu.</div>'
 
-    # --- Recent activity: paginated + height-capped, so this block (by far
-    # the longest one) never dominates the page regardless of how much
-    # history exists — see the conversation that raised "4 khối khá dài,
-    # nhất là Hoạt động gần đây".
-    recent_total = db.recent_activity_count(account_id=account_id, since=since)
-    recent_total_pages = max(1, -(-recent_total // page_size))
-    page = min(max(page, 1), recent_total_pages)
-    recent_rows = db.recent_activity(
-        limit=page_size,
-        offset=(page - 1) * page_size,
-        account_id=account_id,
-        since=since,
-    )
-    def _repost_button_html(r: sqlite3.Row) -> str:
-        # Only offer "Đăng lại" for actions that post free-form `content`
-        # somewhere, only when that content survived into the log row, and
-        # only for FAILED attempts — a successful one doesn't need
-        # retrying, and resubmitting it would just post/comment a
-        # duplicate (per-project decision, 2026-09-09). A repost resubmits
-        # via run_task() exactly like /admin/schedule's "Đăng ngay", but
-        # built from action_log instead of a pending schedule_store task.
-        # media_path is never in action_log (not captured by agent.py's
-        # _log_result()), so a repost is always text-only even if the
-        # original attempt had an image attached.
-        if r['action'] not in _REPOSTABLE_ACTIONS or r['success'] or not (r['content'] or '').strip():
-            return ""
-        is_comment = r['action'] in ("comment_on_group_post", "comment_on_friend_post")
-        confirm_msg = "Đăng lại comment này ngay bây giờ?" if is_comment else "Đăng lại bài viết này ngay bây giờ?"
-        filter_fields = (
-            f'<input type="hidden" name="account_id" value="{html.escape(account_id or "")}">'
-            f'<input type="hidden" name="days" value="{html.escape(days or "")}">'
-            f'<input type="hidden" name="page" value="{page}">'
-            f'<input type="hidden" name="page_size" value="{page_size}">'
-            f'<input type="hidden" name="log_id" value="{r["id"]}">'
-        )
-        return f"""<form method="post" action="/admin/reports/repost" style="display:inline;"
-        hx-post="/admin/reports/repost" hx-target="#reports-content" hx-swap="outerHTML"
-        hx-confirm="{confirm_msg}">
-  {filter_fields}
-  <button type="submit" class="btn-secondary btn-small" title="Đăng lại">↻</button>
-</form>"""
-
+    # --- "Theo từng lần đăng" (2026-09-12): one job = one card of its own —
+    # target groups, per-group content actually posted, per-group time and
+    # result, and the raw side-B job data it came from. Grouped server-side
+    # by db.job_post_groups() (source_kind='job' rows only — candidates
+    # have no per-group fan-out to gather), rendered as one <details> per
+    # job so the (potentially long) per-group table only takes space once
+    # opened.
     def _recent_result_icon(r: sqlite3.Row) -> str:
         # Distinct from a real failure (2026-09-11, same reasoning as
         # summary_stats()/action_type_counts() in db.py) — a rate_limited
         # row was never actually attempted, so lumping it in with ⚠️ next
         # to genuine broken-selector/timeout failures made the "KQ" column
-        # misleading at a glance.
+        # misleading at a glance. Used by both "Hoạt động gần đây" and
+        # "Theo từng lần đăng" (2026-09-12) — same action_log rows, same
+        # icon rules.
         if r["success"]:
             return "✅"
         if (r["message"] or "").startswith("rate_limited:"):
             return "⏳"
         return "⚠️"
 
-    if recent_rows:
-        recent_html = "".join(
-            f"""<tr>
+    def _group_link_html(row: sqlite3.Row) -> str:
+        # Same link-the-name pattern as the "Bài đăng theo nhóm" table
+        # above — bấm tên nhóm/bài mở thẳng ra đó (owner request
+        # 2026-09-12). Used by both "Theo từng lần đăng" (nhóm) and
+        # "Theo từng lần bình luận" (bài/nhóm chứa comment).
+        name = row["target_group_name"] or row["target_url"] or "—"
+        if row["target_url"]:
+            return f'<a href="{html.escape(row["target_url"])}" target="_blank" rel="noopener">{html.escape(name)}</a>'
+        return html.escape(name)
+
+    def _repost_action_cell_html(r: sqlite3.Row, done_retry_ids: set[int]) -> str:
+        # Replaces the "↻" button with a plain status text once this row
+        # has already been handled (owner request 2026-09-12: "Bài Đăng/
+        # Bình luận nào đã được lên lịch lại (tự động hay ADMIN thêm lại,
+        # hoặc đã ĐĂNG NGAY) — thay nút ĐĂNG LẠI bằng text"). Checked in
+        # this order: a still-PENDING retry task (schedule_store) wins
+        # over a past completed one, since that's the more current state.
+        if r['action'] not in _REPOSTABLE_ACTIONS or r['success'] or not (r['content'] or '').strip():
+            return ""
+        if r["id"] in pending_retry_ids:
+            return '<span class="muted" style="font-size:12px; white-space:nowrap;">⏳ Đã lên lịch lại</span>'
+        if r["id"] in done_retry_ids:
+            return '<span class="muted" style="font-size:12px; white-space:nowrap;">✅ Đã đăng lại</span>'
+        return _repost_choice_button_html(
+            r, account_id=account_id, days=days, page=page, page_size=page_size,
+            job_page=job_page, candidate_page=candidate_page, tab=tab,
+        )
+
+    job_cards_html = job_nav_html = ""
+    if tab == "jobs":
+        job_total = db.job_post_groups_count(account_id=account_id, since=since)
+        job_total_pages = max(1, -(-job_total // _JOB_REPORT_PAGE_SIZE))
+        job_page = min(max(job_page, 1), job_total_pages)
+        job_rows = db.job_post_groups(
+            account_id=account_id, since=since,
+            limit=_JOB_REPORT_PAGE_SIZE, offset=(job_page - 1) * _JOB_REPORT_PAGE_SIZE,
+        )
+
+        def _job_data_summary_html(raw: str | None) -> str:
+            if not raw:
+                return '<span class="muted">(không có dữ liệu gốc)</span>'
+            try:
+                data = json.loads(raw)
+            except (TypeError, ValueError):
+                return '<span class="muted">(dữ liệu gốc không đọc được)</span>'
+            attrs = data.get("attributes") or {}
+            # title falls back to nothing here (not jobField) — jobField
+            # already renders on its own via the attrs loop below (as
+            # "Ngành nghề"), showing it twice under 2 different labels
+            # would be redundant.
+            return _attrs_summary_html(data.get("title"), attrs)
+
+        if job_rows:
+            job_cards_html = ""
+            # Fetch every job's detail rows FIRST (before building any
+            # HTML) so successful_retry_log_ids() can run as ONE batched
+            # query over every failed row on this page, instead of one
+            # query per row (2026-09-12).
+            job_detail_by_source = {
+                (jr["source_id"], jr["account_id"]): db.job_post_group_detail(jr["source_id"], jr["account_id"])
+                for jr in job_rows
+            }
+            eligible_ids = [
+                d["id"] for rows in job_detail_by_source.values() for d in rows
+                if d["action"] in _REPOSTABLE_ACTIONS and not d["success"] and (d["content"] or "").strip()
+            ]
+            done_retry_ids = db.successful_retry_log_ids(eligible_ids)
+            for jr in job_rows:
+                detail_rows = job_detail_by_source[(jr["source_id"], jr["account_id"])]
+                detail_html = "".join(
+                    f"""<tr>
+  <td>{_local_dt_html(d['created_at'])}</td>
+  <td class="row-url">{_group_link_html(d)}</td>
+  <td class="muted">{_expandable_text(d['content'])}</td>
+  <td style="text-align:center;">{_recent_result_icon(d)}</td>
+  <td>{_screenshot_link_html(d['screenshot_path'] if 'screenshot_path' in d.keys() else None)}</td>
+  <td class="muted">{_expandable_text(d['message'])}</td>
+  <td>{_repost_action_cell_html(d, done_retry_ids)}</td>
+</tr>""" for d in detail_rows
+                )
+                succeeded = jr["succeeded_groups"] or 0
+                failed = jr["total_groups"] - succeeded
+                result_summary = f'<span style="color:#059669;">{succeeded} thành công</span>'
+                if failed:
+                    result_summary += f', <span style="color:#dc2626;">{failed} thất bại</span>'
+                job_cards_html += f"""
+<details style="border:1px solid #e5e7eb; border-radius:8px; padding:10px 14px; margin-bottom:10px;">
+  <summary style="cursor:pointer; font-weight:600;">
+    {html.escape(_account_label(jr['account_id'], accounts))} — {jr['total_groups']} nhóm ({result_summary})
+    <span class="muted" style="font-weight:400;"> · {_local_dt_html(jr['first_posted_at'])} → {_local_dt_html(jr['last_posted_at'])}</span>
+  </summary>
+  <div class="page-desc" style="margin-top:8px;">{_job_data_summary_html(jr['job_data'])}</div>
+  <div class="table-scroll" style="margin-top:8px;"><table class="data-table" style="table-layout:fixed; width:100%;">
+    <thead><tr>
+      <th style="width:12%;">Thời gian</th>
+      <th style="width:14%;">Nhóm</th>
+      <th style="width:26%;">Nội dung đã đăng</th>
+      <th style="width:5%; text-align:center;">KQ</th>
+      <th style="width:7%;">Ảnh</th>
+      <th style="width:26%;">Ghi chú</th>
+      <th style="width:10%;">Thao tác</th>
+    </tr></thead>
+    <tbody>{detail_html}</tbody>
+  </table></div>
+</details>"""
+        else:
+            job_cards_html = '<div class="empty-state">Chưa có bài đăng job nào được ghi nhận.</div>'
+
+        if job_total_pages > 1:
+            from urllib.parse import urlencode as _urlencode_job
+
+            def _job_page_link(target_page: int, label: str, enabled: bool) -> str:
+                if not enabled:
+                    return f'<span class="btn-secondary btn-small" style="opacity:.45; pointer-events:none;">{label}</span>'
+                qs = _urlencode_job({k: v for k, v in {
+                    "account_id": account_id, "days": days, "tab": "jobs",
+                    "page_size": page_size if page_size != _REPORTS_RECENT_PAGE_SIZE else None,
+                    "job_page": target_page if target_page != 1 else None,
+                }.items() if v})
+                return (
+                    f'<a class="btn-secondary btn-small" href="/admin/reports?{qs}" '
+                    f'hx-get="/admin/reports?{qs}" hx-target="#reports-content" hx-swap="outerHTML" hx-push-url="true">{label}</a>'
+                )
+
+            job_nav_html = f"""
+<div style="display:flex; justify-content:space-between; align-items:center; margin-top:10px; flex-wrap:wrap; gap:8px;">
+  <div style="display:flex; gap:8px; align-items:center;">
+    {_job_page_link(job_page - 1, "← Trang trước", job_page > 1)}
+  </div>
+  <span class="muted">Trang {job_page} / {job_total_pages} — {job_total} job</span>
+  <div style="display:flex; gap:8px; align-items:center;">
+    {_job_page_link(job_page + 1, "Trang sau →", job_page < job_total_pages)}
+  </div>
+</div>"""
+
+    # --- "Theo từng lần bình luận" (2026-09-12, flattened same day per
+    # owner request) — for candidate replies (source_kind='candidate'):
+    # which post/friend a comment went to, the candidate's own raw
+    # attributes (desiredJobField/preferredRegion — see content_strategist.
+    # rewrite_candidate_reply()'s docstring), and the actual comment text
+    # posted. FLAT table, one row per action_log row — unlike "theo từng
+    # lần đăng"'s grouped <details> cards, a candidate only ever gets ONE
+    # comment (no per-group fan-out like a job), so grouping just added a
+    # pointless extra click per row ("chỉ có 1 bình luận cho từng bài viết
+    # nên không cần gom nhóm lại đâu, thể hiện rõ ra luôn cũng được").
+    candidate_cards_html = candidate_nav_html = ""
+    if tab == "candidates":
+        candidate_total = db.candidate_comments_count(account_id=account_id, since=since)
+        candidate_total_pages = max(1, -(-candidate_total // _CANDIDATE_REPORT_PAGE_SIZE))
+        candidate_page = min(max(candidate_page, 1), candidate_total_pages)
+        candidate_rows = db.candidate_comments(
+            account_id=account_id, since=since,
+            limit=_CANDIDATE_REPORT_PAGE_SIZE, offset=(candidate_page - 1) * _CANDIDATE_REPORT_PAGE_SIZE,
+        )
+
+        def _candidate_data_summary_html(raw: str | None) -> str:
+            if not raw:
+                return '<span class="muted">—</span>'
+            try:
+                data = json.loads(raw)
+            except (TypeError, ValueError):
+                return '<span class="muted">(không đọc được)</span>'
+            return _attrs_summary_html(None, data.get("attributes") or {})
+
+        if candidate_rows:
+            eligible_ids = [
+                r["id"] for r in candidate_rows
+                if r["action"] in _REPOSTABLE_ACTIONS and not r["success"] and (r["content"] or "").strip()
+            ]
+            done_retry_ids = db.successful_retry_log_ids(eligible_ids)
+            candidate_html = "".join(
+                f"""<tr>
+  <td>{_local_dt_html(r['created_at'])}</td>
+  <td class="row-url">{_group_link_html(r)}</td>
+  <td class="muted">{_candidate_data_summary_html(r['job_data'])}</td>
+  <td class="muted">{_expandable_text(r['content'])}</td>
+  <td style="text-align:center;">{_recent_result_icon(r)}</td>
+  <td>{_screenshot_link_html(r['screenshot_path'] if 'screenshot_path' in r.keys() else None)}</td>
+  <td class="muted">{_expandable_text(r['message'])}</td>
+  <td>{_repost_action_cell_html(r, done_retry_ids)}</td>
+</tr>""" for r in candidate_rows
+            )
+            candidate_cards_html = f"""
+<div class="table-scroll"><table class="data-table" style="table-layout:fixed; width:100%;">
+  <thead><tr>
+    <th style="width:11%;">Thời gian</th>
+    <th style="width:13%;">Bài/Nhóm</th>
+    <th style="width:18%;">Dữ liệu gốc</th>
+    <th style="width:21%;">Nội dung đã đăng</th>
+    <th style="width:5%; text-align:center;">KQ</th>
+    <th style="width:6%;">Ảnh</th>
+    <th style="width:16%;">Ghi chú</th>
+    <th style="width:10%;">Thao tác</th>
+  </tr></thead>
+  <tbody>{candidate_html}</tbody>
+</table></div>"""
+        else:
+            candidate_cards_html = '<div class="empty-state">Chưa có bình luận nào được ghi nhận.</div>'
+
+        if candidate_total_pages > 1:
+            from urllib.parse import urlencode as _urlencode_candidate
+
+            def _candidate_page_link(target_page: int, label: str, enabled: bool) -> str:
+                if not enabled:
+                    return f'<span class="btn-secondary btn-small" style="opacity:.45; pointer-events:none;">{label}</span>'
+                qs = _urlencode_candidate({k: v for k, v in {
+                    "account_id": account_id, "days": days, "tab": "candidates",
+                    "page_size": page_size if page_size != _REPORTS_RECENT_PAGE_SIZE else None,
+                    "candidate_page": target_page if target_page != 1 else None,
+                }.items() if v})
+                return (
+                    f'<a class="btn-secondary btn-small" href="/admin/reports?{qs}" '
+                    f'hx-get="/admin/reports?{qs}" hx-target="#reports-content" hx-swap="outerHTML" hx-push-url="true">{label}</a>'
+                )
+
+            candidate_nav_html = f"""
+<div style="display:flex; justify-content:space-between; align-items:center; margin-top:10px; flex-wrap:wrap; gap:8px;">
+  <div style="display:flex; gap:8px; align-items:center;">
+    {_candidate_page_link(candidate_page - 1, "← Trang trước", candidate_page > 1)}
+  </div>
+  <span class="muted">Trang {candidate_page} / {candidate_total_pages} — {candidate_total} bình luận</span>
+  <div style="display:flex; gap:8px; align-items:center;">
+    {_candidate_page_link(candidate_page + 1, "Trang sau →", candidate_page < candidate_total_pages)}
+  </div>
+</div>"""
+
+    # --- Recent activity: paginated + height-capped, so this block (by far
+    # the longest one) never dominates the page regardless of how much
+    # history exists — see the conversation that raised "4 khối khá dài,
+    # nhất là Hoạt động gần đây". Tab "recent" only (2026-09-12).
+    recent_total = 0
+    recent_table = recent_pagination_html = ""
+    if tab == "recent":
+        recent_total = db.recent_activity_count(account_id=account_id, since=since)
+        recent_total_pages = max(1, -(-recent_total // page_size))
+        page = min(max(page, 1), recent_total_pages)
+        recent_rows = db.recent_activity(
+            limit=page_size,
+            offset=(page - 1) * page_size,
+            account_id=account_id,
+            since=since,
+        )
+        if recent_rows:
+            eligible_ids = [
+                r["id"] for r in recent_rows
+                if r["action"] in _REPOSTABLE_ACTIONS and not r["success"] and (r["content"] or "").strip()
+            ]
+            done_retry_ids = db.successful_retry_log_ids(eligible_ids)
+            recent_html = "".join(
+                f"""<tr>
   <td>{_local_dt_html(r['created_at'])}</td>
   <td>{html.escape(_account_label(r['account_id'], accounts))}</td>
   <td>{html.escape(_ACTION_LABELS.get(r['action'], r['action']))}</td>
   <td class="row-url">{html.escape((r['target_group_name'] or r['target_url'] or '—'))}</td>
-  <td>{_recent_result_icon(r)}</td>
+  <td style="text-align:center;">{_recent_result_icon(r)}</td>
   <td>{html.escape(_SOURCE_LABELS.get(r['source'], r['source']))}</td>
   <td>{_screenshot_link_html(r['screenshot_path'] if 'screenshot_path' in r.keys() else None)}</td>
   <td class="muted">{_expandable_text(r['message'])}</td>
-  <td>{_repost_button_html(r)}</td>
+  <td>{_repost_action_cell_html(r, done_retry_ids)}</td>
 </tr>""" for r in recent_rows
-        )
-        recent_table = f"""
-<div class="table-scroll" style="max-height:420px; overflow-y:auto;"><table class="data-table">
-  <thead><tr><th>Thời gian</th><th>Tài khoản</th><th>Hành động</th><th>Đích</th><th>KQ</th><th>Nguồn</th><th>Ảnh</th><th>Ghi chú</th><th>Thao tác</th></tr></thead>
+            )
+            recent_table = f"""
+<div class="table-scroll" style="max-height:420px; overflow-y:auto;"><table class="data-table" style="table-layout:fixed; width:100%;">
+  <thead><tr>
+    <th style="width:12%;">Thời gian</th>
+    <th style="width:12%;">Tài khoản</th>
+    <th style="width:12%;">Hành động</th>
+    <th style="width:16%;">Đích</th>
+    <th style="width:5%; text-align:center;">KQ</th>
+    <th style="width:8%;">Nguồn</th>
+    <th style="width:6%;">Ảnh</th>
+    <th style="width:20%;">Ghi chú</th>
+    <th style="width:9%;">Thao tác</th>
+  </tr></thead>
   <tbody>{recent_html}</tbody>
 </table></div>"""
-    else:
-        recent_table = '<div class="empty-state">Chưa có hoạt động nào được ghi nhận.</div>'
+        else:
+            recent_table = '<div class="empty-state">Chưa có hoạt động nào được ghi nhận.</div>'
 
-    # Footer row for the "Hoạt động gần đây" card (item count + nav) — the
-    # page-size select itself now renders up in this card's own header
-    # row, next to the "🕒 Hoạt động gần đây" title (2026-09-11: an
-    # earlier version put it down here in the footer, owner found that
-    # placement "xấu" — moved up so it reads as "controls for this card"
-    # rather than buried at the bottom). The Đầu/Trước/jump/Sau/Cuối nav
-    # below only renders once there's more than 1 page.
-    nav_html = ""
-    if recent_total_pages > 1:
-        from urllib.parse import urlencode
+        # Footer row for the "Hoạt động gần đây" card (item count + nav) — the
+        # page-size select itself now renders up in this card's own header
+        # row, next to the "🕒 Hoạt động gần đây" title (2026-09-11: an
+        # earlier version put it down here in the footer, owner found that
+        # placement "xấu" — moved up so it reads as "controls for this card"
+        # rather than buried at the bottom). The Đầu/Trước/jump/Sau/Cuối nav
+        # below only renders once there's more than 1 page.
+        nav_html = ""
+        if recent_total_pages > 1:
+            from urllib.parse import urlencode
 
-        # First/last buttons + a pretty single-pill "go to page" jump —
-        # same pattern (and same owner request) as /admin/schedule's
-        # pagination; page_size threads through so navigating never
-        # silently resets it back to the default.
-        def _recent_page_link(target_page: int, label: str, enabled: bool) -> str:
-            if not enabled:
-                return f'<span class="btn-secondary btn-small" style="opacity:.45; pointer-events:none;">{label}</span>'
-            qs = urlencode({k: v for k, v in {
-                "account_id": account_id, "days": days, "page": target_page,
-                "page_size": page_size if page_size != _REPORTS_RECENT_PAGE_SIZE else None,
-            }.items() if v})
-            return (
-                f'<a class="btn-secondary btn-small" href="/admin/reports?{qs}" '
-                f'hx-get="/admin/reports?{qs}" hx-target="#reports-content" hx-swap="outerHTML" hx-push-url="true">{label}</a>'
+            # First/last buttons + a pretty single-pill "go to page" jump —
+            # same pattern (and same owner request) as /admin/schedule's
+            # pagination; page_size threads through so navigating never
+            # silently resets it back to the default.
+            def _recent_page_link(target_page: int, label: str, enabled: bool) -> str:
+                if not enabled:
+                    return f'<span class="btn-secondary btn-small" style="opacity:.45; pointer-events:none;">{label}</span>'
+                qs = urlencode({k: v for k, v in {
+                    "account_id": account_id, "days": days, "page": target_page, "tab": "recent",
+                    "page_size": page_size if page_size != _REPORTS_RECENT_PAGE_SIZE else None,
+                }.items() if v})
+                return (
+                    f'<a class="btn-secondary btn-small" href="/admin/reports?{qs}" '
+                    f'hx-get="/admin/reports?{qs}" hx-target="#reports-content" hx-swap="outerHTML" hx-push-url="true">{label}</a>'
+                )
+
+            jump_hidden_fields = (
+                (f'<input type="hidden" name="account_id" value="{html.escape(account_id)}">' if account_id else "")
+                + (f'<input type="hidden" name="days" value="{html.escape(days)}">' if days else "")
+                + f'<input type="hidden" name="page_size" value="{page_size}">'
+                + '<input type="hidden" name="tab" value="recent">'
             )
-
-        jump_hidden_fields = (
-            (f'<input type="hidden" name="account_id" value="{html.escape(account_id)}">' if account_id else "")
-            + (f'<input type="hidden" name="days" value="{html.escape(days)}">' if days else "")
-            + f'<input type="hidden" name="page_size" value="{page_size}">'
-        )
-        nav_html = f"""
+            nav_html = f"""
   <div style="display:flex; gap:8px; align-items:center;">
     {_recent_page_link(1, "«« Đầu", page > 1)}
     {_recent_page_link(page - 1, "← Trang trước", page > 1)}
@@ -3431,21 +4082,18 @@ def _reports_content_html(
     {_recent_page_link(recent_total_pages, "Cuối »»", page < recent_total_pages)}
   </div>"""
 
-    # Item count ("N mục") moved up to the card header next to "Hiển thị"
-    # (2026-09-11) — this footer only needs to render at all once there's
-    # actual nav (>1 page) to show.
-    recent_pagination_html = f"""
+        # Item count ("N mục") moved up to the card header next to "Hiển thị"
+        # (2026-09-11) — this footer only needs to render at all once there's
+        # actual nav (>1 page) to show.
+        recent_pagination_html = f"""
 <div style="display:flex; justify-content:space-between; align-items:center; margin-top:10px; flex-wrap:wrap; gap:8px;">
   {nav_html}
 </div>""" if nav_html else ""
 
-    return f"""<div id="reports-content">
-{flash}
-{err}
-{warn}
-{filter_html}
-{summary_html}
-
+    # --- Assemble: only the active tab's card(s) render (2026-09-12, owner
+    # request — page had grown to 6 stacked cards, "quá nhiều nội dung").
+    if tab == "tables":
+        tab_content_html = f"""
 <div class="card">
   <h2>📅 Bài đăng thành công theo tuần</h2>
   {weekly_table}
@@ -3459,8 +4107,23 @@ def _reports_content_html(
 <div class="card">
   <h2>📈 Tỉ lệ thành công/thất bại theo hành động</h2>
   {action_table}
-</div>
-
+</div>"""
+    elif tab == "jobs":
+        tab_content_html = f"""
+<div class="card">
+  <h2>📮 Bài đăng</h2>
+  {job_cards_html}
+  {job_nav_html}
+</div>"""
+    elif tab == "candidates":
+        tab_content_html = f"""
+<div class="card">
+  <h2>💬 Bình luận</h2>
+  {candidate_cards_html}
+  {candidate_nav_html}
+</div>"""
+    else:  # "recent"
+        tab_content_html = f"""
 <div class="card">
   <div style="display:flex; justify-content:space-between; align-items:center; gap:16px; flex-wrap:wrap;">
     <h2 style="margin:0; white-space:nowrap;">🕒 Hoạt động gần đây</h2>
@@ -3471,7 +4134,16 @@ def _reports_content_html(
   </div>
   {recent_table}
   {recent_pagination_html}
-</div>
+</div>"""
+
+    return f"""<div id="reports-content">
+{flash}
+{err}
+{warn}
+{filter_html}
+{tab_nav_html}
+{summary_html}
+{tab_content_html}
 </div>"""
 
 
@@ -3499,12 +4171,15 @@ async def reports_page(
     days: str | None = None,
     page: int = 1,
     page_size: int = _REPORTS_RECENT_PAGE_SIZE,
+    job_page: int = 1,
+    candidate_page: int = 1,
+    tab: str | None = None,
     posted: str | None = None,
     error: str | None = None,
     warning: str | None = None,
     _: None = Depends(_require_auth),
 ) -> str:
-    content = _reports_content_html(account_id=account_id, days=days, page=page, page_size=page_size, posted=posted, error=error, warning=warning)
+    content = _reports_content_html(account_id=account_id, days=days, page=page, page_size=page_size, job_page=job_page, candidate_page=candidate_page, tab=tab, posted=posted, error=error, warning=warning)
     if _is_htmx(request):
         return content
     return _layout(f"""
@@ -3540,21 +4215,32 @@ async def reports_repost(request: Request, _: None = Depends(_require_auth)):
     except ValueError:
         page_size = _REPORTS_RECENT_PAGE_SIZE
     try:
+        job_page = int(str(form.get("job_page", "1")))
+    except ValueError:
+        job_page = 1
+    try:
+        candidate_page = int(str(form.get("candidate_page", "1")))
+    except ValueError:
+        candidate_page = 1
+    # Repost buttons only ever render on the "recent" tab (see
+    # _repost_button_html) — default there if the field is somehow missing.
+    tab = str(form.get("tab", "recent")).strip() or "recent"
+    try:
         log_id = int(str(form.get("log_id", "")))
     except ValueError:
-        return _reports_redirect(account_id, days, page, page_size=page_size, error="Thiếu id bản ghi")
+        return _reports_redirect(account_id, days, page, page_size=page_size, job_page=job_page, candidate_page=candidate_page, tab=tab, error="Thiếu id bản ghi")
 
     row = db.get_action_log(log_id)
     if row is None:
         err = "Không tìm thấy bản ghi này"
         if _is_htmx(request):
-            return HTMLResponse(_reports_content_html(account_id=account_id, days=days, page=page, page_size=page_size, error=err))
-        return _reports_redirect(account_id, days, page, page_size=page_size, error=err)
+            return HTMLResponse(_reports_content_html(account_id=account_id, days=days, page=page, page_size=page_size, job_page=job_page, candidate_page=candidate_page, tab=tab, error=err) + _MODAL_CLOSE_OOB)
+        return _reports_redirect(account_id, days, page, page_size=page_size, job_page=job_page, candidate_page=candidate_page, tab=tab, error=err)
     if row["action"] not in _REPOSTABLE_ACTIONS or row["success"] or not (row["content"] or "").strip():
         err = "Hành động này không thể đăng lại"
         if _is_htmx(request):
-            return HTMLResponse(_reports_content_html(account_id=account_id, days=days, page=page, page_size=page_size, error=err))
-        return _reports_redirect(account_id, days, page, page_size=page_size, error=err)
+            return HTMLResponse(_reports_content_html(account_id=account_id, days=days, page=page, page_size=page_size, job_page=job_page, candidate_page=candidate_page, tab=tab, error=err) + _MODAL_CLOSE_OOB)
+        return _reports_redirect(account_id, days, page, page_size=page_size, job_page=job_page, candidate_page=candidate_page, tab=tab, error=err)
 
     try:
         result = await run_task(TaskRequest(
@@ -3564,18 +4250,19 @@ async def reports_repost(request: Request, _: None = Depends(_require_auth)):
             content=row["content"],
             reasoning=f"repost: từ báo cáo (bản ghi #{log_id})",
             source="manual",
+            retry_of_log_id=log_id,
         ))
     except ValueError as exc:
         err = str(exc)
         if _is_htmx(request):
-            return HTMLResponse(_reports_content_html(account_id=account_id, days=days, page=page, page_size=page_size, error=err))
-        return _reports_redirect(account_id, days, page, page_size=page_size, error=err)
+            return HTMLResponse(_reports_content_html(account_id=account_id, days=days, page=page, page_size=page_size, job_page=job_page, candidate_page=candidate_page, tab=tab, error=err) + _MODAL_CLOSE_OOB)
+        return _reports_redirect(account_id, days, page, page_size=page_size, job_page=job_page, candidate_page=candidate_page, tab=tab, error=err)
 
     if result.success:
         msg = "Đã đăng lại."
         if _is_htmx(request):
-            return HTMLResponse(_reports_content_html(account_id=account_id, days=days, page=page, page_size=page_size, posted=msg))
-        return _reports_redirect(account_id, days, page, page_size=page_size, posted=msg)
+            return HTMLResponse(_reports_content_html(account_id=account_id, days=days, page=page, page_size=page_size, job_page=job_page, candidate_page=candidate_page, tab=tab, posted=msg) + _MODAL_CLOSE_OOB)
+        return _reports_redirect(account_id, days, page, page_size=page_size, job_page=job_page, candidate_page=candidate_page, tab=tab, posted=msg)
     if result.message.startswith("rate_limited:"):
         # Same reasoning as /admin/schedule's schedule_fire_now(): firing
         # too soon (or hitting a hard per-day/per-hour count cap) after
@@ -3596,9 +4283,170 @@ async def reports_repost(request: Request, _: None = Depends(_require_auth)):
             warning = rate_limit_wait_message(account, bucket) or daily_limits.hard_cap_message(account, bucket)
         warning = warning or result.message
         if _is_htmx(request):
-            return HTMLResponse(_reports_content_html(account_id=account_id, days=days, page=page, page_size=page_size, warning=warning))
-        return _reports_redirect(account_id, days, page, page_size=page_size, warning=warning)
+            return HTMLResponse(_reports_content_html(account_id=account_id, days=days, page=page, page_size=page_size, job_page=job_page, candidate_page=candidate_page, tab=tab, warning=warning) + _MODAL_CLOSE_OOB)
+        return _reports_redirect(account_id, days, page, page_size=page_size, job_page=job_page, candidate_page=candidate_page, tab=tab, warning=warning)
     err = f"Đăng lại thất bại: {result.message}"
     if _is_htmx(request):
-        return HTMLResponse(_reports_content_html(account_id=account_id, days=days, page=page, page_size=page_size, error=err))
-    return _reports_redirect(account_id, days, page, page_size=page_size, error=err)
+        return HTMLResponse(_reports_content_html(account_id=account_id, days=days, page=page, page_size=page_size, job_page=job_page, candidate_page=candidate_page, tab=tab, error=err) + _MODAL_CLOSE_OOB)
+    return _reports_redirect(account_id, days, page, page_size=page_size, job_page=job_page, candidate_page=candidate_page, tab=tab, error=err)
+
+
+@router.get("/reports/repost-choice", response_class=HTMLResponse)
+async def reports_repost_choice(
+    log_id: int,
+    account_id: str | None = None,
+    days: str | None = None,
+    page: int = 1,
+    page_size: int = _REPORTS_RECENT_PAGE_SIZE,
+    job_page: int = 1,
+    candidate_page: int = 1,
+    tab: str = "recent",
+    _: None = Depends(_require_auth),
+) -> str:
+    """Opens the 3-way "Đăng lại" choice modal (owner request 2026-09-12)
+    — hx-target="#modal-root" from _repost_choice_button_html()."""
+    row = db.get_action_log(log_id)
+    if row is None or row["action"] not in _REPOSTABLE_ACTIONS or row["success"] or not (row["content"] or "").strip():
+        return ""
+    return _repost_choice_modal_html(
+        row, account_id=account_id, days=days, page=page, page_size=_clamp_reports_page_size(page_size),
+        job_page=job_page, candidate_page=candidate_page, tab=_clamp_reports_tab(tab),
+    )
+
+
+@router.get("/reports/reschedule-suggest", response_class=HTMLResponse)
+async def reports_reschedule_suggest(
+    log_id: int,
+    account_id: str | None = None,
+    days: str | None = None,
+    page: int = 1,
+    page_size: int = _REPORTS_RECENT_PAGE_SIZE,
+    job_page: int = 1,
+    candidate_page: int = 1,
+    tab: str = "recent",
+    _: None = Depends(_require_auth),
+) -> str:
+    """Step 1 of "Lên lịch lại" — computes and shows the suggested slot
+    (_suggest_reschedule_at()); admin confirms via
+    reports_reschedule_confirm() below before anything is actually added
+    to the schedule."""
+    row = db.get_action_log(log_id)
+    if row is None or row["action"] not in _REPOSTABLE_ACTIONS or row["success"] or not (row["content"] or "").strip():
+        return ""
+    account = get_all_accounts().get(row["account_id"])
+    if account is None:
+        return (
+            '<div class="modal-backdrop" onclick="if(event.target===this) this.remove()">'
+            '<div class="modal-box"><p class="error">⚠️ Không tìm thấy tài khoản này.</p></div></div>'
+        )
+    suggested = _suggest_reschedule_at(account, row["action"])
+    page_size = _clamp_reports_page_size(page_size)
+    tab = _clamp_reports_tab(tab)
+    filter_fields = (
+        f'<input type="hidden" name="account_id" value="{html.escape(account_id or "")}">'
+        f'<input type="hidden" name="days" value="{html.escape(days or "")}">'
+        f'<input type="hidden" name="page" value="{page}">'
+        f'<input type="hidden" name="page_size" value="{page_size}">'
+        f'<input type="hidden" name="job_page" value="{job_page}">'
+        f'<input type="hidden" name="candidate_page" value="{candidate_page}">'
+        f'<input type="hidden" name="tab" value="{html.escape(tab)}">'
+        f'<input type="hidden" name="log_id" value="{row["id"]}">'
+        f'<input type="hidden" name="scheduled_at" value="{suggested.isoformat()}">'
+    )
+    return f"""
+<div class="modal-backdrop" onclick="if(event.target===this) this.remove()">
+  <div class="modal-box">
+    <div class="modal-header">
+      <h2>🔄 Lên lịch lại</h2>
+      <button type="button" class="modal-close" onclick="this.closest('.modal-backdrop').remove()">✕</button>
+    </div>
+    <p>Giờ đăng gợi ý: <b>{_local_dt_html(suggested.isoformat())}</b></p>
+    <p class="muted">Đã tính theo giới hạn số lượng/ngày, khoảng cách tối thiểu với lần đăng gần nhất, và giờ yên tĩnh đang cấu hình. Bấm Xác nhận để thêm vào lịch (xem/sửa lại ở /admin/schedule), hoặc Huỷ để tự chọn giờ khác qua "Đặt lịch".</p>
+    <div class="form-actions">
+      <button type="button" class="btn-secondary" style="margin-right:8px;" onclick="this.closest('.modal-backdrop').remove()">Huỷ</button>
+      <form method="post" action="/admin/reports/reschedule-confirm"
+            hx-post="/admin/reports/reschedule-confirm" hx-target="#reports-content" hx-swap="outerHTML" style="display:inline;">
+        {filter_fields}
+        <button type="submit">✅ Xác nhận</button>
+      </form>
+    </div>
+  </div>
+</div>"""
+
+
+@router.post("/reports/reschedule-confirm")
+async def reports_reschedule_confirm(request: Request, _: None = Depends(_require_auth)):
+    """"Lên lịch lại" step 2 — creates the actual ScheduledTask at the
+    admin-confirmed slot (schedule_store, same as any other pending task —
+    reviewable/editable/cancellable at /admin/schedule before it fires).
+    Unlike reports_repost()'s "Đăng ngay" (which deliberately drops job/
+    candidate provenance — existing design, not changed here), this DOES
+    carry source_kind/source_id/job_data-or-candidate_data forward, since
+    the new task is a legitimate continuation of the same job/candidate —
+    so it shows up correctly grouped in "Bài đăng"/"Bình luận" once it
+    fires."""
+    form = await request.form()
+    account_id = str(form.get("account_id", "")).strip() or None
+    days = str(form.get("days", "")).strip() or None
+    try:
+        page = int(str(form.get("page", "1")))
+    except ValueError:
+        page = 1
+    try:
+        page_size = _clamp_reports_page_size(int(str(form.get("page_size", _REPORTS_RECENT_PAGE_SIZE))))
+    except ValueError:
+        page_size = _REPORTS_RECENT_PAGE_SIZE
+    try:
+        job_page = int(str(form.get("job_page", "1")))
+    except ValueError:
+        job_page = 1
+    try:
+        candidate_page = int(str(form.get("candidate_page", "1")))
+    except ValueError:
+        candidate_page = 1
+    tab = str(form.get("tab", "recent")).strip() or "recent"
+    try:
+        log_id = int(str(form.get("log_id", "")))
+    except ValueError:
+        return HTMLResponse(_reports_content_html(account_id=account_id, days=days, page=page, page_size=page_size, job_page=job_page, candidate_page=candidate_page, tab=tab, error="Thiếu id bản ghi") + _MODAL_CLOSE_OOB)
+
+    row = db.get_action_log(log_id)
+    if row is None or row["action"] not in _REPOSTABLE_ACTIONS or row["success"] or not (row["content"] or "").strip():
+        err = "Bản ghi này không thể lên lịch lại"
+        return HTMLResponse(_reports_content_html(account_id=account_id, days=days, page=page, page_size=page_size, job_page=job_page, candidate_page=candidate_page, tab=tab, error=err) + _MODAL_CLOSE_OOB)
+
+    scheduled_at_raw = str(form.get("scheduled_at", "")).strip()
+    try:
+        scheduled_at = datetime.fromisoformat(scheduled_at_raw.replace("Z", "+00:00"))
+    except ValueError:
+        scheduled_at = datetime.now(timezone.utc)
+    if scheduled_at.tzinfo is None:
+        scheduled_at = scheduled_at.replace(tzinfo=timezone.utc)
+
+    source_kind = row["source_kind"] if "source_kind" in row.keys() and row["source_kind"] else ""
+    source_id = row["source_id"] if "source_id" in row.keys() and row["source_id"] else ""
+    raw_job_data = row["job_data"] if "job_data" in row.keys() else None
+    parsed_data = None
+    if raw_job_data:
+        try:
+            parsed_data = json.loads(raw_job_data)
+        except (TypeError, ValueError):
+            parsed_data = None
+
+    task = schedule_store.ScheduledTask(
+        task_id=schedule_store.new_task_id(scheduled_at.isoformat()),
+        action=row["action"],
+        account_id=row["account_id"],
+        scheduled_at=scheduled_at.isoformat(),
+        content=row["content"],
+        target_url=row["target_url"],
+        reasoning=f"reschedule: từ báo cáo (bản ghi #{log_id})",
+        source_kind=source_kind,
+        source_id=source_id,
+        job_data=parsed_data if source_kind == "job" else None,
+        candidate_data=parsed_data if source_kind == "candidate" else None,
+        retry_of_log_id=log_id,
+    )
+    schedule_store.add(task)
+    msg = "Đã thêm vào lịch — xem/sửa ở /admin/schedule."
+    return HTMLResponse(_reports_content_html(account_id=account_id, days=days, page=page, page_size=page_size, job_page=job_page, candidate_page=candidate_page, tab=tab, posted=msg) + _MODAL_CLOSE_OOB)

@@ -1734,34 +1734,332 @@
       "(UTC)", có `data-local-dt`). 110 test vẫn pass. **Chưa xác nhận
       trên UI thật** — cần restart service.
 
-## Việc cần làm (chưa triển khai) — ghi chú theo yêu cầu owner 2026-09-11
+## Báo cáo "Theo từng lần đăng" (2026-09-12) — hoàn thành
 
-- [ ] **Thêm 1 dạng báo cáo MỚI — xem theo TỪNG LẦN ĐĂNG (theo job), không
-      phải theo từng dòng hành động rời rạc như "Hoạt động gần đây" hiện
-      tại.** Owner yêu cầu rõ cần hiển thị, cho 1 lần đăng (1 job từ bên
-      B):
-      - Nội dung đã đăng là gì, nội dung GỐC (trước khi soạn lại theo
-        từng nhóm/AI) là gì.
-      - Đăng vào lúc nào.
-      - Đăng vào bao nhiêu nhóm, mỗi nhóm cụ thể nội dung gì (có thể
-        khác nhau — xem `content_strategist.template_variants()`, mỗi
-        nhóm 1 biến thể riêng).
-      - Đã đăng vào NHỮNG nhóm nào cụ thể (tên/URL), nhóm nào thành
-        công, nhóm nào thất bại.
-      - Tài khoản nào thực hiện.
+- [x] Thêm dạng báo cáo mới xem theo TỪNG LẦN ĐĂNG (theo job), gom theo
+      `(source_kind='job', source_id, account_id)` thay vì từng dòng
+      hành động rời rạc như "Hoạt động gần đây". Chọn hướng (a) đã ghi
+      chú trước đó: thêm cột `job_data TEXT` vào `action_log` (migrate
+      qua `ALTER TABLE`, cùng mẫu với `screenshot_path`) để lưu title +
+      attributes thô từ bên B — trước đó chỉ nằm trong file JSON của
+      `schedule_store`, không nối ngược lại được từ `action_log`.
+      - `human_bot/db.py`: cột `job_data`, index mới
+        `idx_action_log_source(source_kind, source_id, account_id)`,
+        `log_action(job_data=...)`, 3 hàm truy vấn mới
+        `job_post_groups()` / `job_post_groups_count()` /
+        `job_post_group_detail()`.
+      - `human_bot/agent.py`'s `TaskRequest` + `_log_result()`: thêm
+        field `job_data`, truyền xuống `db.log_action()`.
+      - `human_bot/data_sync.py`'s `fire_due_tasks()` và
+        `human_bot/admin.py`'s `schedule_fire_now()` (2 nơi bắn job
+        post thật — tự động + thủ công "Đăng ngay"): truyền
+        `job_data=task.job_data` vào `TaskRequest`. `reports_repost()`
+        (chức năng "Đăng lại") CHỦ Ý không truyền — repost vốn đã bỏ
+        toàn bộ nguồn gốc job theo thiết kế cũ, không đổi mà không được
+        hỏi trước.
+      - `human_bot/admin.py`'s `/admin/reports`: thêm card mới
+        "📮 Theo từng lần đăng" giữa 2 card "Tỉ lệ thành công/thất bại"
+        và "Hoạt động gần đây" — mỗi job 1 khối `<details>` gập lại
+        được, mở ra thấy dữ liệu gốc (tiêu đề/công ty/địa điểm/visa/
+        JLPT/lương) + bảng con từng nhóm (giờ đăng riêng, nội dung ĐÃ
+        đăng riêng, KQ, ghi chú). Có phân trang riêng
+        (`job_page`, cố định 10 job/trang) — luôn kèm theo
+        `page`/`page_size` của "Hoạt động gần đây" trên mọi link để 2
+        khối phân trang không tự reset lẫn nhau khi swap chung 1 khối
+        `#reports-content` qua htmx.
+      - Migration đã chạy thật trên `human_bot.db` đang dùng (xác nhận
+        96 dòng cũ còn nguyên, cột + index mới đã có).
+      - Test mới: `tests/test_db.py` (8 test, cô lập bằng
+        `monkeypatch.setattr(db, "DB_PATH", tmp_path/...)`, không đụng
+        DB thật). Toàn bộ suite: 118 passed.
 
-      **Ghi chú kỹ thuật cho lúc triển khai (đã tra trước, không phải
-      đoán):** phần lớn dữ liệu đã có sẵn trong `human_bot.db`'s bảng
-      `action_log` — mỗi dòng có `source_id` (= id job bên B), nên gom
-      các dòng cùng `source_id` + `account_id` lại là ra đúng "1 lần
-      đăng" với đủ nhóm/nội dung/thời gian/kết quả từng nhóm, không cần
-      thu thập dữ liệu mới. **Riêng "nội dung GỐC" thì CHƯA có sẵn** —
-      `ScheduledTask.job_data` (title + attributes thô từ bên B) chỉ
-      lưu trong file JSON của `schedule_store` (`scheduled/posted/*.json`),
-      KHÔNG được lưu vào `action_log` khi bắn task — và `action_log`
-      hiện cũng không lưu `task_id` để nối ngược lại đúng file JSON đó.
-      Cần 1 trong 2 hướng trước khi làm báo cáo này: (a) thêm cột
-      `task_id`/`job_data` vào bảng `action_log` (đổi schema DB,
-      `db.log_action()`), hoặc (b) chấp nhận báo cáo chỉ hiển thị nội
-      dung ĐÃ đăng (không có bản gốc) cho các job đã bắn TRƯỚC khi sửa,
-      chỉ job bắn SAU khi sửa mới có đủ dữ liệu.
+## /admin/reports — chỉnh nhỏ + chia tab (2026-09-12)
+
+- [x] Cột "Nhóm" trong bảng chi tiết "Theo từng lần đăng" hiện là link
+      (`<a href target="_blank">`) bấm mở thẳng nhóm Facebook, thay vì
+      chỉ hiện tên chữ thường.
+- [x] Sửa `_expandable_text()` (dùng chung cho cột "Nội dung đã đăng"
+      và "Ghi chú" ở mọi bảng báo cáo) — bug owner phát hiện: bấm mở
+      rộng bị lặp lại đoạn text đã hiện rút gọn phía trên. Nguyên nhân:
+      code cũ tách riêng `<summary>` (bản rút gọn) và `<div>` (bản đầy
+      đủ) — `<summary>` vẫn hiển thị khi `<details>` mở, nên 2 bản
+      chồng lên nhau. Sửa bằng CSS-only: `<summary>` giờ chứa NGUYÊN
+      VĂN BẢN ĐẦY ĐỦ, class `.expandable-text` tự cắt 1 dòng + dấu "…"
+      khi đóng (`white-space:nowrap; overflow:hidden; text-overflow:
+      ellipsis`) và bỏ cắt khi mở (`details[open] summary`) — không còn
+      2 bản riêng biệt để bị lặp.
+- [x] Cố định độ rộng cột cho 2 bảng "Theo từng lần đăng" (chi tiết
+      từng nhóm) và "Hoạt động gần đây" — chuyển sang
+      `table-layout:fixed; width:100%` + chia % cho từng `<th>` (không
+      dùng px cố định — lần đầu tính nhầm bằng px tuyệt đối khiến tổng
+      cột vượt quá khung màn hình thật của owner, đã sửa lại theo %,
+      luôn khớp đúng bất kể màn hình rộng bao nhiêu). Cột "Nội dung đã
+      đăng" chỉnh về 32% (không cần rộng — owner: mỗi dòng chỉ hiện
+      ~65-70 ký tự do đã bị cắt 1 dòng).
+- [x] **Chia tab cho `/admin/reports`** (owner nhận thấy trang quá
+      nhiều nội dung — 6 card xếp chồng, 2 card có phân trang riêng
+      phải luôn mang theo state của nhau qua mọi link). 3 tab:
+      "📊 Thống kê chi tiết" (KPI + theo tuần/nhóm/hành động, tab mặc
+      định — giữ hành vi cũ cho link/bookmark cũ không có `tab` trong
+      URL), "📮 Theo từng lần đăng", "🕒 Hoạt động gần đây". Bộ lọc
+      tài khoản/khoảng thời gian dùng CHUNG cho mọi tab (nằm ngoài,
+      phía trên tab-nav). Chuyển tab qua htmx (`hx-get`, không JS),
+      chỉ tab đang active mới thực sự chạy query + render — 2 tab kia
+      không tốn query DB. Mỗi tab giờ độc lập hoàn toàn về phân trang
+      (không cần mang `job_page` theo link "Hoạt động gần đây" hay
+      ngược lại nữa). Tham số mới `tab` thêm vào
+      `_reports_content_html()`, `reports_page()`, `reports_repost()`
+      (mặc định `"recent"` cho repost vì nút "Đăng lại" chỉ có ở tab
+      đó). Verify: render riêng từng tab qua Python xác nhận đúng nội
+      dung xuất hiện/không xuất hiện đúng tab, `tab` lạ/thiếu rơi về
+      "tables" mặc định. Toàn bộ suite vẫn 118 passed.
+
+## Báo cáo "Theo từng lần bình luận" (2026-09-12) — hoàn thành
+
+- [x] Owner hỏi báo cáo "Theo từng lần đăng" có gồm comment không —
+      kiểm tra code xác nhận KHÔNG: mỗi job chỉ tạo task
+      `action="post_to_group", source_kind="job"`; comment
+      (`comment_on_group_post`/`comment_on_friend_post`) chỉ gắn với
+      `source_kind="candidate"` (trả lời ứng viên bên B, hoàn toàn
+      tách biệt luồng job đăng nhóm) — xem `data_sync.py`'s `sync_all()`
+      dòng ~1022-1027. Owner sau đó yêu cầu thêm báo cáo tương tự cho
+      comment: comment nào đăng vào bài nào, nội dung gốc, nội dung
+      đã đăng.
+- [x] Phát hiện thêm 1 lỗ hổng khi tra: `ScheduledTask.candidate_data`
+      (thuộc tính gốc của ứng viên — `desiredJobField`/
+      `preferredRegion`, dùng để AI viết lại reply — xem
+      `content_strategist.rewrite_candidate_reply()`) **chưa từng được
+      truyền xuống `action_log`** — giống hệt tình trạng `job_data`
+      TRƯỚC lần sửa 2026-09-12 ở trên. `data_sync.py`'s
+      `fire_due_tasks()` và `admin.py`'s `schedule_fire_now()` đều chỉ
+      truyền `job_data=task.job_data` khi tạo `TaskRequest` — với task
+      loại candidate thì `task.job_data` luôn `None` (chỉ job mới có),
+      nên dữ liệu gốc ứng viên trước giờ bị mất khi ghi log. Sửa bằng
+      cách đổi thành `job_data=task.job_data or task.candidate_data`
+      (đúng 1 trong 2 luôn có giá trị tuỳ `source_kind`) ở CẢ 2 nơi —
+      **không cần thêm cột DB mới**, tái dùng đúng cột `job_data` sẵn
+      có (đổi ý nghĩa thành "dữ liệu gốc chung cho job HOẶC candidate",
+      đã cập nhật docstring `db.log_action()`).
+      - `human_bot/db.py`: 3 hàm mới `candidate_comments()` /
+        `candidate_comments_count()` / `candidate_comment_detail()` —
+        y hệt cấu trúc `job_post_groups()` nhưng lọc
+        `source_kind='candidate'` (khác biệt: 1 ứng viên bình thường
+        chỉ có ĐÚNG 1 lượt bình luận, không fan-out nhiều nhóm như
+        job — GROUP BY vẫn cần để gộp đúng trường hợp hiếm bị retry
+        qua "Đăng lại" tạo 2 dòng cho cùng 1 ứng viên).
+      - `human_bot/admin.py`'s `/admin/reports`: thêm tab thứ 4
+        "💬 Theo từng lần bình luận" (giữa "Theo từng lần đăng" và
+        "Hoạt động gần đây") — cùng cấu trúc card `<details>` gập lại
+        được như tab job, dữ liệu gốc hiện "Muốn làm"/"Khu vực mong
+        muốn", bảng con "Bài/Nhóm" (link bấm mở thẳng)/"Nội dung đã
+        đăng"/KQ/Ghi chú. Phân trang riêng (`candidate_page`, cố định
+        10 ứng viên/trang, cùng mẫu `job_page`). Tách 2 hàm dùng
+        chung (`_recent_result_icon`, `_group_link_html`) ra khỏi
+        block `if tab == "jobs":` lên phạm vi chung của hàm — trước đó
+        nằm lồng trong nhánh job nên tab candidate gọi vào sẽ
+        `NameError`, phát hiện và sửa ngay khi viết.
+      - **Dữ liệu gốc cho các dòng comment CŨ (trước lần sửa này) sẽ
+        hiện "(không có dữ liệu gốc)"** — xác nhận thật trên
+        `human_bot.db`: các dòng `source_kind='candidate'` có sẵn đều
+        có `job_data = None`. Chỉ ứng viên được xử lý SAU khi service
+        chạy code mới mới có đủ dữ liệu gốc.
+      - Test mới: 8 test thêm vào `tests/test_db.py` (nay 16 test
+        tổng cho file này) — bao gồm test riêng cho trường hợp retry
+        tạo 2 dòng cùng 1 ứng viên. Toàn bộ suite: 126 passed.
+
+## Chỉnh tiếp báo cáo job/comment (2026-09-12)
+
+- [x] Thêm cột **"Ảnh"** vào cả 2 bảng chi tiết "Theo từng lần đăng" và
+      "Theo từng lần bình luận" — tái dùng `_screenshot_link_html()` +
+      cột `screenshot_path` sẵn có trong `action_log` (giống hệt "Hoạt
+      động gần đây"), không cần đổi schema DB.
+- [x] **Bỏ gom nhóm cho "Theo từng lần bình luận"** — owner: "chỉ có 1
+      bình luận cho từng bài viết nên không cần gom nhóm lại đâu, thể
+      hiện rõ ra luôn cũng được". Đổi từ cấu trúc card `<details>` gập
+      lại (kiểu job, vốn cần gom vì 1 job → nhiều nhóm) sang **bảng
+      phẳng 1 dòng/1 lượt bình luận**, cột đúng theo yêu cầu: Thời
+      gian | Bài/Nhóm | Dữ liệu gốc | Nội dung đã đăng | KQ | Ảnh |
+      Ghi chú.
+      - `human_bot/db.py`: bỏ hẳn `candidate_comments()` bản GROUP BY
+        + hàm `candidate_comment_detail()` (không cần nữa) — viết lại
+        `candidate_comments()` thành query phẳng `SELECT * ... ORDER
+        BY created_at DESC LIMIT/OFFSET` trực tiếp trên `action_log`,
+        `candidate_comments_count()` cũng bỏ GROUP BY tương ứng.
+      - `human_bot/admin.py`: xoá vòng lặp card/detail lồng nhau, thay
+        bằng 1 bảng `<table>` duy nhất y hệt cấu trúc "Hoạt động gần
+        đây" nhưng thêm cột "Dữ liệu gốc" (Muốn làm/Khu vực mong
+        muốn, rút gọn từ `_candidate_data_summary_html()`).
+      - Cập nhật lại `tests/test_db.py` theo API phẳng mới — xoá 2
+        test cho `candidate_comment_detail()` (hàm không còn tồn
+        tại), sửa 2 test group-by thành test cho hành vi phẳng (mỗi
+        dòng action_log hiện riêng, kể cả dòng do retry tạo ra không
+        còn bị gộp). Toàn bộ suite: 124 passed (giảm 2 so với trước
+        do bớt 2 hàm/test không còn cần).
+
+## Đổi tên tab + 3 lựa chọn "Đăng lại" (2026-09-12)
+
+- [x] Đổi tên tab: "Theo từng lần đăng" → **"Bài đăng"**, "Theo từng
+      lần bình luận" → **"Bình luận"** (giữ nguyên emoji 📮/💬).
+- [x] **Thêm 3 lựa chọn khi bấm "↻ Đăng lại"** ở CẢ 3 nơi (Hoạt động
+      gần đây, Bài đăng, Bình luận — owner: khi bấm Đăng lại, hiện
+      modal giải thích ngắn gọn 3 nút cho ADMIN chọn, thay vì đăng lại
+      ngay lập tức như trước) — chỉ áp dụng cho dòng THẤT BẠI (giữ
+      nguyên phạm vi cũ của nút Đăng lại):
+      - **🚀 Đăng ngay** — y hệt hành vi cũ, không đổi (`run_task()`
+        ngay lập tức qua `/admin/reports/repost`, vẫn kiểm tra đủ
+        giới hạn số lượng/ngày, /giờ).
+      - **📅 Đặt lịch** — mở `/admin/post`, điền sẵn nội dung + URL
+        đích qua query param (`prefill_content`/`prefill_target_url`),
+        admin tự chọn ngày giờ. Với bài đăng nhóm: tick sẵn đúng
+        checkbox nhóm trên tab "Đăng vào nhóm". Với bình luận: **thêm
+        hẳn 1 tab mới "💬 Bình luận" vào /admin/post** (chưa từng có
+        form soạn comment nào ở đó trước đây) — URL bài/hồ sơ cần
+        bình luận nhập tay (không có danh sách nhóm để chọn như bài
+        đăng, vì bình luận nhắm vào 1 bài CÓ SẴN cụ thể), submit qua
+        route mới `/admin/post/schedule-comment`, tự suy ra
+        `comment_on_group_post` hay `comment_on_friend_post` từ URL
+        (dùng đúng quy tắc `"/groups/" in url` như `data_sync.py`'s
+        `sync_all()` đang dùng cho candidate thật).
+      - **🔄 Lên lịch lại** — tự tính giờ trống gần nhất KHÔNG vi phạm
+        posts_per_day/comments_per_day, TÁI DÙNG nguyên các hàm đã có
+        sẵn thay vì viết luật riêng: `daily_limits.hard_cap_message()`
+        (còn hạn mức hôm nay không), `daily_limits.business_day_start()`
+        (nếu hết hạn mức thì nhảy sang đúng mốc 2h sáng ngày nghiệp vụ
+        kế tiếp), `apply_quiet_hours()` (không rơi vào giờ yên tĩnh),
+        `RateLimiter.next_allowed_at()` (không sớm hơn khoảng cách tối
+        thiểu với lần đăng gần nhất) — gói lại trong hàm mới
+        `_suggest_reschedule_at()`. Hiện giờ gợi ý, ADMIN bấm "Xác
+        nhận" mới thật sự thêm vào lịch (`schedule_store.add()`) —
+        route mới `/admin/reports/reschedule-confirm`. **Khác với
+        "Đăng ngay" (cố tình bỏ nguồn gốc job/candidate theo thiết kế
+        cũ), "Đặt lịch"/"Lên lịch lại" giữ lại đúng `source_kind`/
+        `source_id`/`job_data` hoặc `candidate_data`** — task mới tạo
+        ra sẽ hiện đúng vị trí (gom đúng job/candidate) trong báo cáo
+        "Bài đăng"/"Bình luận" một khi nó thật sự chạy.
+      - `human_bot/admin.py`: hàm mới `_repost_choice_button_html()`
+        (nút "↻" giờ mở modal thay vì submit thẳng),
+        `_repost_choice_modal_html()` (modal 3 lựa chọn),
+        `_suggest_reschedule_at()`. Route mới: `GET
+        /reports/repost-choice` (mở modal), `GET
+        /reports/reschedule-suggest` (bước 1 "Lên lịch lại" — tính +
+        hiện giờ gợi ý), `POST /reports/reschedule-confirm` (bước 2 —
+        thật sự thêm vào lịch), `POST /post/schedule-comment` (tạo
+        task comment mới từ tab "💬 Bình luận"). `reports_repost()`
+        (route cũ, không đổi logic) giờ trả thêm `_MODAL_CLOSE_OOB` để
+        modal tự đóng sau khi "Đăng ngay" xong.
+      - Verify: gọi trực tiếp từng hàm/route qua Python xác nhận đúng
+        HTML (modal có đủ 3 nút, gợi ý giờ đúng dạng aware datetime),
+        và test tay 2 route có ghi dữ liệu
+        (`post_schedule_comment`/`reports_reschedule_confirm`) bằng
+        cách `mock.patch` 4 hằng số thư mục của `schedule_store`
+        (`PENDING_DIR`/...) sang thư mục tạm — xác nhận task mới tạo
+        ra đúng field (`action`/`content`/`scheduled_at`/
+        `source_kind`/`job_data`), **không đụng thư mục `scheduled/`
+        thật**. Không thêm test cố định vào `tests/` cho các route
+        admin.py này — theo đúng phạm vi test hiện có của dự án (chỉ
+        cover logic thuần, chưa từng unit-test route admin.py nào).
+        Toàn bộ suite pytest hiện có: 124 passed (không đổi).
+
+## 3 sửa nhỏ + 1 bug thật ở "Đăng lại" (2026-09-12)
+
+- [x] Ô input "URL bài đăng/hồ sơ cần bình luận" ở tab "💬 Bình luận"
+      (`/admin/post`) rộng ra hết khung — trước đó dùng độ rộng mặc
+      định của trình duyệt (rất hẹp), giờ `width:100%;
+      box-sizing:border-box;`.
+- [x] **Thay nút "↻ Đăng lại" bằng text trạng thái khi đã xử lý rồi**
+      (owner: "Bài Đăng/Bình luận nào đã được lên lịch lại (tự động
+      hay ADMIN thêm lại, hoặc đã ĐĂNG NGAY)" thì đổi nút thành text
+      "Đã đăng lại"/"Đã lên lịch lại"). Trước đây KHÔNG có cách nào
+      biết 1 dòng thất bại đã được xử lý chưa — mỗi lần vào báo cáo
+      lại thấy y hệt nút "↻" dù đã bấm "Đăng ngay"/"Đặt lịch"/"Lên
+      lịch lại" trước đó rồi.
+      - Thêm cột mới `retry_of_log_id INTEGER` vào `action_log`
+        (migrate `ALTER TABLE`, **lưu ý migration order**: phải chạy
+        `ALTER TABLE` xong rồi mới `CREATE INDEX` trên cột mới — lúc
+        đầu để chung trong `_SCHEMA`'s `executescript()`, `CREATE
+        INDEX` chạy TRƯỚC `ALTER TABLE` nên báo lỗi "no such column"
+        ngay khi import `human_bot.db` — phát hiện ngay lập tức vì
+        đây là module chạy `ensure_schema()` lúc import, sửa xong xác
+        nhận lại 100 dòng cũ + cột/index mới đều còn nguyên trên
+        `human_bot.db` thật).
+      - `schedule_store.ScheduledTask` + `agent.py`'s `TaskRequest`:
+        thêm field `retry_of_log_id`, truyền xuyên suốt tới
+        `db.log_action()` — set ở CẢ 3 nhánh: `reports_repost()`
+        ("Đăng ngay", set thẳng), `reports_reschedule_confirm()` ("Lên
+        lịch lại", set thẳng), và `post_schedule_profile()`/
+        `post_schedule_groups()`/`post_schedule_comment()` (mới, "Đặt
+        lịch" — đọc từ hidden field `retry_of_log_id` do
+        `_repost_choice_modal_html()`'s link "Đặt lịch" truyền qua
+        query param). `data_sync.py`'s `fire_due_tasks()` và
+        `admin.py`'s `schedule_fire_now()` đều truyền tiếp
+        `task.retry_of_log_id` khi task đó thật sự chạy.
+      - `db.py`: hàm mới `successful_retry_log_ids(log_ids)` — 1 query
+        gộp cho CẢ TRANG thay vì 1 query/dòng.
+      - `admin.py`: hàm mới `_repost_action_cell_html()` — kiểm tra
+        `pending_retry_ids` (quét `schedule_store.list_pending()` 1
+        lần/trang, dùng chung cho cả 3 tab) trước, rồi mới tới
+        `done_retry_ids` (theo từng tab, chỉ query trên đúng tập dòng
+        đang hiển thị) — pending thắng vì đó là trạng thái mới hơn.
+        3 nơi hiển thị (Bài đăng/Bình luận/Hoạt động gần đây) đều đổi
+        sang dùng hàm này thay vì gọi thẳng nút.
+      - Verify: giả lập cả 3 trạng thái (chưa xử lý → nút hiện; vừa
+        "Lên lịch lại" nhưng chưa chạy → "⏳ Đã lên lịch lại"; đã chạy
+        thành công → "✅ Đã đăng lại") bằng cách `mock.patch` cả
+        `schedule_store` LẪN `db.DB_PATH` sang thư mục/file tạm, xác
+        nhận đúng text hiện đúng lúc. Không đụng dữ liệu thật.
+- [x] **Bug thật: "🔄 Lên lịch lại" gợi ý ĐÚNG 1 giờ y hệt cho nhiều
+      dòng khác nhau trong cùng 1 lần làm việc** (owner tự tay phát
+      hiện: bấm Lên lịch lại dòng A → 12/9 15:04, xác nhận, bấm Lên
+      lịch lại dòng B → VẪN 12/9 15:04). Nguyên nhân: `_suggest_
+      reschedule_at()` chỉ đọc dữ liệu THẬT ĐÃ XẢY RA (`daily_limits`/
+      `RateLimiter` đều chỉ đọc `action_log`/log file) — 1 task vừa
+      được "Lên lịch lại" thành công chỉ nằm trong `schedule_store`'s
+      `pending/`, CHƯA hề chạy, nên hạn mức/khoảng cách tính ra y hệt
+      lần trước, không "thấy" gợi ý cũ vừa được chấp nhận. Sửa bằng
+      cách gộp thêm task PENDING (cùng tài khoản + cùng bucket
+      post/comment) vào cả 2 phép kiểm: (1) đếm hạn mức ngày nghiệp vụ
+      — nếu hôm nay đã đủ (tính real + pending) thì nhảy sang ngày kế
+      tiếp, lặp có giới hạn 60 lần giống `data_sync.py`'s
+      `_next_available_business_day()`; (2) khoảng cách tối thiểu —
+      lấy thêm mốc "task pending trễ nhất + min_delay_seconds" làm
+      sàn, cùng với sàn cũ từ `RateLimiter.next_allowed_at()`. Verify:
+      viết lại kịch bản y hệt owner mô tả (mock `schedule_store` sang
+      thư mục tạm, gọi gợi ý 2 lần liên tiếp có tạo pending task ở
+      giữa) — xác nhận lần 2 KHÁC lần 1 và tôn trọng đúng khoảng cách
+      tối thiểu.
+      - Toàn bộ suite pytest: 124 passed (không đổi — vẫn chưa thêm
+        test cố định cho route admin.py theo đúng quy ước cũ, chỉ
+        verify bằng script tạm không commit).
+
+## "Dữ liệu gốc" đầy đủ hơn (2026-09-12)
+
+- [x] Owner hỏi tab "Bài đăng"/"Bình luận" giờ đầy đủ hơn "Hoạt động
+      gần đây" — xác nhận KHÔNG dư: "Hoạt động gần đây" vẫn là nơi
+      DUY NHẤT hiện `post_to_own_profile`, `like_post`, và bài/comment
+      soạn tay không qua job/candidate (không có `source_kind`) — 2
+      tab mới chỉ phủ đúng phần có nguồn job/candidate.
+      Owner tiếp: **"Phần nội dung gốc nên đầy đủ hơn"** — `_job_data_
+      summary_html()`/`_candidate_data_summary_html()` trước đó chỉ
+      hiện đúng 1 danh sách field cố định (job: Công ty/Địa điểm/Loại
+      visa/JLPT/Lương; candidate: Muốn làm/Khu vực mong muốn) — dù
+      `job_data`/`candidate_data` lưu trong DB đã là NGUYÊN VẸN dict
+      thô từ bên B (không lọc bớt gì lúc ghi), field nào không nằm
+      trong danh sách cứng đó (VD `confidence`, `contact`) bị ẩn
+      hoàn toàn dù dữ liệu vẫn có sẵn.
+      - `human_bot/admin.py`: thêm `_ATTR_LABELS` (map tên field thô
+        → nhãn tiếng Việt cho các field đã biết) + hàm dùng chung
+        `_attrs_summary_html(title, attrs)` — hiện ĐỘNG mọi field
+        không rỗng trong `attrs`, field lạ không có trong
+        `_ATTR_LABELS` vẫn hiện (dùng luôn tên field thô làm nhãn)
+        thay vì biến mất — tự động phủ được field bên B thêm sau này
+        mà không cần sửa code. `confidence` (số thập phân 0-1) format
+        lại thành phần trăm cho dễ đọc (`0.99` → `99%`).
+      - `_job_data_summary_html()`/`_candidate_data_summary_html()`
+        giờ chỉ còn việc parse JSON rồi gọi `_attrs_summary_html()` —
+        không tự liệt kê field nữa. Tránh trùng lặp: `title` không
+        còn fallback về `jobField` (vì `jobField` đã tự hiện qua vòng
+        lặp field dưới "Ngành nghề" rồi, fallback sẽ hiện 2 lần).
+      - Verify: dữ liệu thật trong `human_bot.db` xác nhận field
+        `confidence` (trước đây bị ẩn) giờ hiện đúng dạng "99%"; test
+        tay field lạ (`unknownField`) vẫn hiện bằng tên thô; dữ liệu
+        rỗng vẫn rơi về "—" đúng như cũ. Toàn bộ suite: 124 passed.

@@ -1206,6 +1206,14 @@ async def fire_due_tasks(cfg: SchedulingConfig | None = None) -> dict[str, Any]:
             source="schedule_auto",
             source_kind=task.source_kind,
             source_id=task.source_id,
+            # candidate tasks never set task.job_data (only job tasks do) —
+            # task.candidate_data is their equivalent "raw side-B origin
+            # data" slot (see schedule_store.ScheduledTask's docstrings).
+            # Exactly one of the two is ever populated for a given task, so
+            # sharing the single job_data column/field for both (2026-09-12,
+            # "theo từng lần bình luận" report) needs no schema change.
+            job_data=task.job_data or task.candidate_data,
+            retry_of_log_id=task.retry_of_log_id,
         )
         result = await run_task(request)
         if result.success:

@@ -50,6 +50,21 @@ class TaskRequest:
     source: str = "api"  # manual | queue | schedule_manual | schedule_auto | api
     source_kind: str | None = None  # "job" | "candidate" — only set for data-sync-originated tasks
     source_id: str | None = None  # side B's own record id, for traceability
+    # Raw side-B job data (title/attributes — human_bot/schedule_store.py's
+    # ScheduledTask.job_data) for job posts only (2026-09-12) — logged
+    # alongside every per-group action_log row so /admin/reports' "theo
+    # từng lần đăng" view can show the original data a job was drafted
+    # from, not just what got posted. See db.log_action()'s docstring.
+    job_data: dict | None = None
+    # The action_log row id this task is a retry OF (2026-09-12) — see
+    # human_bot/schedule_store.py's ScheduledTask.retry_of_log_id
+    # docstring. Set by admin.py's reports_repost() ("Đăng ngay") directly,
+    # or carried through from a ScheduledTask.retry_of_log_id for a task
+    # fired via data_sync.py's fire_due_tasks()/admin.py's
+    # schedule_fire_now() ("Đặt lịch"/"Lên lịch lại"). Logged onto the
+    # resulting action_log row so /admin/reports can show "Đã đăng lại"/
+    # "Đã lên lịch lại" instead of offering the same failed row again.
+    retry_of_log_id: int | None = None
     # Admin-confirmed override of the min-gap pacing check ONLY (see
     # human_bot/safety.py's RateLimiter.can_proceed(ignore_gap=...)) — set
     # by admin.py's schedule_fire_now() after the admin clicks "Vẫn đăng
@@ -157,6 +172,8 @@ def _log_result(request: TaskRequest, success: bool, message: str, screenshot_pa
             source=request.source,
             source_kind=request.source_kind,
             source_id=request.source_id,
+            job_data=request.job_data,
+            retry_of_log_id=request.retry_of_log_id,
             screenshot_path=screenshot_path,
         )
     except Exception:  # noqa: BLE001 — see docstring

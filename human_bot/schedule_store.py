@@ -73,6 +73,15 @@ class ScheduledTask:
     # Cleared on the next successful edit/fire. See data_sync.py's
     # fire_due_tasks() and admin.py's schedule_fire_now()/schedule_update().
     last_warning: str | None = None
+    # The action_log row id this task is a retry OF — set by
+    # human_bot/admin.py's "📅 Đặt lịch"/"🔄 Lên lịch lại" flows (added
+    # 2026-09-12) when the admin creates this task from a FAILED
+    # /admin/reports row, carried through to the resulting action_log row
+    # once this task fires (agent.py's TaskRequest.retry_of_log_id →
+    # db.log_action()) so the report can show "Đã lên lịch lại"/"Đã đăng
+    # lại" instead of offering the same failed row for retry again. None
+    # for a task composed fresh (not from a report row).
+    retry_of_log_id: int | None = None
 
 
 def ensure_dirs() -> None:
