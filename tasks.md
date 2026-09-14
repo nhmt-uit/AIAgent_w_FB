@@ -2063,3 +2063,161 @@
         `confidence` (trước đây bị ẩn) giờ hiện đúng dạng "99%"; test
         tay field lạ (`unknownField`) vẫn hiện bằng tên thô; dữ liệu
         rỗng vẫn rơi về "—" đúng như cũ. Toàn bộ suite: 124 passed.
+
+## Sửa GẤP: không tự đăng bài quá hạn sau khi server tắt/mở lại (2026-09-14)
+
+- [x] Owner hỏi: server tắt lâu rồi mở lại thì bài lỡ giờ đăng có bị
+      "dồn chạy 1 lần" không? Tra code xác nhận: KHÔNG dồn trên CÙNG 1
+      tài khoản + cùng loại hành động (rate-limiter tự chặn), nhưng
+      GIỮA nhiều tài khoản khác nhau (hoặc post/comment cùng 1 tài
+      khoản, 2 loại không chia sẻ gap) thì CÓ THỂ đăng gần như liên
+      tiếp ngay khi service vừa dậy — `fire_due_tasks()`'s vòng lặp
+      `for task in due:` không có khoảng nghỉ nhân tạo nào giữa các
+      task. Owner yêu cầu sửa gấp: task đã quá giờ đăng khi server tắt
+      thì KHÔNG được tự đăng nữa — phải đưa ra chỗ khác cho ADMIN duyệt
+      lại (đăng lại — tự chọn giờ hoặc để hệ thống tính giờ trống, hay
+      xoá/huỷ, hỗ trợ chọn nhiều/chọn tất cả rồi xoá 1 lúc).
+      **Owner làm rõ thêm khi được hỏi về ngưỡng**: KHÔNG dùng ngưỡng
+      thời gian trễ bao lâu — chỉ so sánh 1 LẦN DUY NHẤT ngay lúc
+      service KHỞI ĐỘNG LẠI (so với mốc giờ start), task nào lúc đó đã
+      quá giờ mới bị coi là "quá hạn"; trong lúc server đang chạy bình
+      thường mà bị trễ/dồn việc (rate-limit, backlog...) thì KHÔNG coi
+      là quá hạn — đây là hành vi bình thường của hệ thống, không đụng
+      tới.
+      - `human_bot/schedule_store.py`: thêm trạng thái thứ 5
+        `MISSED_DIR` (cùng kiểu "thư mục là trạng thái" với
+        pending/posted/failed/cancelled sẵn có — không xoá gì, chỉ
+        chuyển thư mục). Hàm mới: `list_missed()`, `get_missed()`,
+        `get_missed_reason()`, `mark_missed()` (pending → missed, kèm
+        `.result.txt` giải thích lý do), `restore_to_pending()` (missed
+        → pending, đồng thời cho sửa `content`/`scheduled_at` — dùng
+        chung cho cả "Đặt lịch" và "Lên lịch lại"), `cancel_missed()`
+        (missed → cancelled, cùng đích với "Huỷ" bình thường).
+        **Phát hiện + sửa 1 bug thật lúc viết test**: `_move_to()` cũ
+        có `source_dir: Path = PENDING_DIR` làm giá trị mặc định cho
+        tham số — giá trị mặc định này gán CỐ ĐỊNH lúc Python LOAD
+        module (import time), không phải lúc gọi hàm, nên
+        `monkeypatch`/`mock.patch` đổi `schedule_store.PENDING_DIR`
+        sang thư mục tạm để test KHÔNG có tác dụng gì với default đó —
+        hàm vẫn âm thầm ghi vào đúng thư mục THẬT. Sửa bằng cách đổi
+        default thành `None`, resolve về `PENDING_DIR` THẬT SỰ bên
+        trong thân hàm (đọc biến module lúc gọi, không phải lúc định
+        nghĩa) — đúng nguyên tắc Python "mutable/global default argument
+        bị đóng băng lúc def". Phát hiện ngay lập tức vì viết test cô
+        lập trước khi tin là đúng, không phải chạy thật rồi mới biết.
+      - `human_bot/data_sync.py`: hàm mới
+        `sweep_overdue_on_startup()` — chỉ gọi ĐÚNG 1 LẦN, so sánh với
+        1 mốc `datetime.now(timezone.utc)` chụp ngay lúc gọi, quét
+        `schedule_store.list_pending()`, task nào `scheduled_at` đã
+        qua mốc đó thì `mark_missed()`. KHÔNG phải một vòng lặp định
+        kỳ, KHÔNG có ngưỡng phút/giờ nào — đúng yêu cầu owner.
+      - `human_bot/service.py`: gọi `sweep_overdue_on_startup()` đúng
+        1 lần trong `lifespan()`, TRƯỚC KHI tạo `fire_task` (vòng lặp
+        `fire_due_tasks()` định kỳ) — đảm bảo không có task quá hạn
+        nào lọt qua được due-check đầu tiên. Log cảnh báo nếu có task
+        bị quét.
+      - `human_bot/admin.py`: thêm mục **"⚠️ Task quá hạn cần duyệt"**
+        vào đầu `/admin/schedule` (chỉ hiện khi có task quá hạn, không
+        chiếm chỗ lúc bình thường) — mỗi dòng có nội dung/giờ dự kiến
+        ban đầu/lý do quá hạn, checkbox chọn từng dòng (dùng thuộc
+        tính HTML `form="missed-bulk-form"` để checkbox nằm ngoài
+        `<form>` bulk vẫn tham gia submit được, tránh lồng `<form>`
+        trong `<form>` không hợp lệ), "Chọn tất cả", nút "🗑️ Xoá đã
+        chọn" (bulk), và mỗi dòng có 2 lựa chọn xử lý riêng: "📅 Đặt
+        lịch" (form sửa nội dung + chọn giờ tay, submit thẳng) và
+        "🔄 Lên lịch lại" (mở modal — TÁI DÙNG nguyên
+        `_suggest_reschedule_at()` đã viết cho `/admin/reports`, chỉ
+        đổi input từ 1 dòng action_log sang 1 `ScheduledTask` — cùng
+        logic gợi ý giờ trống, admin xác nhận mới thật sự lên lịch).
+        5 route mới: `POST /schedule/missed/reschedule`,
+        `GET /schedule/missed/suggest`,
+        `POST /schedule/missed/reschedule-confirm`,
+        `POST /schedule/missed/cancel`,
+        `POST /schedule/missed/bulk-cancel`.
+      - Verify: viết kịch bản đầy đủ bằng `mock.patch`/`monkeypatch` 5
+        hằng số thư mục của `schedule_store` sang thư mục tạm — tạo 3
+        task "quá hạn" (giả lập server tắt), chạy
+        `sweep_overdue_on_startup()` xác nhận cả 3 bị chuyển sang
+        `missed/` và KHÔNG đăng gì cả; test riêng 1 task tương lai xác
+        nhận KHÔNG bị quét; gọi sweep lần 2 (giả lập không có downtime)
+        xác nhận `swept=0`; test cả 3 đường xử lý (Đặt lịch tay, Lên
+        lịch lại tự động + xác nhận, Xoá theo lô) đều đưa đúng task ra
+        khỏi `missed/`. Không đụng `scheduled/` thật. Sau khi verify
+        bằng script tạm, viết lại thành test cố định: **12 test mới**
+        — `tests/test_schedule_store.py` (9 test, file mới — trước đó
+        `schedule_store.py` chưa có test riêng, chỉ được đụng gián
+        tiếp qua stub trong `test_data_sync.py`; có 1 test hồi quy
+        riêng khoá chặt đúng bug `_move_to()` vừa sửa) + 3 test
+        `sweep_overdue_on_startup()` thêm vào `test_data_sync.py`.
+        Toàn bộ suite pytest: **136 passed** (124 cũ + 12 mới).
+
+## Chia LỊCH ĐĂNG thành 2 tab (2026-09-14)
+
+- [x] Owner yêu cầu tách `/admin/schedule` thành 2 tab: **"📋 Task đã
+      lên lịch"** (danh sách pending sẵn có) và **"⚠️ Task quá hạn"**
+      (mục vừa thêm ở trên, trước đó chỉ là 1 card cảnh báo hiện phía
+      trên danh sách pending). Cùng kiểu tab (`hx-get` đổi tab, không
+      JS riêng) đã dùng cho `/admin/reports`.
+      - `human_bot/admin.py`: `_schedule_content_html()` thêm tham số
+        `tab`, hằng số `_SCHEDULE_TABS`/`_clamp_schedule_tab()`. Tiêu
+        đề tab hiện luôn kèm số lượng — "Task đã lên lịch (N)"/"Task
+        quá hạn (M)" — nên không cần đếm lặp lại trong nội dung tab
+        nữa (bỏ số đếm khỏi tiêu đề card cũ của mục quá hạn).
+      - `_missed_tasks_section_html()`: bỏ `if not missed: return ""`
+        (trước đây conditionally ẩn cả card) — giờ là nội dung CHÍNH
+        của 1 tab, tab vẫn hiện được kể cả rỗng (hiện
+        "Không có task nào quá hạn — mọi thứ đúng lịch." thay vì biến
+        mất hẳn), đúng cách "Task đã lên lịch" tab cũng hiện
+        empty-state khi rỗng.
+      - 5 route `/schedule/missed/*` (reschedule/suggest/
+        reschedule-confirm/cancel/bulk-cancel) đều hardcode
+        `tab="missed"` khi gọi lại `_schedule_content_html()`/
+        `_schedule_redirect()` — đảm bảo sau khi xử lý xong 1 task quá
+        hạn, trang render lại đúng Ở NGUYÊN tab "Task quá hạn" thay vì
+        nhảy về mặc định "Task đã lên lịch". 4 route pending cũ
+        (`update`/`cancel`/`fire-now`) không cần sửa gì — mặc định
+        `tab=None` đã tự rơi về "pending" sẵn, đúng hành vi cũ.
+      - Verify: render qua Python xác nhận tab mặc định chỉ hiện nội
+        dung "Task đã lên lịch", `tab=missed` chỉ hiện nội dung quá
+        hạn (không lẫn nội dung 2 tab), `tab` lạ/rỗng rơi về "pending"
+        an toàn; trang đầy đủ (không qua htmx) vẫn render đúng cả 2
+        tab. Toàn bộ suite: 136 passed (không đổi — chỉ tổ chức lại
+        UI, không đổi logic đã có test).
+
+## 2 sửa nhỏ cho tab "Task quá hạn" (2026-09-14)
+
+- [x] **Giờ trong lý do quá hạn hiển thị dạng ISO thô** (VD "Đã quá giờ
+      đăng dự kiến (2026-09-13T07:58:00+00:00) lúc service khởi động
+      lại (2026-09-14T04:14:27.174285+00:00)...") — owner yêu cầu hiện
+      giờ đồng bộ theo giờ trình duyệt như mọi nơi khác trong Admin UI.
+      Chuỗi lý do này do `data_sync.sweep_overdue_on_startup()` build
+      sẵn dạng text thuần (ghi vào `.result.txt`, file audit — vẫn giữ
+      nguyên ISO thô ở ĐÓ, không đổi, vì là file text thô không phải
+      HTML). Chỗ CẦN đổi là lúc ADMIN.PY RENDER chuỗi đó ra HTML — thêm
+      hàm mới `_localize_iso_timestamps_html(text)`: dò bằng regex mọi
+      chuỗi giống ISO 8601 trong `text`, thay từng chuỗi khớp bằng
+      `_local_dt_html()` (span JS tự đổi theo giờ trình duyệt), phần
+      còn lại của `text` vẫn `html.escape()` bình thường (không hở lỗ
+      hổng chèn HTML qua phần chữ xung quanh). Verify: chạy thử đúng
+      câu lý do owner dán vào, xác nhận cả 2 mốc giờ đều được bọc
+      `data-local-dt` đúng.
+- [x] **Thêm phân trang cho tab "Task quá hạn"** — trước đó hiện hết
+      toàn bộ danh sách 1 lần, không giới hạn. Thêm `missed_page`
+      **TÁCH RIÊNG** khỏi `page` của tab "Task đã lên lịch" (2 tab có
+      số lượng không liên quan gì nhau, dùng chung 1 biến "page" sẽ
+      lệch trạng thái y hệt lỗi `job_page`/`candidate_page` đã gặp ở
+      `/admin/reports`) — dùng chung `page_size`/`_SCHEDULE_PAGE_SIZE_CHOICES`
+      sẵn có. Hàm mới `_missed_page_link()`/`_missed_pagination_html()`
+      (Đầu/Trước/nhảy trang/Sau/Cuối, y hệt kiểu đã dùng cho tab
+      pending). `missed_page` xuyên suốt qua cả 5 route
+      `/schedule/missed/*` (hidden field trong mỗi form + query param
+      của route GET suggest) để mọi hành động (đặt lịch/lên lịch
+      lại/xoá/xoá theo lô) render lại đúng TRANG đang xem, không nhảy
+      về trang 1. `_schedule_form_filter()` đổi từ trả về 3 giá trị
+      thành 4 (`account_id, page, page_size, missed_page`) — cập nhật
+      cả 7 nơi đang unpack tuple này (3 route pending + 4 route
+      missed).
+      - Verify: tạo 25 task quá hạn (vượt page_size mặc định 20) bằng
+        thư mục tạm — xác nhận trang 1 hiện đúng 20, trang 2 hiện đúng
+        5 còn lại, khối phân trang hiện "/ 2"; tab "Task đã lên lịch"
+        không bị ảnh hưởng. Toàn bộ suite: 136 passed (không đổi).

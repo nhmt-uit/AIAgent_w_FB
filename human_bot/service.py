@@ -269,6 +269,17 @@ def _confirm_startup_or_abort(missing: list[str]) -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     _confirm_startup_or_abort(_warn_if_auth_unconfigured())
+    # ONE-TIME sweep, before the recurring fire-due-tasks loop gets its
+    # first turn (see data_sync.sweep_overdue_on_startup()'s docstring) —
+    # so a task left over from before the service was down doesn't get
+    # auto-fired the instant it comes back up; it waits in schedule_store's
+    # missed/ for an admin to review at /admin/schedule instead.
+    swept = data_sync.sweep_overdue_on_startup()
+    if swept["swept"]:
+        logger.warning(
+            "sweep_overdue_on_startup: moved %d pending task(s) to missed/ for admin review "
+            "(scheduled_at already past as of %s)", swept["swept"], swept["checked_at"],
+        )
     active_accounts = [a for a in get_all_accounts().values() if a.status == AccountStatus.ACTIVE]
     await warm_up(active_accounts)
     poll_task = asyncio.create_task(_data_sync_poll_loop())

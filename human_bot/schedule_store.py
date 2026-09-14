@@ -29,6 +29,17 @@ PENDING_DIR = SCHEDULE_ROOT / "pending"
 POSTED_DIR = SCHEDULE_ROOT / "posted"
 FAILED_DIR = SCHEDULE_ROOT / "failed"
 CANCELLED_DIR = SCHEDULE_ROOT / "cancelled"
+# Tasks swept out of pending/ at service STARTUP ONLY (2026-09-14) — see
+# human_bot/service.py's sweep_overdue_on_startup() docstring for the full
+# reasoning: a task whose scheduled_at was already in the past the moment
+# the service came back up (e.g. after being off for hours) must NOT
+# silently auto-fire — it lands here instead, for an admin to review at
+# /admin/schedule and either reschedule (pick a time by hand, or let the
+# system suggest the next free slot — same as /admin/reports' "🔄 Lên lịch
+# lại") or delete. A task that merely becomes due mid-run (normal
+# poll-interval lag, or a backlog from an account being rate-limited) is
+# NEVER swept here — only the one-time startup check looks at this at all.
+MISSED_DIR = SCHEDULE_ROOT / "missed"
 
 
 @dataclass
@@ -85,18 +96,22 @@ class ScheduledTask:
 
 
 def ensure_dirs() -> None:
-    for d in (PENDING_DIR, POSTED_DIR, FAILED_DIR, CANCELLED_DIR):
+    for d in (PENDING_DIR, POSTED_DIR, FAILED_DIR, CANCELLED_DIR, MISSED_DIR):
         d.mkdir(parents=True, exist_ok=True)
 
 
-def _safe_pending_path(task_id: str) -> Path:
-    """Resolve `task_id` strictly inside PENDING_DIR, same defensive
+def _safe_path_in(task_id: str, directory: Path) -> Path:
+    """Resolve `task_id` strictly inside `directory`, same defensive
     reasoning as content_queue.py's _safe_pending_path."""
     ensure_dirs()
     safe_name = Path(task_id).name
     if not safe_name.endswith(".json"):
         safe_name += ".json"
-    return PENDING_DIR / safe_name
+    return directory / safe_name
+
+
+def _safe_pending_path(task_id: str) -> Path:
+    return _safe_path_in(task_id, PENDING_DIR)
 
 
 def new_task_id(scheduled_at: str) -> str:
@@ -159,6 +174,70 @@ def list_posted() -> list[ScheduledTask]:
     return items
 
 
+def get_missed(task_id: str) -> ScheduledTask | None:
+    return _read(_safe_path_in(task_id, MISSED_DIR))
+
+
+def get_missed_reason(task_id: str) -> str | None:
+    """The .result.txt mark_missed() wrote alongside this task's JSON —
+    same sibling-file pattern as mark_posted()/mark_failed() — for
+    /admin/schedule's "⚠️ Task quá hạn" section to show WHY."""
+    path = _safe_path_in(task_id, MISSED_DIR).with_suffix(".result.txt")
+    try:
+        return path.read_text(encoding="utf-8")
+    except OSError:
+        return None
+
+
+def list_missed() -> list[ScheduledTask]:
+    """Tasks the startup sweep pulled out of pending/ — see MISSED_DIR's
+    docstring. Soonest-originally-due first, same as list_pending()."""
+    ensure_dirs()
+    items = []
+    for path in sorted(MISSED_DIR.glob("*.json")):
+        task = _read(path)
+        if task is not None:
+            items.append(task)
+    return items
+
+
+def mark_missed(task_id: str, reason: str) -> bool:
+    """Move a pending task to MISSED_DIR — called ONLY by the one-time
+    startup sweep (human_bot/service.py's sweep_overdue_on_startup()),
+    never by the recurring due-task check. Same "never silently delete"
+    pattern as mark_posted()/mark_failed(): the task's own JSON is
+    untouched, just relocated, plus a sibling .result.txt explaining why."""
+    dest = _move_to(task_id, MISSED_DIR)
+    if dest is not None:
+        dest.with_suffix(".result.txt").write_text(reason, encoding="utf-8")
+    return dest is not None
+
+
+def restore_to_pending(task_id: str, **fields_to_update) -> ScheduledTask | None:
+    """The admin-review resolution for a MISSED task (/admin/schedule's
+    "⚠️ Task quá hạn" section, added 2026-09-14) — "Đặt lịch" (pick a new
+    time by hand) or "Lên lịch lại" (auto-suggested slot, same
+    _suggest_reschedule_at() /admin/reports' retry flow uses) both funnel
+    through here: read the task back out of MISSED_DIR, apply whatever
+    changed (at minimum a new scheduled_at), write it into PENDING_DIR via
+    add() (so it re-enters the normal due-task check next poll), and
+    remove the leftover file (+ its .result.txt, if any) from MISSED_DIR.
+    Returns the updated task, or None if it's no longer there (already
+    resolved by another click)."""
+    task = get_missed(task_id)
+    if task is None:
+        return None
+    known = set(ScheduledTask.__dataclass_fields__) - {"task_id"}
+    for k, v in fields_to_update.items():
+        if k in known:
+            setattr(task, k, v)
+    add(task)
+    src = _safe_path_in(task_id, MISSED_DIR)
+    src.unlink(missing_ok=True)
+    src.with_suffix(".result.txt").unlink(missing_ok=True)
+    return task
+
+
 def due_tasks(now: datetime | None = None) -> list[ScheduledTask]:
     now = now or datetime.now(timezone.utc)
     result = []
@@ -189,9 +268,18 @@ def update(task_id: str, **fields_to_update) -> ScheduledTask | None:
     return task
 
 
-def _move_to(task_id: str, target_dir: Path) -> Path | None:
+def _move_to(task_id: str, target_dir: Path, source_dir: Path | None = None) -> Path | None:
+    # source_dir resolved to PENDING_DIR here, at CALL time, not as the
+    # parameter's own default — a default value binds to the module
+    # global's value at function-DEFINITION time, so a test that
+    # monkeypatches schedule_store.PENDING_DIR to an isolated tmp_path
+    # would silently keep writing into the real one instead (caught this
+    # immediately: a monkeypatched test moved 0 files, wrote to the real
+    # scheduled/pending/ before the fix).
+    if source_dir is None:
+        source_dir = PENDING_DIR
     ensure_dirs()
-    src = _safe_pending_path(task_id)
+    src = _safe_path_in(task_id, source_dir)
     if not src.is_file():
         return None
     dest = target_dir / src.name
@@ -201,6 +289,16 @@ def _move_to(task_id: str, target_dir: Path) -> Path | None:
 
 def cancel(task_id: str) -> bool:
     return _move_to(task_id, CANCELLED_DIR) is not None
+
+
+def cancel_missed(task_id: str) -> bool:
+    """"Xoá"/"Huỷ" for a task sitting in MISSED_DIR (admin decided it's no
+    longer needed) — same CANCELLED_DIR destination as cancel() above, so
+    it's still on-disk for audit, just from a different source directory.
+    Leaves behind the .result.txt the startup sweep wrote (still useful
+    context for why this was ever missed) rather than trying to move it
+    too — cancel()'s own targets never carry one either."""
+    return _move_to(task_id, CANCELLED_DIR, source_dir=MISSED_DIR) is not None
 
 
 def mark_posted(task_id: str, message: str) -> None:

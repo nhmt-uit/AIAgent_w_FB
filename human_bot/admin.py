@@ -2528,6 +2528,31 @@ def _local_dt_html(iso: str | None) -> str:
     return f'<span data-local-dt data-utc="{html.escape(iso)}">{fallback}</span>'
 
 
+_ISO_DT_RE = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:[+-]\d{2}:\d{2}|Z)?")
+
+
+def _localize_iso_timestamps_html(text: str) -> str:
+    """Renders free-form `text` with any embedded ISO 8601 UTC timestamp
+    swapped for a _local_dt_html() span (browser-local time, same as
+    every other time display in this admin UI) instead of showing the
+    raw "2026-09-13T07:58:00+00:00" string as-is — owner-reported
+    2026-09-14: schedule_store.get_missed_reason()'s text (built by
+    data_sync.sweep_overdue_on_startup()) has 2 such timestamps baked
+    into it as plain text. The stored .result.txt itself keeps the raw
+    ISO (it's a plain-text audit file, not HTML), only the ADMIN UI
+    rendering here substitutes — every other part of the string is still
+    html.escape()'d individually so this can't introduce injection via
+    the surrounding text."""
+    parts = []
+    last = 0
+    for m in _ISO_DT_RE.finditer(text):
+        parts.append(html.escape(text[last:m.start()]))
+        parts.append(_local_dt_html(m.group(0)))
+        last = m.end()
+    parts.append(html.escape(text[last:]))
+    return "".join(parts)
+
+
 _SCHEDULE_PAGE_SIZE = 20
 # Choices offered by the "items per page" <select> — added 2026-09-11,
 # owner request. Bounded/allowlisted rather than a free-typed number so a
@@ -2555,15 +2580,169 @@ def _schedule_page_link(account_id: str | None, target_page: int, label: str, en
     )
 
 
+def _missed_page_link(account_id: str | None, target_page: int, label: str, enabled: bool, page_size: int) -> str:
+    if not enabled:
+        return f'<span class="btn-secondary btn-small" style="opacity:.45; pointer-events:none;">{label}</span>'
+    from urllib.parse import urlencode
+    qs = urlencode({k: v for k, v in {
+        "account_id": account_id, "tab": "missed", "missed_page": target_page,
+        "page_size": page_size if page_size != _SCHEDULE_PAGE_SIZE else None,
+    }.items() if v})
+    return (
+        f'<a class="btn-secondary btn-small" href="/admin/schedule?{qs}" '
+        f'hx-get="/admin/schedule?{qs}" hx-target="#schedule-content" hx-swap="outerHTML" hx-push-url="true">{label}</a>'
+    )
+
+
+def _missed_tasks_section_html(account_id: str | None, page: int, page_size: int, accounts: dict, missed_page: int = 1) -> str:
+    """"⚠️ Task quá hạn" tab content (2026-09-14, split into its own tab
+    per owner request — was a conditionally-shown callout card before;
+    pagination added same day, same owner request). schedule_store.
+    MISSED_DIR holds tasks the one-time startup sweep pulled out of
+    pending/ because their scheduled_at was already in the past the
+    moment the service came back up (see data_sync.
+    sweep_overdue_on_startup()'s docstring). Every action here re-renders
+    the WHOLE #schedule-content (same as pending-task actions already
+    do), so both tabs always stay in sync with each other.
+
+    `missed_page` is a SEPARATE page counter from the pending tab's own
+    `page` — the two tabs have unrelated item counts, so sharing one
+    "page" query param would desync whichever tab isn't currently active
+    (same "job_page"/"candidate_page" reasoning as /admin/reports' own
+    multi-tab pagination)."""
+    all_missed = schedule_store.list_missed()
+    if not all_missed:
+        return '<div class="empty-state">Không có task nào quá hạn — mọi thứ đúng lịch.</div>'
+
+    total = len(all_missed)
+    total_pages = max(1, -(-total // page_size))
+    missed_page = min(max(missed_page, 1), total_pages)
+    start = (missed_page - 1) * page_size
+    missed = all_missed[start:start + page_size]
+
+    filter_fields = (
+        f'<input type="hidden" name="account_id" value="{html.escape(account_id or "")}">'
+        f'<input type="hidden" name="page" value="{page}">'
+        f'<input type="hidden" name="page_size" value="{page_size}">'
+        f'<input type="hidden" name="tab" value="missed">'
+        f'<input type="hidden" name="missed_page" value="{missed_page}">'
+    )
+    items_html = []
+    for t in missed:
+        content_full = html.escape(t.content or "")
+        reason = schedule_store.get_missed_reason(t.task_id)
+        reason_html = f'<div class="warning-inline">{_localize_iso_timestamps_html(reason)}</div>' if reason else ""
+        url_row_html = ""
+        if t.target_url:
+            url_label = "Url nhóm" if t.action == "post_to_group" else "Url bài viết"
+            url_display = html.escape(t.target_url)
+            url_row_html = f'<div class="field-key">{url_label}: <a class="row-url" href="{url_display}" target="_blank" rel="noopener">{url_display}</a></div>'
+        reschedule_qs = (
+            f"task_id={html.escape(t.task_id, quote=True)}&account_id={html.escape(account_id or '', quote=True)}"
+            f"&page={page}&page_size={page_size}&missed_page={missed_page}"
+        )
+        items_html.append(f"""
+<div class="queue-item" style="border-left:3px solid #f59e0b;">
+  <label style="display:flex; align-items:center; gap:8px; cursor:pointer;">
+    <input type="checkbox" name="task_ids" value="{html.escape(t.task_id)}" form="missed-bulk-form">
+    <span class="queue-filename">{_action_badge_html(t.action)} · {html.escape(_account_label(t.account_id, accounts))}</span>
+  </label>
+  <div class="field-key">id: {html.escape(t.task_id)}</div>
+  <div class="field-key">Giờ dự kiến ban đầu: {_local_dt_html(t.scheduled_at)}</div>
+  {url_row_html}
+  {reason_html}
+  <form method="post" action="/admin/schedule/missed/reschedule"
+        hx-post="/admin/schedule/missed/reschedule" hx-target="#schedule-content" hx-swap="outerHTML"
+        style="margin-top:8px; display:flex; gap:8px; align-items:flex-start; flex-wrap:wrap;">
+    <input type="hidden" name="task_id" value="{html.escape(t.task_id)}">
+    {filter_fields}
+    <textarea name="content" style="flex:1; min-width:240px; min-height:60px;">{content_full}</textarea>
+    {_datetime_picker_html("scheduled_at", current_value=t.scheduled_at, required=True, blank_hint=False)}
+    <button type="submit" class="btn-small">📅 Đặt lịch</button>
+  </form>
+  <div style="margin-top:8px; display:flex; gap:8px;">
+    <button type="button" class="btn-small"
+            hx-get="/admin/schedule/missed/suggest?{reschedule_qs}" hx-target="#modal-root" hx-swap="innerHTML">🔄 Lên lịch lại</button>
+    <form method="post" action="/admin/schedule/missed/cancel"
+          hx-post="/admin/schedule/missed/cancel" hx-target="#schedule-content" hx-swap="outerHTML"
+          hx-confirm="Xoá mục quá hạn này?">
+      <input type="hidden" name="task_id" value="{html.escape(t.task_id)}">
+      {filter_fields}
+      <button type="submit" class="btn-secondary btn-small">🗑️ Xoá</button>
+    </form>
+  </div>
+</div>""")
+
+    return f"""
+<form id="missed-bulk-form" method="post" action="/admin/schedule/missed/bulk-cancel"
+      hx-post="/admin/schedule/missed/bulk-cancel" hx-target="#schedule-content" hx-swap="outerHTML"
+      hx-confirm="Xoá tất cả mục đã chọn?">
+  {filter_fields}
+</form>
+<div class="card">
+  <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;">
+    <p class="page-desc" style="margin:0;">Những bài lẽ ra đã đến giờ đăng nhưng service đang tắt lúc đó — giữ lại đây thay vì tự động đăng khi khởi động lại, chờ bạn duyệt: "📅 Đặt lịch" (tự chọn giờ mới), "🔄 Lên lịch lại" (hệ thống gợi ý giờ trống gần nhất), hoặc xoá nếu không cần nữa.</p>
+    <div style="display:flex; align-items:center; gap:12px; flex-shrink:0;">
+      <label style="font-size:13px; display:flex; align-items:center; gap:4px; cursor:pointer; white-space:nowrap;">
+        <input type="checkbox" onclick="document.querySelectorAll('input[name=task_ids]').forEach(function(cb){{cb.checked=this.checked}}.bind(this))">
+        Chọn tất cả
+      </label>
+      <button type="submit" form="missed-bulk-form" class="btn-secondary btn-small">🗑️ Xoá đã chọn</button>
+    </div>
+  </div>
+  {"".join(items_html)}
+  {_missed_pagination_html(account_id, missed_page, total_pages, total, page_size)}
+</div>"""
+
+
+def _missed_pagination_html(account_id: str | None, missed_page: int, total_pages: int, total: int, page_size: int) -> str:
+    if total_pages <= 1:
+        return ""
+    jump_hidden_fields = (
+        (f'<input type="hidden" name="account_id" value="{html.escape(account_id)}">' if account_id else "")
+        + '<input type="hidden" name="tab" value="missed">'
+        + f'<input type="hidden" name="page_size" value="{page_size}">'
+    )
+    return f"""
+<div style="display:flex; justify-content:space-between; align-items:center; margin-top:14px; flex-wrap:wrap; gap:8px;">
+  <div style="display:flex; gap:8px; align-items:center;">
+    {_missed_page_link(account_id, 1, "«« Đầu", missed_page > 1, page_size)}
+    {_missed_page_link(account_id, missed_page - 1, "← Trang trước", missed_page > 1, page_size)}
+  </div>
+  <form hx-get="/admin/schedule" hx-target="#schedule-content" hx-swap="outerHTML" hx-push-url="true"
+        style="display:flex; gap:6px; align-items:center; background:#f9fafb; border:1px solid #e5e7eb; border-radius:8px; padding:5px 10px;">
+    {jump_hidden_fields}
+    <span class="muted">Trang</span>
+    <input type="number" name="missed_page" min="1" max="{total_pages}" value="{missed_page}"
+           style="width:64px; text-align:center;" aria-label="Đi đến trang">
+    <span class="muted">/ {total_pages} — {total} mục</span>
+    <button type="submit" class="btn-secondary btn-small">Đi</button>
+  </form>
+  <div style="display:flex; gap:8px; align-items:center;">
+    {_missed_page_link(account_id, missed_page + 1, "Trang sau →", missed_page < total_pages, page_size)}
+    {_missed_page_link(account_id, total_pages, "Cuối »»", missed_page < total_pages, page_size)}
+  </div>
+</div>"""
+
+
+_SCHEDULE_TABS = ("pending", "missed")
+
+
+def _clamp_schedule_tab(raw: str | None) -> str:
+    return raw if raw in _SCHEDULE_TABS else "pending"
+
+
 def _schedule_content_html(
     account_id: str | None = None, page: int = 1, page_size: int = _SCHEDULE_PAGE_SIZE,
-    saved: bool = False, error: str | None = None,
+    saved: bool = False, error: str | None = None, tab: str | None = None, missed_page: int = 1,
 ) -> str:
     page_size = _clamp_schedule_page_size(page_size)
+    tab = _clamp_schedule_tab(tab)
     accounts = get_all_accounts()
     if account_id and account_id not in accounts:
         account_id = None  # unknown/stale filter falls back to "all", never a hard error
     all_tasks = schedule_store.list_pending()
+    missed_count = len(schedule_store.list_missed())
     tasks = [t for t in all_tasks if not account_id or t.account_id == account_id]
 
     total = len(tasks)
@@ -2714,11 +2893,41 @@ def _schedule_content_html(
   </div>
 </div>"""
 
-    return f"""<div id="schedule-content">
+    def _schedule_tab_link(tab_key: str, label: str) -> str:
+        from urllib.parse import urlencode as _urlencode_tab
+        active = tab_key == tab
+        qs = _urlencode_tab({k: v for k, v in {
+            "account_id": account_id, "tab": tab_key,
+            "page_size": page_size if page_size != _SCHEDULE_PAGE_SIZE else None,
+        }.items() if v})
+        style = (
+            "border-bottom:2px solid #111827; font-weight:600; color:#111827;" if active
+            else "border-bottom:2px solid transparent; color:#6b7280;"
+        )
+        return (
+            f'<a href="/admin/schedule?{qs}" hx-get="/admin/schedule?{qs}" '
+            f'hx-target="#schedule-content" hx-swap="outerHTML" hx-push-url="true" '
+            f'style="padding:8px 4px; text-decoration:none; {style}">{label}</a>'
+        )
+
+    tab_nav_html = f"""
+<div style="display:flex; gap:20px; margin-bottom:18px; border-bottom:1px solid #e5e7eb;">
+  {_schedule_tab_link("pending", f"📋 Task đã lên lịch ({total})")}
+  {_schedule_tab_link("missed", f"⚠️ Task quá hạn ({missed_count})")}
+</div>"""
+
+    if tab == "missed":
+        tab_body_html = _missed_tasks_section_html(account_id, page, page_size, accounts, missed_page)
+    else:
+        tab_body_html = f"""
 {filter_html}
-{flash}{err}
 {list_html}
-{pagination_html}
+{pagination_html}"""
+
+    return f"""<div id="schedule-content">
+{tab_nav_html}
+{flash}{err}
+{tab_body_html}
 </div>"""
 
 
@@ -2730,9 +2939,11 @@ async def schedule_list(
     page_size: int = _SCHEDULE_PAGE_SIZE,
     saved: bool = False,
     error: str | None = None,
+    tab: str | None = None,
+    missed_page: int = 1,
     _: None = Depends(_require_auth),
 ) -> str:
-    content = _schedule_content_html(account_id=account_id, page=page, page_size=page_size, saved=saved, error=error)
+    content = _schedule_content_html(account_id=account_id, page=page, page_size=page_size, saved=saved, error=error, tab=tab, missed_page=missed_page)
     if _is_htmx(request):
         return content
     return _layout(f"""
@@ -2750,7 +2961,7 @@ def _schedule_redirect(account_id: str | None, page: int, **params) -> RedirectR
     return RedirectResponse(url=f"/admin/schedule?{urlencode(query)}", status_code=303)
 
 
-def _schedule_form_filter(form) -> tuple[str | None, int, int]:
+def _schedule_form_filter(form) -> tuple[str | None, int, int, int]:
     account_id = str(form.get("account_id", "")).strip() or None
     try:
         page = int(str(form.get("page", "1")))
@@ -2760,13 +2971,17 @@ def _schedule_form_filter(form) -> tuple[str | None, int, int]:
         page_size = _clamp_schedule_page_size(int(str(form.get("page_size", _SCHEDULE_PAGE_SIZE))))
     except ValueError:
         page_size = _SCHEDULE_PAGE_SIZE
-    return account_id, page, page_size
+    try:
+        missed_page = int(str(form.get("missed_page", "1")))
+    except ValueError:
+        missed_page = 1
+    return account_id, page, page_size, missed_page
 
 
 @router.post("/schedule/update")
 async def schedule_update(request: Request, _: None = Depends(_require_auth)):
     form = await request.form()
-    account_id, page, page_size = _schedule_form_filter(form)
+    account_id, page, page_size, missed_page = _schedule_form_filter(form)
     task_id = str(form.get("task_id", ""))
     content = str(form.get("content", ""))
     scheduled_at = str(form.get("scheduled_at", ""))
@@ -2788,12 +3003,135 @@ async def schedule_update(request: Request, _: None = Depends(_require_auth)):
 @router.post("/schedule/cancel")
 async def schedule_cancel(request: Request, _: None = Depends(_require_auth)):
     form = await request.form()
-    account_id, page, page_size = _schedule_form_filter(form)
+    account_id, page, page_size, missed_page = _schedule_form_filter(form)
     task_id = str(form.get("task_id", ""))
     schedule_store.cancel(task_id)
     if _is_htmx(request):
         return HTMLResponse(_schedule_content_html(account_id=account_id, page=page, page_size=page_size, saved=True))
     return _schedule_redirect(account_id, page, page_size=page_size, saved=1)
+
+
+# --- "⚠️ Task quá hạn" review (2026-09-14) — see schedule_store.MISSED_DIR
+# and data_sync.sweep_overdue_on_startup()'s docstrings for the full
+# picture: these 5 routes are the admin-review resolution for whatever
+# the one-time startup sweep pulled out of pending/.
+
+@router.post("/schedule/missed/reschedule")
+async def schedule_missed_reschedule(request: Request, _: None = Depends(_require_auth)):
+    """"📅 Đặt lịch" on a missed task — admin picks the content/time by
+    hand, same edit form shape as schedule_update() above, but the SOURCE
+    is missed/ instead of pending/ (schedule_store.restore_to_pending())."""
+    form = await request.form()
+    account_id, page, page_size, missed_page = _schedule_form_filter(form)
+    task_id = str(form.get("task_id", ""))
+    content = str(form.get("content", ""))
+    scheduled_at = str(form.get("scheduled_at", ""))
+    restored = schedule_store.restore_to_pending(task_id, content=content, scheduled_at=scheduled_at)
+    if restored is None:
+        err = "Không tìm thấy mục này (có thể đã được xử lý ở tab khác)"
+        if _is_htmx(request):
+            return HTMLResponse(_schedule_content_html(account_id=account_id, page=page, page_size=page_size, tab="missed", missed_page=missed_page, error=err))
+        return _schedule_redirect(account_id, page, page_size=page_size, tab="missed", missed_page=missed_page, error=err)
+    if _is_htmx(request):
+        return HTMLResponse(_schedule_content_html(account_id=account_id, page=page, page_size=page_size, tab="missed", missed_page=missed_page, saved=True))
+    return _schedule_redirect(account_id, page, page_size=page_size, tab="missed", missed_page=missed_page, saved=1)
+
+
+@router.get("/schedule/missed/suggest", response_class=HTMLResponse)
+async def schedule_missed_suggest(
+    task_id: str, account_id: str | None = None, page: int = 1, page_size: int = _SCHEDULE_PAGE_SIZE,
+    missed_page: int = 1,
+    _: None = Depends(_require_auth),
+) -> str:
+    """"🔄 Lên lịch lại" step 1 on a missed task — same suggestion engine
+    as /admin/reports' retry flow (_suggest_reschedule_at()), just fed a
+    ScheduledTask's account/action instead of an action_log row's."""
+    task = schedule_store.get_missed(task_id)
+    if task is None:
+        return ""
+    account = get_all_accounts().get(task.account_id)
+    if account is None:
+        return (
+            '<div class="modal-backdrop" onclick="if(event.target===this) this.remove()">'
+            '<div class="modal-box"><p class="error">⚠️ Không tìm thấy tài khoản này.</p></div></div>'
+        )
+    suggested = _suggest_reschedule_at(account, task.action)
+    page_size = _clamp_schedule_page_size(page_size)
+    filter_fields = (
+        f'<input type="hidden" name="account_id" value="{html.escape(account_id or "")}">'
+        f'<input type="hidden" name="page" value="{page}">'
+        f'<input type="hidden" name="page_size" value="{page_size}">'
+        f'<input type="hidden" name="missed_page" value="{missed_page}">'
+        f'<input type="hidden" name="task_id" value="{html.escape(task_id)}">'
+        f'<input type="hidden" name="scheduled_at" value="{suggested.isoformat()}">'
+    )
+    return f"""
+<div class="modal-backdrop" onclick="if(event.target===this) this.remove()">
+  <div class="modal-box">
+    <div class="modal-header">
+      <h2>🔄 Lên lịch lại</h2>
+      <button type="button" class="modal-close" onclick="this.closest('.modal-backdrop').remove()">✕</button>
+    </div>
+    <p>Giờ đăng gợi ý: <b>{_local_dt_html(suggested.isoformat())}</b></p>
+    <p class="muted">Đã tính theo giới hạn số lượng/ngày, khoảng cách tối thiểu với lần đăng gần nhất, và giờ yên tĩnh đang cấu hình. Bấm Xác nhận để đưa lại vào lịch chờ (xem/sửa lại ở /admin/schedule), hoặc Huỷ để tự chọn giờ khác qua "📅 Đặt lịch".</p>
+    <div class="form-actions">
+      <button type="button" class="btn-secondary" style="margin-right:8px;" onclick="this.closest('.modal-backdrop').remove()">Huỷ</button>
+      <form method="post" action="/admin/schedule/missed/reschedule-confirm"
+            hx-post="/admin/schedule/missed/reschedule-confirm" hx-target="#schedule-content" hx-swap="outerHTML" style="display:inline;">
+        {filter_fields}
+        <button type="submit">✅ Xác nhận</button>
+      </form>
+    </div>
+  </div>
+</div>"""
+
+
+@router.post("/schedule/missed/reschedule-confirm")
+async def schedule_missed_reschedule_confirm(request: Request, _: None = Depends(_require_auth)):
+    """"🔄 Lên lịch lại" step 2 — admin confirmed the suggested slot."""
+    form = await request.form()
+    account_id, page, page_size, missed_page = _schedule_form_filter(form)
+    task_id = str(form.get("task_id", ""))
+    scheduled_at_raw = str(form.get("scheduled_at", "")).strip()
+    try:
+        scheduled_at = datetime.fromisoformat(scheduled_at_raw.replace("Z", "+00:00"))
+    except ValueError:
+        scheduled_at = datetime.now(timezone.utc)
+    if scheduled_at.tzinfo is None:
+        scheduled_at = scheduled_at.replace(tzinfo=timezone.utc)
+    restored = schedule_store.restore_to_pending(task_id, scheduled_at=scheduled_at.isoformat())
+    if restored is None:
+        err = "Không tìm thấy mục này (có thể đã được xử lý ở tab khác)"
+        return HTMLResponse(_schedule_content_html(account_id=account_id, page=page, page_size=page_size, tab="missed", missed_page=missed_page, error=err) + _MODAL_CLOSE_OOB)
+    return HTMLResponse(_schedule_content_html(account_id=account_id, page=page, page_size=page_size, tab="missed", missed_page=missed_page, saved=True) + _MODAL_CLOSE_OOB)
+
+
+@router.post("/schedule/missed/cancel")
+async def schedule_missed_cancel(request: Request, _: None = Depends(_require_auth)):
+    form = await request.form()
+    account_id, page, page_size, missed_page = _schedule_form_filter(form)
+    task_id = str(form.get("task_id", ""))
+    schedule_store.cancel_missed(task_id)
+    if _is_htmx(request):
+        return HTMLResponse(_schedule_content_html(account_id=account_id, page=page, page_size=page_size, tab="missed", missed_page=missed_page, saved=True))
+    return _schedule_redirect(account_id, page, page_size=page_size, tab="missed", missed_page=missed_page, saved=1)
+
+
+@router.post("/schedule/missed/bulk-cancel")
+async def schedule_missed_bulk_cancel(request: Request, _: None = Depends(_require_auth)):
+    """"🗑️ Xoá đã chọn" — the "chọn nhiều/chọn tất cả rồi xoá một lúc"
+    owner asked for. `task_ids` arrives as a repeated form field (each
+    checked checkbox); every id gets cancel_missed()'d independently —
+    an id that's already gone (someone else resolved it, or a double
+    submit) is simply a no-op, never an error for the whole batch."""
+    form = await request.form()
+    account_id, page, page_size, missed_page = _schedule_form_filter(form)
+    task_ids = [str(v) for v in form.getlist("task_ids") if str(v).strip()]
+    for task_id in task_ids:
+        schedule_store.cancel_missed(task_id)
+    if _is_htmx(request):
+        return HTMLResponse(_schedule_content_html(account_id=account_id, page=page, page_size=page_size, tab="missed", missed_page=missed_page, saved=True))
+    return _schedule_redirect(account_id, page, page_size=page_size, tab="missed", missed_page=missed_page, saved=1)
 
 
 # Closes the "Vẫn đăng ngay?" rate-limit modal (see
@@ -2855,7 +3193,7 @@ async def schedule_fire_now(request: Request, _: None = Depends(_require_auth)):
     human_bot/safety.py's can_proceed(ignore_gap=...) docstring for why
     the two are treated differently. Requested 2026-09-09."""
     form = await request.form()
-    account_id, page, page_size = _schedule_form_filter(form)
+    account_id, page, page_size, missed_page = _schedule_form_filter(form)
     task_id = str(form.get("task_id", ""))
     force = str(form.get("force", "")) == "1"
     task = schedule_store.get(task_id)

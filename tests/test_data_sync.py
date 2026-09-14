@@ -5,12 +5,15 @@ from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
+import pytest
+
 import human_bot.schedule_store as schedule_store
 from human_bot.config import RateLimits
 from human_bot.data_sync import (
     _count_scheduled_actions_by_day,
     _next_available_business_day,
     _next_available_post_slot,
+    sweep_overdue_on_startup,
 )
 from human_bot.data_sync_config import DataSyncConfig
 from human_bot.safety import RateLimiter
@@ -238,3 +241,65 @@ def test_naive_next_allowed_at_normalized_before_max_with_aware_chain(tmp_path):
     normalized = naive_floor.replace(tzinfo=timezone.utc)
     result = max(aware_chain_time, normalized)  # must not raise
     assert result.tzinfo is not None
+
+
+# --- sweep_overdue_on_startup (2026-09-14, "quá hạn khi server tắt lâu") ---
+# Own isolated schedule_store fixture (separate from the module-level
+# monkeypatches used above, which stub list_pending/list_posted directly) —
+# this needs the REAL file-backed store, since sweep_overdue_on_startup()
+# calls schedule_store.list_pending()/mark_missed(), which read/write
+# actual files under PENDING_DIR/MISSED_DIR.
+
+@pytest.fixture
+def isolated_schedule_dirs(tmp_path, monkeypatch):
+    monkeypatch.setattr(schedule_store, "PENDING_DIR", tmp_path / "pending")
+    monkeypatch.setattr(schedule_store, "POSTED_DIR", tmp_path / "posted")
+    monkeypatch.setattr(schedule_store, "FAILED_DIR", tmp_path / "failed")
+    monkeypatch.setattr(schedule_store, "CANCELLED_DIR", tmp_path / "cancelled")
+    monkeypatch.setattr(schedule_store, "MISSED_DIR", tmp_path / "missed")
+    return schedule_store
+
+
+def _add_task(store, when, content="x"):
+    task = store.ScheduledTask(
+        task_id=store.new_task_id(when.isoformat()),
+        action="post_to_group", account_id="acc-a",
+        scheduled_at=when.isoformat(), content=content,
+        target_url="https://facebook.com/groups/1",
+    )
+    store.add(task)
+    return task
+
+
+def test_sweep_overdue_on_startup_moves_only_past_tasks(isolated_schedule_dirs):
+    now = datetime.now(timezone.utc)
+    overdue = _add_task(isolated_schedule_dirs, now - timedelta(hours=2), content="overdue")
+    future = _add_task(isolated_schedule_dirs, now + timedelta(hours=2), content="future")
+
+    result = sweep_overdue_on_startup()
+
+    assert result["swept"] == 1
+    assert isolated_schedule_dirs.get(overdue.task_id) is None
+    assert isolated_schedule_dirs.get_missed(overdue.task_id) is not None
+    assert isolated_schedule_dirs.get(future.task_id) is not None
+    assert isolated_schedule_dirs.get_missed(future.task_id) is None
+
+
+def test_sweep_overdue_on_startup_is_a_one_time_snapshot(isolated_schedule_dirs):
+    """A second call (simulating a later poll, NOT a restart) must not
+    treat a task that only just became due as "missed" — only the
+    lateness that already existed the moment sweep runs counts, and
+    running it again immediately after finds nothing new overdue."""
+    now = datetime.now(timezone.utc)
+    _add_task(isolated_schedule_dirs, now - timedelta(minutes=1), content="already overdue")
+    first = sweep_overdue_on_startup()
+    assert first["swept"] == 1
+
+    second = sweep_overdue_on_startup()
+    assert second["swept"] == 0
+
+
+def test_sweep_overdue_on_startup_empty_when_nothing_pending(isolated_schedule_dirs):
+    result = sweep_overdue_on_startup()
+    assert result["swept"] == 0
+    assert isolated_schedule_dirs.list_missed() == []

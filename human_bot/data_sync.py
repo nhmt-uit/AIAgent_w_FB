@@ -1083,6 +1083,56 @@ async def sync_all(account_ids: list[str], cfg: DataSyncConfig | None = None) ->
     return results
 
 
+def sweep_overdue_on_startup() -> dict[str, Any]:
+    """Called EXACTLY ONCE, from human_bot/service.py's lifespan(), before
+    the recurring fire_due_tasks() loop ever gets its first turn — pulls
+    every pending task whose scheduled_at is already in the past AT THIS
+    STARTUP MOMENT out of schedule_store's pending/ and into missed/ (see
+    ScheduledTask... no, schedule_store.MISSED_DIR's docstring), instead
+    of letting fire_due_tasks() auto-fire them the instant the service
+    comes back up.
+
+    Owner-reported gap (2026-09-14): if the service is off for a long
+    stretch, every task whose time already passed becomes "due"
+    simultaneously the moment it restarts — fire_due_tasks() itself
+    already prevents a burst on any ONE account+action-type (its own
+    rate-limiter gap check), but nothing stopped a pile of DIFFERENT
+    accounts (or a post AND a comment on the same account, which don't
+    share a gap) from firing back-to-back with zero real spacing, the
+    instant the service woke up. The fix isn't "throttle the burst" —
+    it's "don't auto-fire something that was already scheduled for a time
+    that's now gone": an admin should look at each one and decide
+    (reschedule it — by hand or via the same "find the next free slot"
+    logic /admin/reports' "🔄 Lên lịch lại" uses — or drop it), same as a
+    real ops team would triage a backlog rather than let it dump out
+    unsupervised.
+
+    Deliberately a ONE-TIME snapshot comparison, NOT a recurring "how
+    overdue is too overdue" threshold check — explicit owner instruction:
+    a task that merely becomes due mid-run (normal poll_interval lag, or
+    a backlog from one rate-limited account) must NOT be treated as
+    "missed"; only lateness that already existed the instant the process
+    came up counts. Compares against `datetime.now(timezone.utc)` taken
+    right here, once, not against anything from the previous run."""
+    now = datetime.now(timezone.utc)
+    swept = 0
+    for task in schedule_store.list_pending():
+        try:
+            scheduled = datetime.fromisoformat(task.scheduled_at.replace("Z", "+00:00"))
+        except ValueError:
+            continue
+        if scheduled.tzinfo is None:
+            scheduled = scheduled.replace(tzinfo=timezone.utc)
+        if scheduled <= now:
+            schedule_store.mark_missed(
+                task.task_id,
+                f"Đã quá giờ đăng dự kiến ({task.scheduled_at}) lúc service khởi động lại "
+                f"({now.isoformat()}) — có thể do service từng bị tắt. Cần admin duyệt lại.",
+            )
+            swept += 1
+    return {"checked_at": now.isoformat(), "swept": swept}
+
+
 async def fire_due_tasks(cfg: SchedulingConfig | None = None) -> dict[str, Any]:
     """Check human_bot/schedule_store.py for anything due and, ONLY if
     cfg.auto_fire_enabled, actually run it via human_bot/agent.py's
