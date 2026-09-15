@@ -842,18 +842,21 @@ _PAGE_STYLE = """
   // actually reads. This conversion MUST happen in the browser: only the
   // browser knows the viewer's local timezone, so doing it server-side
   // would silently assume UTC and shift every pick by the real offset.
+  // Hoisted out of initScheduleField (2026-09-15 — see
+  // refreshScheduleFieldDisplays() below for why): both need the exact
+  // same UTC-ISO -> "YYYY-MM-DDTHH:MM" formatting.
+  function schedulePad(n) { return String(n).padStart(2, "0"); }
+  function toLocalInputValue(date) {
+    return date.getFullYear() + "-" + schedulePad(date.getMonth() + 1) + "-" + schedulePad(date.getDate())
+      + "T" + schedulePad(date.getHours()) + ":" + schedulePad(date.getMinutes());
+  }
+
   function initScheduleField(wrap) {
     if (wrap.dataset.scheduleInit) return;
     wrap.dataset.scheduleInit = "1";
     var localInput = wrap.querySelector("[data-schedule-local]");
     var utcInput = wrap.querySelector("[data-schedule-utc]");
     if (!localInput || !utcInput) return;
-
-    function pad(n) { return String(n).padStart(2, "0"); }
-    function toLocalInputValue(date) {
-      return date.getFullYear() + "-" + pad(date.getMonth() + 1) + "-" + pad(date.getDate())
-        + "T" + pad(date.getHours()) + ":" + pad(date.getMinutes());
-    }
 
     // Pre-fill the visible picker from whatever UTC value the page
     // already carries (editing an existing scheduled task).
@@ -1020,6 +1023,44 @@ _PAGE_STYLE = """
     root.querySelectorAll("[data-tabs]").forEach(initTabs);
   }
 
+  // Owner-reported 2026-09-15: the datetime picker (data-schedule-field,
+  // e.g. "Sửa" on /admin/schedule, /admin/post's "Đăng lên tường cá
+  // nhân") visually goes BLANK after switching away to another browser
+  // tab and back — not the in-page htmx tabs above (those already
+  // re-sync via initDynamicScope() on htmx:afterSwap, see the comment
+  // just below), and not lost data either: the hidden UTC field
+  // (data-schedule-utc, the one actually submitted) still holds the
+  // right value the whole time, only the VISIBLE <input
+  // type="datetime-local"> (data-schedule-local)'s own rendered text
+  // clears — a known Chromium quirk where a datetime-local input's
+  // value was set via JS (initScheduleField's own prefill, or a
+  // quick-pick button) rather than typed by the user, and the widget's
+  // internal display cache doesn't survive the tab losing/regaining
+  // visibility. Pressing F5 "fixes" it only because that re-runs
+  // initScheduleField's prefill from scratch on a freshly-parsed page —
+  // this does the exact same re-derivation without a reload, driven by
+  // whichever value the hidden UTC field ALREADY has (so it can't ever
+  // clobber an in-progress edit: every keystroke in the visible field
+  // already re-synced the hidden one via its own "input" listener
+  // first).
+  function refreshScheduleFieldDisplays() {
+    document.querySelectorAll("[data-schedule-field]").forEach(function (wrap) {
+      var localInput = wrap.querySelector("[data-schedule-local]");
+      var utcInput = wrap.querySelector("[data-schedule-utc]");
+      if (!localInput || !utcInput || !utcInput.value) return;
+      var d = new Date(utcInput.value);
+      if (isNaN(d.getTime())) return;
+      localInput.value = toLocalInputValue(d);
+    });
+  }
+  document.addEventListener("visibilitychange", function () {
+    if (!document.hidden) refreshScheduleFieldDisplays();
+  });
+  // Covers the same class of "came back to this tab/page" case for
+  // bfcache restores (e.g. navigating back), which don't always fire
+  // visibilitychange on every browser.
+  window.addEventListener("pageshow", function () { refreshScheduleFieldDisplays(); });
+
   document.addEventListener("DOMContentLoaded", function () { initDynamicScope(document); });
   // /admin/schedule's account filter / update / fire-now / cancel all
   // htmx-swap a fresh #schedule-content in (outerHTML swap) —
@@ -1034,7 +1075,26 @@ _PAGE_STYLE = """
   // (the conversation that found this). Each init function above guards
   // against re-initializing an already-initialized element, so
   // rescanning the whole page on every swap is safe, not wasteful.
-  document.body.addEventListener("htmx:afterSwap", function () { initDynamicScope(document); });
+  //
+  // Listener attached to `document`, NOT `document.body` (bug found
+  // 2026-09-15, owner report: switching /admin/schedule's own
+  // "Task đã lên lịch"/"Task quá hạn" tabs back and forth blanked the
+  // datetime picker EVERY time, F5 was the only fix) — this whole
+  // <script> block runs inside <head> (see _PAGE_STYLE/_layout()),
+  // where `document.body` is still null; `document.body.
+  // addEventListener(...)` therefore THREW immediately at parse time
+  // and this listener never actually registered AT ALL, on ANY admin
+  // page, since whenever this line was first written — every htmx swap
+  // silently ran with NO re-init happening, only ever masked by
+  // DOMContentLoaded's own one-time init succeeding on first load
+  // (confirmed live with Playwright: a thrown pageerror at parse time,
+  // stack pointing at this exact line; dataset.scheduleInit never set
+  // on a post-swap element, proving initScheduleField() never ran for
+  // it). Custom events htmx dispatches on the swapped element still
+  // bubble all the way up to `document` regardless — `document` itself
+  // exists even mid-<head>, unlike `document.body` — so this is the
+  // full fix, not a workaround.
+  document.addEventListener("htmx:afterSwap", function () { initDynamicScope(document); });
 })();
 </script>
 """

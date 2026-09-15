@@ -2492,3 +2492,102 @@ nguyên tài khoản/số-dòng-mỗi-trang đang chọn, không reset toàn b�
 Xác nhận lại bằng service thật (port 8123): nút không hiện khi chưa
 lọc gì, hiện khi có lọc, và link của nó giữ đúng `account_id` trong
 khi bỏ hẳn `action`/`date`/`tz_offset` khỏi query string.
+
+## Bug thật: datetime picker hiện trống sau khi chuyển tab trình duyệt (2026-09-15)
+
+Owner báo: ô chọn giờ (`_datetime_picker_html()`, dùng ở cả
+"Sửa"/"📅 Đặt lịch" trên /admin/schedule và "Đăng lên tường cá nhân"
+trên /admin/post) đang có giá trị, chuyển sang tab trình duyệt khác rồi
+quay lại thì ô hiện TRỐNG — bấm F5 mới thấy lại giá trị đúng.
+
+- Không phải mất dữ liệu: field ẩn `data-schedule-utc` (field thật được
+  submit) vẫn giữ đúng giá trị suốt — chỉ có ô hiển thị
+  `<input type="datetime-local">` (`data-schedule-local`) bị trống về
+  mặt hiển thị. Đây là quirk đã biết của Chromium: giá trị field
+  datetime-local được SET BẰNG JS (không phải người dùng tự gõ, ở đây
+  là `initScheduleField()`'s bước tự điền ban đầu, hoặc nút chọn nhanh
+  "+1h"/"+1d") không luôn giữ nguyên hiển thị sau khi tab mất/lấy lại
+  focus — F5 "sửa" được chỉ vì nó chạy lại đúng bước tự điền đó từ đầu
+  trên trang parse mới.
+- Không liên quan tới 2 tab của CHÍNH /admin/schedule ("Task đã lên
+  lịch"/"Task quá hạn") — 2 tab đó đã tự re-sync đúng qua
+  `initDynamicScope()` chạy lại trên mọi `htmx:afterSwap` (comment sẵn
+  có, mục 4.12, giải quyết đúng loại bug này cho trường hợp htmx swap
+  toàn bộ nội dung). Đây là tab của TRÌNH DUYỆT (alt-tab/chuyển qua
+  tab khác rồi quay lại) — không có htmx swap nào chạy, nên không tự
+  sửa được.
+- Sửa: hoist `pad`/`toLocalInputValue` ra khỏi `initScheduleField()`
+  lên scope ngoài (dùng chung), thêm `refreshScheduleFieldDisplays()`
+  quét mọi `[data-schedule-field]` đã init, ĐỌC LẠI hiển thị từ chính
+  `data-schedule-utc` (không phải set giá trị mới) — không thể ghi đè
+  mất 1 chỉnh sửa đang gõ vì mỗi lần gõ vào ô hiển thị đã tự đồng bộ
+  ngược lại field ẩn ngay qua listener `input` sẵn có. Gọi hàm này ở
+  cả `visibilitychange` (tab trình duyệt lấy lại focus) và `pageshow`
+  (một số trình duyệt không bắn `visibilitychange` khi phục hồi từ
+  bfcache, ví dụ bấm Back).
+- Xác nhận: service thật (port 8124) trả về JS hợp lệ
+  (`node --check`), markup `data-schedule-field`/`data-schedule-local`/
+  `data-schedule-utc` không đổi ở cả 20 dòng render thật. Chưa test
+  được hành vi tab-switch thật (cần browser thật, không unit-test
+  được) — cùng tình trạng "Vẫn còn thiếu" đã ghi ở mục 4.16 cho phần
+  JS/browser của Admin UI. 155 test cũ vẫn pass (thay đổi chỉ ở JS
+  nhúng trong `admin.py`, không đụng route/logic Python nào).
+
+## Sửa lại đúng bug datetime picker (owner báo "vẫn chưa ổn") (2026-09-15)
+
+Owner phản hồi: bug KHÔNG chỉ ở chuyển tab TRÌNH DUYỆT — ngay cả
+chuyển qua lại giữa 2 tab "Task đã lên lịch"/"Task quá hạn" (2 tab
+NGAY TRONG trang Lịch đăng) đã đủ làm mất giá trị datetime picker.
+Đợt sửa trước (`visibilitychange`/`pageshow`) không giải quyết case
+này — vì đó không phải nguyên nhân thật.
+
+**Tìm nguyên nhân thật bằng Playwright (Chromium thật, không đoán mò
+nữa sau khi đợt trước đoán sai):**
+- Viết script tự động: mở `/admin/schedule`, đọc giá trị datetime
+  picker đầu tiên, bấm tab "Task quá hạn" → bấm lại "Task đã lên
+  lịch" → đọc lại giá trị. Tái hiện ĐÚNG bug: `'2026-09-15T19:24'` →
+  `''`.
+- Bắt `pageerror` trên trang: có lỗi JS thật `TypeError: Cannot read
+  properties of null (reading 'addEventListener')`, xảy ra ngay lúc
+  TẢI TRANG LẦN ĐẦU (trước khi bấm tab nào), tại đúng dòng
+  `document.body.addEventListener("htmx:afterSwap", ...)`.
+- **Nguyên nhân gốc**: toàn bộ `<script>` của trang (`_PAGE_STYLE`,
+  nhúng vào `<head>` qua `_layout()`) chạy NGAY TRONG `<head>` —
+  lúc đó `document.body` CHƯA TỒN TẠI (`<body>` chưa được parse).
+  `document.body.addEventListener(...)` vì vậy NÉM LỖI ngay từ lúc
+  parse, nghĩa là listener `htmx:afterSwap` **CHƯA TỪNG được đăng ký
+  thành công, ở BẤT KỲ trang admin nào, từ lúc dòng này được viết**
+  — không phải bug mới, không phải do đợt sửa filter/picker gần đây.
+  Hệ quả: mọi lần htmx swap nội dung (chuyển tab, đổi filter, sửa/
+  đăng-ngay/huỷ...) ĐỀU không chạy lại `initDynamicScope()` — chỉ
+  được che giấu vì `DOMContentLoaded`'s init chạy đúng 1 lần lúc tải
+  trang lần đầu, làm tưởng "picker vẫn hoạt động, chỉ lỗi lúc chuyển
+  tab" trong khi thật ra CƠ CHẾ RE-INIT SAU SWAP LÚC NÀO CŨNG KHÔNG
+  CHẠY.
+- Xác nhận bằng cách đọc `dataset` của phần tử ngay sau khi swap:
+  `{"scheduleField":""}` — thiếu hẳn key `scheduleInit`, chứng minh
+  `initScheduleField()` chưa từng chạy cho phần tử vừa được htmx
+  chèn vào.
+
+**Sửa đúng chỗ**: đổi `document.body.addEventListener(...)` thành
+`document.addEventListener(...)` — event tuỳ biến do htmx bắn ra vẫn
+nổi bọt (bubble) lên tới `document` như thường, mà `document` thì
+LUÔN tồn tại kể cả khi đang parse giữa `<head>`, khác với
+`document.body`. Đây là sửa TRIỆT ĐỂ (không phải giải pháp tạm), áp
+dụng chung cho MỌI trang admin dùng htmx swap, không riêng
+/admin/schedule.
+
+**Xác nhận lại bằng Playwright sau khi sửa:**
+- Không còn `pageerror` nào.
+- `dataset` sau swap có đủ `scheduleInit:"1"`.
+- Giá trị datetime picker giữ đúng sau khi chuyển tab 1 lần, và sau
+  3 lần chuyển tới-lui liên tiếp.
+- Đổi bộ lọc "Hành động" (cũng là 1 htmx swap khác) — giá trị picker
+  vẫn giữ đúng.
+
+Đợt sửa `visibilitychange`/`pageshow` ở mục trên (dành cho case
+chuyển tab TRÌNH DUYỆT, alt-tab) vẫn giữ nguyên — vô hại, và có thể
+vẫn cần cho đúng trường hợp đó (Chromium's quirk là thật, độc lập với
+bug `document.body` này), chỉ là nó không phải nguyên nhân của báo
+cáo lần này. 155 test cũ vẫn pass.
+
