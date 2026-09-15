@@ -2434,3 +2434,61 @@
          3`) thay vì để co hẹp ngoài ý muốn.
       - Toàn bộ suite sau khi sửa cả #1/#3/#4/#5: **155 passed**
         (152 cũ + 3 mới cho `_parse_scheduled_at()`/naive-aware).
+
+## Thêm filter "Hành động" + "Ngày đăng" cho /admin/schedule (2026-09-15)
+
+Owner yêu cầu: tab "📋 Task đã lên lịch" ở LỊCH ĐĂNG chỉ lọc được theo
+tài khoản — thêm lọc theo **Hành động** (Đăng vào nhóm | Comment bài
+trong nhóm) và **Ngày đăng**, yêu cầu rõ ngày phải khớp ĐÚNG giờ đang
+hiển thị trên web (không phải giờ server).
+
+- `_schedule_content_html()` (`admin.py`) nhận thêm `action_filter`/
+  `date_filter`/`tz_offset`, lọc `tasks` trước khi phân trang — 2 lựa
+  chọn hành động cố định qua `_SCHEDULE_FILTERABLE_ACTIONS =
+  ("post_to_group", "comment_on_group_post")` (không đưa cả 6 giá trị
+  `_ACTION_LABELS` vào — 4 còn lại là hành động tạm dừng/chỉ đăng thủ
+  công, xem `project_deprioritized_fb_actions`).
+- **Đúng giờ hiển thị trên web**: `/admin/schedule` vốn đã hiển thị
+  giờ theo browser của người xem (`_local_dt_html()`, JS
+  `initLocalDateTime()`), không cố định JST — nên filter ngày PHẢI
+  dùng đúng múi giờ đó, không phải giờ server. Thêm field ẩn
+  `tz_offset` (id `schedule-tz-offset`), JS mới `initTzOffsetField()`
+  tự điền `-Date().getTimezoneOffset()` (phút cần CỘNG vào UTC để ra
+  giờ local) mỗi lần trang tải/htmx swap — cùng cơ chế
+  `initLocalDateTime()` đang dùng. Server so khớp bằng
+  `_task_local_date()`: `utc_datetime + timedelta(minutes=tz_offset)`
+  rồi lấy `%Y-%m-%d`.
+- 5 ô filter (tài khoản/số dòng mỗi trang/hành động/ngày/tz_offset ẩn)
+  include chéo nhau qua `hx-include`, giống pattern 2 ô filter cũ —
+  đổi 1 ô không làm mất giá trị 4 ô còn lại.
+- Thread `action`/`date`/`tz_offset` xuyên suốt: link phân trang
+  (`_schedule_page_link()`), field ẩn trong mỗi form
+  sửa/đăng-ngay/huỷ theo dòng (`filter_fields`), modal xác nhận
+  "Vẫn đăng ngay" khi bị rate-limit (`_fire_now_confirm_modal_html()`),
+  route GET `/schedule`, và `_schedule_form_filter()` dùng chung bởi
+  cả 7 route POST (đổi tuple trả về từ 4 sang 7 phần tử — 2 route
+  pending (`schedule_update`, `schedule_cancel`, `schedule_fire_now`)
+  dùng thật, 4 route thuộc tab "Task quá hạn" chỉ giải nén rồi bỏ qua
+  vì filter mới không áp dụng ở tab đó).
+- Test thật bằng service chạy port riêng (8123, không đụng port 8000
+  đang chạy thật): xác nhận tổng 2 hành động cộng lại = tổng không
+  lọc (21+4=25), tổng theo ngày cộng lại = tổng không lọc
+  (6+6+5+5+3=25), và **tz_offset thật sự đổi kết quả** — cùng ngày
+  15/09 nhưng `tz_offset=0` (UTC) ra 9 dòng còn `tz_offset=540` (JST)
+  ra 6 dòng, đúng vì biên ngày dịch theo múi giờ khác nhau.
+- Chưa viết unit test riêng cho `_task_local_date()`/lọc mới (chỉ xác
+  nhận bằng chạy thật ở trên) — `admin.py` vẫn chưa có test suite nào
+  (xem mục 4.15's "Vẫn còn thiếu"), cùng tình trạng với phần còn lại
+  của file này.
+- Toàn bộ 155 test cũ vẫn pass (không đụng logic `data_sync.py`/
+  `schedule_store.py`, chỉ thêm lọc ở lớp hiển thị `admin.py`).
+
+**Chỉnh tiếp theo owner phản hồi (cùng ngày):** tách "Hành động"/"Ngày
+đăng" xuống hàng riêng dưới "Tài khoản"/"Hiển thị" (2 `<div
+class="account-filter">` xếp chồng thay vì 1 hàng dài `flex-wrap` co
+giãn theo độ rộng màn hình), và thêm nút "✕ Xoá bộ lọc" — chỉ hiện khi
+`action_filter`/`date_filter` đang có giá trị, chỉ xoá 2 ô đó (giữ
+nguyên tài khoản/số-dòng-mỗi-trang đang chọn, không reset toàn bộ).
+Xác nhận lại bằng service thật (port 8123): nút không hiện khi chưa
+lọc gì, hiện khi có lọc, và link của nó giữ đúng `account_id` trong
+khi bỏ hẳn `action`/`date`/`tz_offset` khỏi query string.

@@ -957,6 +957,26 @@ _PAGE_STYLE = """
       pad(d.getDate()) + "-" + pad(d.getMonth() + 1) + "-" + d.getFullYear();
   }
 
+  // Fills /admin/schedule's hidden "tz_offset" field (see admin.py's
+  // _schedule_content_html()'s filter_html) from the VIEWER's own
+  // browser timezone, same "what time is this for ME" instant
+  // initLocalDateTime() above already renders per row — so the "Ngày
+  // đăng" date filter buckets tasks by the exact date shown on screen,
+  // not the server's own timezone. Sent as MINUTES TO ADD TO UTC TO GET
+  // LOCAL (e.g. +540 for JST, UTC+9) — the negative of what
+  // Date.getTimezoneOffset() itself returns (that one is "minutes to
+  // ADD TO LOCAL to get UTC") — matched on the server by
+  // admin.py's _task_local_date(), which does `utc + tz_offset_minutes`.
+  // Re-run on every htmx outerHTML swap of #schedule-content (same as
+  // initLocalDateTime), since the freshly-rendered hidden input
+  // otherwise comes back with whatever default the server rendered (0)
+  // until this overwrites it.
+  function initTzOffsetField(el) {
+    if (el.dataset.tzOffsetInit) return;
+    el.dataset.tzOffsetInit = "1";
+    el.value = String(-new Date().getTimezoneOffset());
+  }
+
   // Fills the "Giới hạn tốc độ" modal's number inputs from a quick-apply
   // age-tier button's own data-* attributes (see admin.py's
   // _rate_limits_modal_body_html()) — CLIENT-SIDE ONLY, no request sent,
@@ -994,6 +1014,7 @@ _PAGE_STYLE = """
     root.querySelectorAll("[data-repeatable-blocks]").forEach(initRepeatableBlocks);
     root.querySelectorAll("[data-schedule-field]").forEach(initScheduleField);
     root.querySelectorAll("[data-local-dt]").forEach(initLocalDateTime);
+    root.querySelectorAll("[data-tz-offset-field]").forEach(initTzOffsetField);
     root.querySelectorAll("[data-apply-tier]").forEach(initApplyTierButton);
     root.querySelectorAll("[data-preserve-post-form]").forEach(initPreservePostForm);
     root.querySelectorAll("[data-tabs]").forEach(initTabs);
@@ -2566,13 +2587,18 @@ def _clamp_schedule_page_size(raw: int) -> int:
     return raw if raw in _SCHEDULE_PAGE_SIZE_CHOICES else _SCHEDULE_PAGE_SIZE
 
 
-def _schedule_page_link(account_id: str | None, target_page: int, label: str, enabled: bool, page_size: int = _SCHEDULE_PAGE_SIZE) -> str:
+def _schedule_page_link(
+    account_id: str | None, target_page: int, label: str, enabled: bool, page_size: int = _SCHEDULE_PAGE_SIZE,
+    action_filter: str | None = None, date_filter: str | None = None, tz_offset: int = 0,
+) -> str:
     if not enabled:
         return f'<span class="btn-secondary btn-small" style="opacity:.45; pointer-events:none;">{label}</span>'
     from urllib.parse import urlencode
     qs = urlencode({k: v for k, v in {
         "account_id": account_id, "page": target_page,
         "page_size": page_size if page_size != _SCHEDULE_PAGE_SIZE else None,
+        "action": action_filter, "date": date_filter,
+        "tz_offset": tz_offset if tz_offset else None,
     }.items() if v})
     return (
         f'<a class="btn-secondary btn-small" href="/admin/schedule?{qs}" '
@@ -2727,23 +2753,63 @@ def _missed_pagination_html(account_id: str | None, missed_page: int, total_page
 
 _SCHEDULE_TABS = ("pending", "missed")
 
+# The two action filter choices offered on /admin/schedule's pending tab
+# (owner request 2026-09-15) — deliberately just these two, not every
+# _ACTION_LABELS key: post_to_own_profile/comment_on_friend_post/like_post/
+# read_recent_comments are either manual-only or paused (see
+# project_deprioritized_fb_actions memory) and would just clutter a filter
+# meant to split "Đăng vào nhóm" vs "Comment bài trong nhóm" — the two
+# actions data_sync.py's sync_all() actually produces onto this schedule.
+_SCHEDULE_FILTERABLE_ACTIONS = ("post_to_group", "comment_on_group_post")
+
 
 def _clamp_schedule_tab(raw: str | None) -> str:
     return raw if raw in _SCHEDULE_TABS else "pending"
 
 
+def _clamp_schedule_action(raw: str | None) -> str | None:
+    return raw if raw in _SCHEDULE_FILTERABLE_ACTIONS else None
+
+
+def _task_local_date(iso: str | None, tz_offset_minutes: int) -> str | None:
+    """`iso` (a ScheduledTask.scheduled_at, always UTC) as a YYYY-MM-DD
+    date in the VIEWER's OWN browser timezone — `tz_offset_minutes` is
+    minutes to ADD to UTC to get local (e.g. +540 for JST, UTC+9; the
+    NEGATIVE of what JS's `Date.getTimezoneOffset()` itself returns),
+    sent up from the page itself (see initTzOffsetField() in this
+    module's page script) so the date filter below buckets by the exact
+    same "what date is this for ME" instant /admin/schedule already
+    displays via _local_dt_html() — never the server's own timezone,
+    which may not match the viewer's at all."""
+    if not iso:
+        return None
+    try:
+        dt = datetime.fromisoformat(iso.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    local = dt + timedelta(minutes=tz_offset_minutes)
+    return local.strftime("%Y-%m-%d")
+
+
 def _schedule_content_html(
     account_id: str | None = None, page: int = 1, page_size: int = _SCHEDULE_PAGE_SIZE,
     saved: bool = False, error: str | None = None, tab: str | None = None, missed_page: int = 1,
+    action_filter: str | None = None, date_filter: str | None = None, tz_offset: int = 0,
 ) -> str:
     page_size = _clamp_schedule_page_size(page_size)
     tab = _clamp_schedule_tab(tab)
+    action_filter = _clamp_schedule_action(action_filter)
+    date_filter = date_filter.strip() if date_filter else None
     accounts = get_all_accounts()
     if account_id and account_id not in accounts:
         account_id = None  # unknown/stale filter falls back to "all", never a hard error
     all_tasks = schedule_store.list_pending()
     missed_count = len(schedule_store.list_missed())
     tasks = [t for t in all_tasks if not account_id or t.account_id == account_id]
+    if action_filter:
+        tasks = [t for t in tasks if t.action == action_filter]
+    if date_filter:
+        tasks = [t for t in tasks if _task_local_date(t.scheduled_at, tz_offset) == date_filter]
 
     total = len(tasks)
     total_pages = max(1, -(-total // page_size))  # ceil division
@@ -2771,17 +2837,67 @@ def _schedule_content_html(
         f'<option value="{size}"{" selected" if size == page_size else ""}>{size}/trang</option>'
         for size in _SCHEDULE_PAGE_SIZE_CHOICES
     )
+    action_options = '<option value="">— Tất cả hành động —</option>' + "".join(
+        f'<option value="{action}"{" selected" if action == action_filter else ""}>{html.escape(_ACTION_LABELS.get(action, action))}</option>'
+        for action in _SCHEDULE_FILTERABLE_ACTIONS
+    )
+    # tab != "pending" (missed) never renders this form at all — its own
+    # filter is _missed_tasks_section_html()'s, unrelated to
+    # action_filter/date_filter/tz_offset below — so these two new
+    # filters only ever apply here, on the pending list.
+    #
+    # All 5 fields include EACH OTHER via hx-include (by id) — same
+    # pattern as the account/page-size pair above — so changing any one
+    # never silently drops what the other four currently hold. tz_offset
+    # is never edited by the viewer directly; initTzOffsetField() (this
+    # module's page script) fills it from the browser's own
+    # Date.getTimezoneOffset() on load/swap, so the date filter below
+    # buckets by "what date is this for ME", the same instant
+    # _local_dt_html() already shows per row — not the server's own
+    # timezone, which may not match the viewer's at all.
+    _sched_filter_ids = "#schedule-account-select,#schedule-pagesize-select,#schedule-action-select,#schedule-date-input,#schedule-tz-offset"
+    # "Xoá bộ lọc" (owner request 2026-09-15) — only clears action/date
+    # (account_id/page_size are the ORIGINAL filter row, left alone);
+    # only shown when one of the two is actually set, same "don't offer
+    # a button that does nothing" pattern as elsewhere in this file.
+    # tz_offset deliberately dropped too (harmless either way — nothing
+    # is left for it to scope once date is gone — but cleaner not to
+    # carry a now-pointless param into the URL).
+    from urllib.parse import urlencode as _urlencode_clear
+    _clear_qs = _urlencode_clear({k: v for k, v in {
+        "account_id": account_id, "page_size": page_size if page_size != _SCHEDULE_PAGE_SIZE else None,
+    }.items() if v})
+    clear_filter_html = ""
+    if action_filter or date_filter:
+        clear_filter_html = (
+            f'<a class="btn-secondary btn-small" href="/admin/schedule?{_clear_qs}" '
+            f'hx-get="/admin/schedule?{_clear_qs}" hx-target="#schedule-content" hx-swap="outerHTML" '
+            f'hx-push-url="true">✕ Xoá bộ lọc</a>'
+        )
     filter_html = f"""
 <div class="account-filter">
   <label for="schedule-account-select">Tài khoản</label>
-  <select name="account_id" id="schedule-account-select" hx-include="#schedule-pagesize-select"
+  <select name="account_id" id="schedule-account-select" hx-include="{_sched_filter_ids}"
           hx-get="/admin/schedule" hx-target="#schedule-content" hx-swap="outerHTML"
           hx-trigger="change" hx-push-url="true">{account_options}</select>
   <label for="schedule-pagesize-select">Hiển thị</label>
-  <select name="page_size" id="schedule-pagesize-select" hx-include="#schedule-account-select"
+  <select name="page_size" id="schedule-pagesize-select" hx-include="{_sched_filter_ids}"
           hx-get="/admin/schedule" hx-target="#schedule-content" hx-swap="outerHTML"
           hx-trigger="change" hx-push-url="true">{page_size_options}</select>
   <span class="badge">{total} bài đang chờ</span>
+</div>
+<div class="account-filter">
+  <label for="schedule-action-select">Hành động</label>
+  <select name="action" id="schedule-action-select" hx-include="{_sched_filter_ids}"
+          hx-get="/admin/schedule" hx-target="#schedule-content" hx-swap="outerHTML"
+          hx-trigger="change" hx-push-url="true">{action_options}</select>
+  <label for="schedule-date-input">Ngày đăng</label>
+  <input type="date" name="date" id="schedule-date-input" value="{html.escape(date_filter or "")}"
+         hx-include="{_sched_filter_ids}"
+         hx-get="/admin/schedule" hx-target="#schedule-content" hx-swap="outerHTML"
+         hx-trigger="change" hx-push-url="true">
+  <input type="hidden" name="tz_offset" id="schedule-tz-offset" data-tz-offset-field value="{tz_offset}">
+  {clear_filter_html}
 </div>"""
 
     if page_tasks:
@@ -2801,6 +2917,9 @@ def _schedule_content_html(
                 f'<input type="hidden" name="account_id" value="{html.escape(account_id or "")}">'
                 f'<input type="hidden" name="page" value="{page}">'
                 f'<input type="hidden" name="page_size" value="{page_size}">'
+                f'<input type="hidden" name="action" value="{html.escape(action_filter or "")}">'
+                f'<input type="hidden" name="date" value="{html.escape(date_filter or "")}">'
+                f'<input type="hidden" name="tz_offset" value="{tz_offset}">'
             )
             url_row_html = ""
             if t.target_url:
@@ -2871,12 +2990,15 @@ def _schedule_content_html(
         jump_hidden_fields = (
             (f'<input type="hidden" name="account_id" value="{html.escape(account_id)}">' if account_id else "")
             + f'<input type="hidden" name="page_size" value="{page_size}">'
+            + (f'<input type="hidden" name="action" value="{html.escape(action_filter)}">' if action_filter else "")
+            + (f'<input type="hidden" name="date" value="{html.escape(date_filter)}">' if date_filter else "")
+            + (f'<input type="hidden" name="tz_offset" value="{tz_offset}">' if tz_offset else "")
         )
         pagination_html = f"""
 <div style="display:flex; justify-content:space-between; align-items:center; margin-top:14px; flex-wrap:wrap; gap:8px;">
   <div style="display:flex; gap:8px; align-items:center;">
-    {_schedule_page_link(account_id, 1, "«« Đầu", page > 1, page_size)}
-    {_schedule_page_link(account_id, page - 1, "← Trang trước", page > 1, page_size)}
+    {_schedule_page_link(account_id, 1, "«« Đầu", page > 1, page_size, action_filter, date_filter, tz_offset)}
+    {_schedule_page_link(account_id, page - 1, "← Trang trước", page > 1, page_size, action_filter, date_filter, tz_offset)}
   </div>
   <form hx-get="/admin/schedule" hx-target="#schedule-content" hx-swap="outerHTML" hx-push-url="true"
         style="display:flex; gap:6px; align-items:center; background:#f9fafb; border:1px solid #e5e7eb; border-radius:8px; padding:5px 10px;">
@@ -2888,8 +3010,8 @@ def _schedule_content_html(
     <button type="submit" class="btn-secondary btn-small">Đi</button>
   </form>
   <div style="display:flex; gap:8px; align-items:center;">
-    {_schedule_page_link(account_id, page + 1, "Trang sau →", page < total_pages, page_size)}
-    {_schedule_page_link(account_id, total_pages, "Cuối »»", page < total_pages, page_size)}
+    {_schedule_page_link(account_id, page + 1, "Trang sau →", page < total_pages, page_size, action_filter, date_filter, tz_offset)}
+    {_schedule_page_link(account_id, total_pages, "Cuối »»", page < total_pages, page_size, action_filter, date_filter, tz_offset)}
   </div>
 </div>"""
 
@@ -2941,9 +3063,12 @@ async def schedule_list(
     error: str | None = None,
     tab: str | None = None,
     missed_page: int = 1,
+    action: str | None = None,
+    date: str | None = None,
+    tz_offset: int = 0,
     _: None = Depends(_require_auth),
 ) -> str:
-    content = _schedule_content_html(account_id=account_id, page=page, page_size=page_size, saved=saved, error=error, tab=tab, missed_page=missed_page)
+    content = _schedule_content_html(account_id=account_id, page=page, page_size=page_size, saved=saved, error=error, tab=tab, missed_page=missed_page, action_filter=action, date_filter=date, tz_offset=tz_offset)
     if _is_htmx(request):
         return content
     return _layout(f"""
@@ -2961,7 +3086,7 @@ def _schedule_redirect(account_id: str | None, page: int, **params) -> RedirectR
     return RedirectResponse(url=f"/admin/schedule?{urlencode(query)}", status_code=303)
 
 
-def _schedule_form_filter(form) -> tuple[str | None, int, int, int]:
+def _schedule_form_filter(form) -> tuple[str | None, int, int, int, str | None, str | None, int]:
     account_id = str(form.get("account_id", "")).strip() or None
     try:
         page = int(str(form.get("page", "1")))
@@ -2975,13 +3100,24 @@ def _schedule_form_filter(form) -> tuple[str | None, int, int, int]:
         missed_page = int(str(form.get("missed_page", "1")))
     except ValueError:
         missed_page = 1
-    return account_id, page, page_size, missed_page
+    # action/date/tz_offset (2026-09-15, owner request): only meaningful
+    # for the pending tab's own filter (see _schedule_content_html) —
+    # the missed-tab handlers below still unpack them (tuple shape is
+    # shared) but never pass them on, since /admin/schedule's "missed"
+    # tab has no such filter of its own.
+    action_filter = _clamp_schedule_action(str(form.get("action", "")).strip() or None)
+    date_filter = str(form.get("date", "")).strip() or None
+    try:
+        tz_offset = int(str(form.get("tz_offset", "0")))
+    except ValueError:
+        tz_offset = 0
+    return account_id, page, page_size, missed_page, action_filter, date_filter, tz_offset
 
 
 @router.post("/schedule/update")
 async def schedule_update(request: Request, _: None = Depends(_require_auth)):
     form = await request.form()
-    account_id, page, page_size, missed_page = _schedule_form_filter(form)
+    account_id, page, page_size, missed_page, action_filter, date_filter, tz_offset = _schedule_form_filter(form)
     task_id = str(form.get("task_id", ""))
     content = str(form.get("content", ""))
     scheduled_at = str(form.get("scheduled_at", ""))
@@ -2993,22 +3129,22 @@ async def schedule_update(request: Request, _: None = Depends(_require_auth)):
     if updated is None:
         err = "Không tìm thấy mục này (có thể đã được đăng hoặc huỷ)"
         if _is_htmx(request):
-            return HTMLResponse(_schedule_content_html(account_id=account_id, page=page, page_size=page_size, error=err))
-        return _schedule_redirect(account_id, page, page_size=page_size, error=err)
+            return HTMLResponse(_schedule_content_html(account_id=account_id, page=page, page_size=page_size, action_filter=action_filter, date_filter=date_filter, tz_offset=tz_offset, error=err))
+        return _schedule_redirect(account_id, page, page_size=page_size, action=action_filter, date=date_filter, tz_offset=tz_offset, error=err)
     if _is_htmx(request):
-        return HTMLResponse(_schedule_content_html(account_id=account_id, page=page, page_size=page_size, saved=True))
-    return _schedule_redirect(account_id, page, page_size=page_size, saved=1)
+        return HTMLResponse(_schedule_content_html(account_id=account_id, page=page, page_size=page_size, action_filter=action_filter, date_filter=date_filter, tz_offset=tz_offset, saved=True))
+    return _schedule_redirect(account_id, page, page_size=page_size, action=action_filter, date=date_filter, tz_offset=tz_offset, saved=1)
 
 
 @router.post("/schedule/cancel")
 async def schedule_cancel(request: Request, _: None = Depends(_require_auth)):
     form = await request.form()
-    account_id, page, page_size, missed_page = _schedule_form_filter(form)
+    account_id, page, page_size, missed_page, action_filter, date_filter, tz_offset = _schedule_form_filter(form)
     task_id = str(form.get("task_id", ""))
     schedule_store.cancel(task_id)
     if _is_htmx(request):
-        return HTMLResponse(_schedule_content_html(account_id=account_id, page=page, page_size=page_size, saved=True))
-    return _schedule_redirect(account_id, page, page_size=page_size, saved=1)
+        return HTMLResponse(_schedule_content_html(account_id=account_id, page=page, page_size=page_size, action_filter=action_filter, date_filter=date_filter, tz_offset=tz_offset, saved=True))
+    return _schedule_redirect(account_id, page, page_size=page_size, action=action_filter, date=date_filter, tz_offset=tz_offset, saved=1)
 
 
 # --- "⚠️ Task quá hạn" review (2026-09-14) — see schedule_store.MISSED_DIR
@@ -3022,7 +3158,7 @@ async def schedule_missed_reschedule(request: Request, _: None = Depends(_requir
     hand, same edit form shape as schedule_update() above, but the SOURCE
     is missed/ instead of pending/ (schedule_store.restore_to_pending())."""
     form = await request.form()
-    account_id, page, page_size, missed_page = _schedule_form_filter(form)
+    account_id, page, page_size, missed_page, _action_filter, _date_filter, _tz_offset = _schedule_form_filter(form)
     task_id = str(form.get("task_id", ""))
     content = str(form.get("content", ""))
     scheduled_at = str(form.get("scheduled_at", ""))
@@ -3090,7 +3226,7 @@ async def schedule_missed_suggest(
 async def schedule_missed_reschedule_confirm(request: Request, _: None = Depends(_require_auth)):
     """"🔄 Lên lịch lại" step 2 — admin confirmed the suggested slot."""
     form = await request.form()
-    account_id, page, page_size, missed_page = _schedule_form_filter(form)
+    account_id, page, page_size, missed_page, _action_filter, _date_filter, _tz_offset = _schedule_form_filter(form)
     task_id = str(form.get("task_id", ""))
     scheduled_at_raw = str(form.get("scheduled_at", "")).strip()
     try:
@@ -3109,7 +3245,7 @@ async def schedule_missed_reschedule_confirm(request: Request, _: None = Depends
 @router.post("/schedule/missed/cancel")
 async def schedule_missed_cancel(request: Request, _: None = Depends(_require_auth)):
     form = await request.form()
-    account_id, page, page_size, missed_page = _schedule_form_filter(form)
+    account_id, page, page_size, missed_page, _action_filter, _date_filter, _tz_offset = _schedule_form_filter(form)
     task_id = str(form.get("task_id", ""))
     schedule_store.cancel_missed(task_id)
     if _is_htmx(request):
@@ -3125,7 +3261,7 @@ async def schedule_missed_bulk_cancel(request: Request, _: None = Depends(_requi
     an id that's already gone (someone else resolved it, or a double
     submit) is simply a no-op, never an error for the whole batch."""
     form = await request.form()
-    account_id, page, page_size, missed_page = _schedule_form_filter(form)
+    account_id, page, page_size, missed_page, _action_filter, _date_filter, _tz_offset = _schedule_form_filter(form)
     task_ids = [str(v) for v in form.getlist("task_ids") if str(v).strip()]
     for task_id in task_ids:
         schedule_store.cancel_missed(task_id)
@@ -3141,7 +3277,10 @@ async def schedule_missed_bulk_cancel(request: Request, _: None = Depends(_requi
 _MODAL_CLOSE_OOB = '<div id="modal-root" hx-swap-oob="true"></div>'
 
 
-def _fire_now_confirm_modal_html(task_id: str, account_id: str | None, page: int, page_size: int, warning: str) -> str:
+def _fire_now_confirm_modal_html(
+    task_id: str, account_id: str | None, page: int, page_size: int, warning: str,
+    action_filter: str | None = None, date_filter: str | None = None, tz_offset: int = 0,
+) -> str:
     """Renders the #modal-root swap for schedule_fire_now()'s rate-limit
     confirmation prompt — shown ONLY when the sole thing blocking the
     post is the soft min-gap pacing check (human_bot/safety.py's
@@ -3154,6 +3293,9 @@ def _fire_now_confirm_modal_html(task_id: str, account_id: str | None, page: int
         f'<input type="hidden" name="account_id" value="{html.escape(account_id or "")}">'
         f'<input type="hidden" name="page" value="{page}">'
         f'<input type="hidden" name="page_size" value="{page_size}">'
+        f'<input type="hidden" name="action" value="{html.escape(action_filter or "")}">'
+        f'<input type="hidden" name="date" value="{html.escape(date_filter or "")}">'
+        f'<input type="hidden" name="tz_offset" value="{tz_offset}">'
     )
     return f"""
 <div class="modal-backdrop" onclick="if(event.target===this) this.remove()">
@@ -3193,15 +3335,15 @@ async def schedule_fire_now(request: Request, _: None = Depends(_require_auth)):
     human_bot/safety.py's can_proceed(ignore_gap=...) docstring for why
     the two are treated differently. Requested 2026-09-09."""
     form = await request.form()
-    account_id, page, page_size, missed_page = _schedule_form_filter(form)
+    account_id, page, page_size, missed_page, action_filter, date_filter, tz_offset = _schedule_form_filter(form)
     task_id = str(form.get("task_id", ""))
     force = str(form.get("force", "")) == "1"
     task = schedule_store.get(task_id)
     if task is None:
         err = "Không tìm thấy mục này"
         if _is_htmx(request):
-            return HTMLResponse(_schedule_content_html(account_id=account_id, page=page, page_size=page_size, error=err) + _MODAL_CLOSE_OOB)
-        return _schedule_redirect(account_id, page, page_size=page_size, error=err)
+            return HTMLResponse(_schedule_content_html(account_id=account_id, page=page, page_size=page_size, action_filter=action_filter, date_filter=date_filter, tz_offset=tz_offset, error=err) + _MODAL_CLOSE_OOB)
+        return _schedule_redirect(account_id, page, page_size=page_size, action=action_filter, date=date_filter, tz_offset=tz_offset, error=err)
 
     from human_bot import daily_limits
     from human_bot.agent import rate_limit_bucket_for
@@ -3227,9 +3369,9 @@ async def schedule_fire_now(request: Request, _: None = Depends(_require_auth)):
                 # click — the bug reported 2026-09-09). #schedule-content
                 # must stay present as the primary swap; the modal goes in
                 # separately via an OOB swap into #modal-root.
-                modal_oob = f'<div id="modal-root" hx-swap-oob="true">{_fire_now_confirm_modal_html(task_id, account_id, page, page_size, warning)}</div>'
-                return HTMLResponse(_schedule_content_html(account_id=account_id, page=page, page_size=page_size) + modal_oob)
-            return _schedule_redirect(account_id, page, page_size=page_size, error=warning)
+                modal_oob = f'<div id="modal-root" hx-swap-oob="true">{_fire_now_confirm_modal_html(task_id, account_id, page, page_size, warning, action_filter, date_filter, tz_offset)}</div>'
+                return HTMLResponse(_schedule_content_html(account_id=account_id, page=page, page_size=page_size, action_filter=action_filter, date_filter=date_filter, tz_offset=tz_offset) + modal_oob)
+            return _schedule_redirect(account_id, page, page_size=page_size, action=action_filter, date=date_filter, tz_offset=tz_offset, error=warning)
         if not allowed:
             # A hard count cap (posts_per_day/comments_per_hour/
             # comments_per_day/likes_per_hour) — never overridable, not
@@ -3240,8 +3382,8 @@ async def schedule_fire_now(request: Request, _: None = Depends(_require_auth)):
             # matching pre-check).
             warning = daily_limits.hard_cap_message(account, bucket) or reason
             if _is_htmx(request):
-                return HTMLResponse(_schedule_content_html(account_id=account_id, page=page, page_size=page_size, error=warning) + _MODAL_CLOSE_OOB)
-            return _schedule_redirect(account_id, page, page_size=page_size, error=warning)
+                return HTMLResponse(_schedule_content_html(account_id=account_id, page=page, page_size=page_size, action_filter=action_filter, date_filter=date_filter, tz_offset=tz_offset, error=warning) + _MODAL_CLOSE_OOB)
+            return _schedule_redirect(account_id, page, page_size=page_size, action=action_filter, date=date_filter, tz_offset=tz_offset, error=warning)
 
     result = await run_task(TaskRequest(
         action=task.action,
@@ -3264,8 +3406,8 @@ async def schedule_fire_now(request: Request, _: None = Depends(_require_auth)):
     if result.success:
         schedule_store.mark_posted(task_id, result.message)
         if _is_htmx(request):
-            return HTMLResponse(_schedule_content_html(account_id=account_id, page=page, page_size=page_size, saved=True) + _MODAL_CLOSE_OOB)
-        return _schedule_redirect(account_id, page, page_size=page_size, saved=1)
+            return HTMLResponse(_schedule_content_html(account_id=account_id, page=page, page_size=page_size, action_filter=action_filter, date_filter=date_filter, tz_offset=tz_offset, saved=True) + _MODAL_CLOSE_OOB)
+        return _schedule_redirect(account_id, page, page_size=page_size, action=action_filter, date=date_filter, tz_offset=tz_offset, saved=1)
     if result.message.startswith("rate_limited:"):
         # Same reasoning as data_sync.py's fire_due_tasks(): this isn't a
         # real failure of the post, it just fired too soon after the
@@ -3277,12 +3419,12 @@ async def schedule_fire_now(request: Request, _: None = Depends(_require_auth)):
             warning = rate_limit_wait_message(account, bucket) or daily_limits.hard_cap_message(account, bucket)
         schedule_store.update(task_id, last_warning=warning or result.message)
         if _is_htmx(request):
-            return HTMLResponse(_schedule_content_html(account_id=account_id, page=page, page_size=page_size, error=warning or result.message) + _MODAL_CLOSE_OOB)
-        return _schedule_redirect(account_id, page, page_size=page_size, error=warning or result.message)
+            return HTMLResponse(_schedule_content_html(account_id=account_id, page=page, page_size=page_size, action_filter=action_filter, date_filter=date_filter, tz_offset=tz_offset, error=warning or result.message) + _MODAL_CLOSE_OOB)
+        return _schedule_redirect(account_id, page, page_size=page_size, action=action_filter, date=date_filter, tz_offset=tz_offset, error=warning or result.message)
     schedule_store.mark_failed(task_id, result.message)
     if _is_htmx(request):
-        return HTMLResponse(_schedule_content_html(account_id=account_id, page=page, page_size=page_size, error=f"Đăng thất bại: {result.message}") + _MODAL_CLOSE_OOB)
-    return _schedule_redirect(account_id, page, page_size=page_size, error=f"Đăng thất bại: {result.message}")
+        return HTMLResponse(_schedule_content_html(account_id=account_id, page=page, page_size=page_size, action_filter=action_filter, date_filter=date_filter, tz_offset=tz_offset, error=f"Đăng thất bại: {result.message}") + _MODAL_CLOSE_OOB)
+    return _schedule_redirect(account_id, page, page_size=page_size, action=action_filter, date=date_filter, tz_offset=tz_offset, error=f"Đăng thất bại: {result.message}")
 
 
 # --- Joined group URLs (per-account, used by the data-sync poller) ---------
