@@ -147,6 +147,25 @@ ACCOUNT_AGE_TIERS: dict[str, tuple[str, RateLimits]] = {
     )),
 }
 
+# Which tier's FULL RateLimits preset a post-resume cooldown's SECOND week
+# steps up to, keyed by the account's own (stable) age tier — 2026-09-15,
+# owner-designed 2-week cooldown (see human_bot/runtime_config.py's
+# get_active_cooldown_rate_limits()): week 1 is always the flat cooldown
+# floor (human_bot/safety_cooldown_config.py's SafetyCooldownConfig) for
+# every tier, then week 2 nudges established accounts up one step rather
+# than leaving them at the newest-account floor for the full 2 weeks.
+# "under_1_month" maps to None — it has no lower tier to step FROM, so it
+# just stays on the floor for both weeks (owner's call: nothing to
+# "graduate" out of mid-cooldown when the account is already the newest
+# tier there is).
+COOLDOWN_WEEK2_STEP_UP_TIER: dict[str, str | None] = {
+    "under_1_month": None,
+    "under_3_months": "under_1_month",
+    "under_6_months": "under_1_month",
+    "under_12_months": "under_3_months",
+    "over_12_months": "under_3_months",
+}
+
 
 @dataclass
 class AccountConfig:
@@ -203,8 +222,21 @@ def get_all_accounts() -> dict[str, AccountConfig]:
     per-account rate-limit overrides (get_rate_limits_overrides) — applied
     here so human_bot/safety.py's RateLimiter, which just reads
     `account.rate_limits` off whatever it's given, picks them up with no
-    separate call site to remember."""
+    separate call site to remember.
+
+    Also layers an ACTIVE post-resume cooldown on top of that, LAST and
+    unconditionally (2026-09-15, rewrite — see
+    human_bot/runtime_config.py's get_active_cooldown_rate_limits()'s
+    docstring for the full "why"): while a cooldown is running, its
+    computed floor/step-up numbers must win over whatever
+    get_rate_limits_overrides() returns, WITHOUT ever writing over that
+    stored override — the whole point of this rewrite is that the
+    admin's real override sits there untouched underneath and simply
+    reappears on its own the moment the cooldown's own bookkeeping
+    (started_at + base_tier, not a rate_limits snapshot) says it's
+    over."""
     from human_bot.runtime_config import (
+        get_active_cooldown_rate_limits,
         get_paused_account_ids,
         get_rate_limits_overrides,
         get_registered_accounts,
@@ -227,6 +259,21 @@ def get_all_accounts() -> dict[str, AccountConfig]:
         overrides = get_rate_limits_overrides(aid)
         if overrides:
             result[aid] = replace(account, rate_limits=replace(account.rate_limits, **overrides))
+        cooldown_rl = get_active_cooldown_rate_limits(aid)
+        if cooldown_rl is not None:
+            result[aid] = replace(result[aid], rate_limits=replace(
+                result[aid].rate_limits,
+                posts_per_day=cooldown_rl.posts_per_day,
+                comments_per_hour=cooldown_rl.comments_per_hour,
+                comments_per_day=cooldown_rl.comments_per_day,
+                likes_per_hour=cooldown_rl.likes_per_hour,
+                post_min_delay_seconds=cooldown_rl.post_min_delay_seconds,
+                post_max_delay_seconds=cooldown_rl.post_max_delay_seconds,
+                comment_min_delay_seconds=cooldown_rl.comment_min_delay_seconds,
+                comment_max_delay_seconds=cooldown_rl.comment_max_delay_seconds,
+                # max_groups_per_post deliberately left as whatever the
+                # account already has — no cooldown preset defines it.
+            ))
     return result
 
 

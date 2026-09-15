@@ -64,24 +64,39 @@ Structural:
    re-bootstrapping the session (`skills/session-persistence.md`) is
    needed if the anomaly turned out to be an actual logged-out/invalidated
    session, not every pause).
-6. **Implemented (2026-09-07), post-resume cooldown:** clicking "Kích
-   hoạt lại" does not restore full-speed activity immediately — it starts
-   a reduced-rate-limit cooldown window (`human_bot/safety_cooldown_config.py`'s
-   `SafetyCooldownConfig`, editable at `/admin/config` → "🧊 Hạ nhiệt sau
-   khi kích hoạt lại tài khoản"; mechanism in
+6. **Implemented (2026-09-07), rewritten to 2 stepped weeks (2026-09-15),
+   post-resume cooldown:** clicking "Kích hoạt lại" does not restore
+   full-speed activity immediately — it starts a 14-day (default; see
+   `SafetyCooldownConfig.cooldown_days`) cooldown window in
    `human_bot/runtime_config.py`'s `resume_account()` /
-   `_expire_resume_cooldown_if_due()`), after which the account's rate
-   limits automatically return to whatever was in effect before the
-   pause. Added after a real external report (Facebook group post shared
-   2026-09-07) of accounts getting re-flagged shortly after resuming
-   pre-restriction behavior at full speed — one operator who deliberately
-   stayed quiet an extra week past their lifted restriction reported 3
-   clean months afterward, versus another who cross-posted once right
-   after a restriction lifted and was banned again immediately. The admin
-   still decides *when* to click "Kích hoạt lại" — this only changes what
-   happens *after* that click, not how soon it's safe to click it. See
-   `/admin/accounts`'s "🧊 Đang hạ nhiệt..." badge for an account currently
-   in this window.
+   `_start_resume_cooldown()`: week 1 is a flat floor for every account
+   regardless of age tier (`human_bot/safety_cooldown_config.py`'s
+   `SafetyCooldownConfig`, editable at `/admin/config` → "🧊 Hạ nhiệt sau
+   khi kích hoạt lại tài khoản"), week 2 steps established tiers up one
+   notch (`human_bot/config.py`'s `COOLDOWN_WEEK2_STEP_UP_TIER` — e.g. a
+   "Dưới 3 tháng" account spends week 2 at "Dưới 1 tháng" numbers; "Dưới
+   1 tháng" itself has no lower tier to step from, so it stays on the
+   floor both weeks), after which the account's real rate-limit override
+   (see `human_bot/runtime_config.py`'s `get_active_cooldown_rate_limits()`
+   docstring for why it's never touched/snapshotted during the whole
+   window — the root fix for a real bug where nested pause/resume cycles
+   used to permanently lose an account's true rate limits) simply applies
+   again on its own. Which tier an account steps through comes from a
+   separate, stable `account_age_tier` field
+   (`get_account_age_tier()`/`set_account_age_tier()`), set at
+   registration or via the rate-limits modal's quick-apply tier buttons —
+   never inferred from the account's current (possibly cooldown-reduced)
+   numbers. Added after a real external report (Facebook group post
+   shared 2026-09-07) of accounts getting re-flagged shortly after
+   resuming pre-restriction behavior at full speed — one operator who
+   deliberately stayed quiet an extra week past their lifted restriction
+   reported 3 clean months afterward, versus another who cross-posted
+   once right after a restriction lifted and was banned again
+   immediately. The admin still decides *when* to click "Kích hoạt lại"
+   — this only changes what happens *after* that click, not how soon
+   it's safe to click it. See `/admin/accounts`'s "🧊 Đang hạ nhiệt..."
+   badge (shows which week + which tier it'll return to) for an account
+   currently in this window.
 
 ## Known gap — anomaly re-check only happens right after page navigation
 

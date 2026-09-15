@@ -2591,3 +2591,133 @@ vẫn cần cho đúng trường hợp đó (Chromium's quirk là thật, độc
 bug `document.body` này), chỉ là nó không phải nguyên nhân của báo
 cáo lần này. 155 test cũ vẫn pass.
 
+## Viết lại toàn bộ cơ chế "hạ nhiệt" sau khi Kích hoạt lại — 2 tuần có nấc, sửa tận gốc bug mất rate-limit gốc (2026-09-15)
+
+Owner yêu cầu (sau khi tôi báo bug `prior_overrides` bị ghi đè khi
+pause/resume chồng lấn, mục trên): thiết kế lại hẳn cooldown thành 14
+ngày (2 tuần), có nấc tăng dần theo tuổi tài khoản, và khi hết hạn
+phải ưu tiên khôi phục đúng số ADMIN đã tự cài trước đó (nếu có),
+không phải lúc nào cũng ép về đúng tier.
+
+**Thiết kế cuối (đã thống nhất qua nhiều vòng hỏi-đáp với owner):**
+- Tuần 1 (ngày 0–7): mọi tier đều về mức sàn cố định (1/1/2/2,
+  `SafetyCooldownConfig`).
+- Tuần 2 (ngày 7–14): nhích lên 1 nấc theo bảng
+  `COOLDOWN_WEEK2_STEP_UP_TIER` (mới, `human_bot/config.py`):
+  Dưới 3 tháng/Dưới 6 tháng → mức Dưới 1 tháng; Dưới 12 tháng/Trên 12
+  tháng → mức Dưới 3 tháng; ri.eng Dưới 1 tháng không có tier thấp
+  hơn nên giữ nguyên mức sàn cả 2 tuần (owner chọn).
+- Sau 14 ngày: **không ghi gì cả** — chỉ xoá record cooldown. Vì suốt
+  cả quá trình hạ nhiệt KHÔNG BAO GIỜ đụng tới `rate_limits` override
+  thật của tài khoản (đây là điểm mấu chốt), số admin tự cài trước đó
+  tự động "hiện lại" ngay khi cooldown không còn được áp — đúng ý
+  "ưu tiên khôi phục số admin cài, nếu không có thì theo tier" (không
+  có gì để khôi phục ngoài tier thì mặc nhiên nó vẫn đang ở đó rồi).
+
+**Nguồn "tier gốc" ổn định — field mới `account_age_tier`:**
+lấy từ dropdown lúc đăng ký tài khoản (mặc định "Dưới 1 tháng" nếu
+không chọn — owner yêu cầu rõ, sửa cả nhánh cũ lỡ fallback về 30
+bài/ngày nếu form thiếu field) hoặc nút "Áp nhanh theo tuổi" ở modal
+Giới hạn tốc độ sau này. **Cố tình KHÔNG suy ngược từ rate_limits** —
+đây chính là nguyên nhân gốc của bug cũ (đọc số hiện tại lúc đang hạ
+nhiệt sẽ chỉ thấy số đã giảm). Gõ tay số tuỳ ý (không qua nút tier)
+giữ nguyên `account_age_tier` cũ, không xoá.
+
+**Vòng lặp nền mới** (`service.py`'s `_resume_cooldown_maintenance_loop`,
+owner đặc tả chính xác): kiểm tra 1h/lần khi KHÔNG có tài khoản nào
+đang hạ nhiệt (rẻ, chỉ đọc danh sách key), chuyển sang 1 ngày/lần một
+khi có ít nhất 1 tài khoản — chạy `get_active_cooldown_rate_limits()`
+cho từng tài khoản (tự hết hạn nếu đã đủ 14 ngày). Khởi động lại
+service cũng tự vào đúng vòng này ngay từ đầu — trạng thái cooldown
+là JSON trên đĩa (`started_at`+`base_tier`), không mất gì qua restart.
+**Lưu ý quan trọng**: vòng lặp này chỉ để CẬP NHẬT KỊP THỜI cho người
+xem `/admin/accounts` — tính đúng/sai của rate-limit thật không phụ
+thuộc vòng lặp này chạy hay không, vì `get_all_accounts()` luôn tính
+lại tươi mỗi lần gọi.
+
+**Test viết mới** — trước đây khu vực cooldown này CHƯA từng có test
+nào (một phần lý do bug âm thầm tồn tại lâu):
+- `tests/test_runtime_config.py`: 16 test mới (age tier get/set/clear,
+  tuần 1 sàn, tuần 2 nhích đúng theo bảng, tuần 2 giữ sàn cho Dưới 1
+  tháng, hết hạn không đụng override thật, **test hồi quy trực tiếp
+  tái hiện đúng bug cũ** — pause/resume chồng lấn giữa lúc cooldown
+  #1 chưa hết hạn, xác nhận `base_tier` VÀ override thật không bị
+  hỏng — và `get_rate_limits_overrides()` không còn side-effect hết
+  hạn cooldown nữa).
+- `tests/test_config.py` (file test ĐẦU TIÊN cho `config.py`): 3 test
+  xác nhận `get_all_accounts()` lồng đúng số cooldown lên trên số
+  thật (không ghi đè), số thật hiện lại đúng sau khi hết hạn, và
+  `max_groups_per_post` (field cooldown không định nghĩa) giữ nguyên.
+- Toàn bộ suite: **170 passed** (155 cũ + 12 mới trong
+  `test_runtime_config.py` + 3 mới trong `test_config.py`).
+
+**Xác nhận sống qua route thật** (service chạy port riêng 8126, dùng
+`tu_iizuki` thật rồi dọn sạch lại sau):
+- Modal Giới hạn tốc độ render đúng `data-tier_key` trên cả 5 nút +
+  field ẩn `tier_key` rỗng.
+- Bấm 1 nút tier (giả lập qua POST thật `/admin/accounts/rate-limits`
+  kèm `tier_key`) → `account_age_tier` được lưu đúng, số cũng lưu
+  đúng.
+- Tạm dừng + Kích hoạt lại thật qua `/admin/accounts/pause`+`/resume`
+  → cooldown tuần 1 áp đúng (1/1/2/2), `get_all_accounts()` trả đúng
+  số đã giảm, còn `get_rate_limits_overrides()` (số thật bên dưới)
+  **không hề đổi** — đúng thiết kế.
+- Phát hiện thêm: `runtime_config.json` thật vẫn còn override
+  `safety_cooldown.cooldown_days=7` từ trước (đè lên class default
+  code mới đổi 14) — cập nhật lại bằng read-merge-write
+  (`save_safety_cooldown_overrides`, giữ nguyên các field khác, đúng
+  quy tắc "replace cả section, không merge" của hàm này) để khớp
+  thiết kế 14 ngày mới.
+
+**Sửa dữ liệu thật cho `tu_iizuki`** (owner đồng ý để mặc định "Dưới
+1 tháng" — không nhớ tuổi thật, giá trị gốc đã mất vĩnh viễn do bug
+cũ không thể tự khôi phục): đặt `account_age_tier="under_1_month"`,
+khôi phục `rate_limits` về đúng preset "Dưới 1 tháng" (5 bài/ngày,
+2h-3.5h giữa 2 bài, 7 comment/ngày), xoá `resume_cooldown` (đang rỗng
+sẵn, không có gì để xoá thật).
+
+## Rà soát lại toàn bộ đợt viết lại "hạ nhiệt" — phát hiện 3 sai sót nhỏ (2026-09-15)
+
+Owner yêu cầu dò lại lần nữa cho chắc. Đọc lại từng file đã sửa,
+kiểm tra logic biên (elapsed_days, ngưỡng tuần 1/2, enabled flag),
+grep toàn bộ codebase tìm tham chiếu còn sót tới hàm/field đã xoá.
+
+Phát hiện 3 vấn đề, cả 3 đã sửa và có test:
+
+1. **Bug thật (mới do chính đợt viết lại này gây ra):**
+   `get_active_cooldown_rate_limits()` có kiểm tra
+   `SafetyCooldownConfig.enabled` nhưng `get_resume_cooldown_info()`
+   (hàm build banner "🧊 Đang hạ nhiệt" ở `/admin/accounts`) thì
+   KHÔNG — nếu owner tắt công tắc "Bật hạ nhiệt" giữa lúc 1 tài
+   khoản đang hạ nhiệt dở dang, tài khoản đó lập tức chạy full tốc
+   độ thật (đúng), nhưng UI vẫn hiện "Đang hạ nhiệt tới ngày X",
+   sai lệch hoàn toàn với thực tế. Sửa bằng cách gộp điều kiện
+   `enabled` vào đúng 1 chỗ dùng chung (`_live_cooldown_entry()`) —
+   cả 2 hàm giờ luôn đồng bộ. Quyết định thêm: tắt công tắc KHÔNG
+   xoá record đang có (để giữ nguyên tiến độ, bật lại là tiếp tục
+   đúng chỗ cũ, không mất `started_at`). Thêm test hồi quy
+   `test_disabling_safety_cooldown_hides_the_info_banner_too`.
+2. **Nhãn hiển thị ở `/admin/config`'s "Hạ nhiệt sau khi kích hoạt
+   lại" chưa cập nhật theo thiết kế 2 tuần mới** — các field
+   `posts_per_day`/`comments_per_hour`/... trong `SafetyCooldownConfig`
+   ghi "trong lúc hạ nhiệt" (nghe như áp dụng suốt cả cooldown), thật
+   ra chỉ là mức TUẦN 1 (tuần 2 của tier đã "trưởng thành" đọc từ
+   preset tier khác hẳn, không hề đọc các field này) — dễ khiến
+   owner chỉnh số ở đây tưởng ảnh hưởng cả 2 tuần. Sửa nhãn ghi rõ
+   "Ở TUẦN 1 hạ nhiệt (mọi tier)", và bổ sung giải thích ngắn cho
+   `cooldown_days`.
+3. **`docs/skills/anomaly-detection.md` còn trỏ tới hàm đã xoá hẳn**
+   (`_expire_resume_cooldown_if_due()`) và mô tả cooldown theo bản
+   cũ (1 mức, restore-from-snapshot) — cập nhật lại đúng cơ chế 2
+   tuần có nấc + `account_age_tier` mới.
+
+Nhân tiện dọn 1 chỗ nhỏ không phải bug: hardcode chuỗi `"under_1_month"`
+ở nhánh fallback của `get_active_cooldown_rate_limits()` đổi sang dùng
+hằng số `DEFAULT_ACCOUNT_AGE_TIER` cho nhất quán.
+
+Grep toàn bộ code + docs xác nhận không còn chỗ nào gọi tới
+`_expire_resume_cooldown_if_due`/đọc `prior_overrides` (2 chỗ còn lại
+là comment giải thích lịch sử bug, không phải code thật).
+
+**171 test passed** (170 trước đó + 1 test hồi quy mới cho vụ
+`enabled`).

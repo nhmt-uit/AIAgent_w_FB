@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timedelta, timezone
 
 from human_bot import runtime_config as rc
+from human_bot.config import ACCOUNT_AGE_TIERS
 
 
 # --- _get_config / _get_overrides / _save_overrides round-trip -------------
@@ -123,3 +125,200 @@ def test_active_ai_provider_config_unknown_provider_falls_back_to_anthropic_mapp
     active = rc.get_active_ai_provider_config()
     assert active.provider == "not-a-real-provider"
     assert active.api_key == "fallback-key"
+
+
+# --- Per-account age tier ----------------------------------------------------
+
+def test_get_account_age_tier_defaults_to_under_1_month(isolated_runtime_config):
+    assert rc.get_account_age_tier("acc1") == "under_1_month"
+    assert rc.DEFAULT_ACCOUNT_AGE_TIER == "under_1_month"
+
+
+def test_set_and_get_account_age_tier_roundtrip(isolated_runtime_config):
+    rc.set_account_age_tier("acc1", "under_6_months")
+    assert rc.get_account_age_tier("acc1") == "under_6_months"
+    # A different account is unaffected.
+    assert rc.get_account_age_tier("acc2") == "under_1_month"
+
+
+def test_set_account_age_tier_rejects_invalid_key(isolated_runtime_config):
+    rc.set_account_age_tier("acc1", "not_a_real_tier")
+    assert rc.get_account_age_tier("acc1") == "under_1_month"
+
+
+def test_clear_account_age_tier(isolated_runtime_config):
+    rc.set_account_age_tier("acc1", "over_12_months")
+    rc.clear_account_age_tier("acc1")
+    assert rc.get_account_age_tier("acc1") == "under_1_month"
+
+
+# --- Post-resume cooldown (2-week floor/step-up rewrite, 2026-09-15) --------
+
+def _backdate_cooldown(path, account_id: str, days_ago: float) -> None:
+    """Test-only helper: rewrites account_id's resume_cooldown
+    `started_at` to simulate `days_ago` days having already passed,
+    without needing to mock datetime.now() everywhere the cooldown code
+    calls it."""
+    data = json.loads(path.read_text())
+    started = datetime.now(timezone.utc) - timedelta(days=days_ago)
+    data["resume_cooldown"][account_id]["started_at"] = started.isoformat()
+    path.write_text(json.dumps(data))
+
+
+def test_resume_account_starts_week1_floor_cooldown(isolated_runtime_config):
+    rc.set_account_paused("acc1", True, reason="test")
+    rc.resume_account("acc1")
+
+    cfg = rc.get_safety_cooldown_config()
+    effective = rc.get_active_cooldown_rate_limits("acc1")
+    assert effective is not None
+    assert effective.posts_per_day == cfg.posts_per_day
+    assert effective.comments_per_day == cfg.comments_per_day
+
+    info = rc.get_resume_cooldown_info("acc1")
+    assert info is not None
+    assert info["week"] == 1
+
+
+def test_cooldown_week2_steps_established_tier_up_one_notch(isolated_runtime_config):
+    rc.set_account_age_tier("acc1", "under_12_months")
+    rc.set_account_paused("acc1", True, reason="test")
+    rc.resume_account("acc1")
+    _backdate_cooldown(isolated_runtime_config, "acc1", days_ago=8)  # into week 2 of 14
+
+    effective = rc.get_active_cooldown_rate_limits("acc1")
+    _, expected = ACCOUNT_AGE_TIERS["under_3_months"]  # the configured step-up target
+    assert effective == expected
+
+    info = rc.get_resume_cooldown_info("acc1")
+    assert info["week"] == 2
+
+
+def test_cooldown_week2_stays_on_floor_for_newest_tier(isolated_runtime_config):
+    rc.set_account_age_tier("acc1", "under_1_month")  # nothing lower to step up from
+    rc.set_account_paused("acc1", True, reason="test")
+    rc.resume_account("acc1")
+    _backdate_cooldown(isolated_runtime_config, "acc1", days_ago=8)
+
+    cfg = rc.get_safety_cooldown_config()
+    effective = rc.get_active_cooldown_rate_limits("acc1")
+    assert effective.posts_per_day == cfg.posts_per_day
+    assert effective.comments_per_day == cfg.comments_per_day
+
+
+def test_cooldown_expires_after_full_duration_leaving_real_override_untouched(isolated_runtime_config):
+    # The account's REAL, admin-set limits — must survive the whole
+    # cooldown untouched (2026-09-15 rewrite's whole point).
+    rc.save_rate_limits_overrides("acc1", {"posts_per_day": 30, "comments_per_day": 35})
+    rc.set_account_age_tier("acc1", "over_12_months")
+    rc.set_account_paused("acc1", True, reason="test")
+    rc.resume_account("acc1")
+    _backdate_cooldown(isolated_runtime_config, "acc1", days_ago=15)  # past cooldown_days=14
+
+    assert rc.get_active_cooldown_rate_limits("acc1") is None
+    assert rc.get_resume_cooldown_info("acc1") is None
+    # Never touched — restored automatically just by no longer shadowing it.
+    assert rc.get_rate_limits_overrides("acc1") == {"posts_per_day": 30, "comments_per_day": 35}
+
+
+def test_nested_pause_resume_mid_cooldown_does_not_corrupt_base_tier(isolated_runtime_config):
+    """Regression test for the real bug found 2026-09-15 (see
+    get_active_cooldown_rate_limits()'s module docstring in
+    runtime_config.py): pausing and resuming a SECOND time while the
+    first cooldown was still active used to re-snapshot the CURRENTLY
+    reduced rate limits as "prior_overrides", permanently losing the
+    account's true original settings. The rewrite has no snapshot to
+    corrupt — base_tier always comes from the stable get_account_age_tier(),
+    never from momentary rate_limits — so a second resume mid-cooldown
+    must leave both the tier AND the real override exactly as they were."""
+    rc.save_rate_limits_overrides("acc1", {"posts_per_day": 30, "comments_per_hour": 9, "comments_per_day": 35, "likes_per_hour": 20})
+    rc.set_account_age_tier("acc1", "over_12_months")
+
+    # 1st pause/resume — cooldown #1 starts.
+    rc.set_account_paused("acc1", True, reason="first pause")
+    rc.resume_account("acc1")
+    assert rc.get_resume_cooldown_info("acc1")["week"] == 1
+
+    # 2nd pause/resume WHILE cooldown #1 is still active (not expired).
+    rc.set_account_paused("acc1", True, reason="second pause")
+    rc.resume_account("acc1")
+
+    # The tier used for phasing must be unaffected by having been
+    # resumed while already reduced.
+    info = rc.get_resume_cooldown_info("acc1")
+    assert info is not None
+    assert info["base_tier"] == "over_12_months"
+
+    # And, crucially, the true original override must still be intact —
+    # this is what silently became {1,1,2,2} forever under the old bug.
+    assert rc.get_rate_limits_overrides("acc1") == {
+        "posts_per_day": 30, "comments_per_hour": 9, "comments_per_day": 35, "likes_per_hour": 20,
+    }
+
+    # And once THIS cooldown finishes too, the real override reappears.
+    _backdate_cooldown(isolated_runtime_config, "acc1", days_ago=15)
+    assert rc.get_active_cooldown_rate_limits("acc1") is None
+    assert rc.get_rate_limits_overrides("acc1") == {
+        "posts_per_day": 30, "comments_per_hour": 9, "comments_per_day": 35, "likes_per_hour": 20,
+    }
+
+
+def test_get_rate_limits_overrides_never_touches_cooldown(isolated_runtime_config):
+    """2026-09-15 rewrite: reading the raw override must be a pure read
+    now — no more lazy expire-and-restore side effect baked into it."""
+    rc.save_rate_limits_overrides("acc1", {"posts_per_day": 10})
+    rc.set_account_paused("acc1", True, reason="test")
+    rc.resume_account("acc1")
+    # Reading the raw override mid-cooldown must return the UNCHANGED
+    # stored value, not the cooldown-reduced numbers and not None.
+    assert rc.get_rate_limits_overrides("acc1") == {"posts_per_day": 10}
+    assert rc.get_resume_cooldown_info("acc1") is not None  # cooldown itself untouched by the read
+
+
+def test_clear_resume_cooldown_drops_record_without_touching_override(isolated_runtime_config):
+    rc.save_rate_limits_overrides("acc1", {"posts_per_day": 10})
+    rc.set_account_paused("acc1", True, reason="test")
+    rc.resume_account("acc1")
+    rc.clear_resume_cooldown("acc1")
+    assert rc.get_resume_cooldown_info("acc1") is None
+    assert rc.get_active_cooldown_rate_limits("acc1") is None
+    assert rc.get_rate_limits_overrides("acc1") == {"posts_per_day": 10}
+
+
+def test_get_all_active_cooldown_account_ids(isolated_runtime_config):
+    assert rc.get_all_active_cooldown_account_ids() == []
+    rc.set_account_paused("acc1", True, reason="test")
+    rc.resume_account("acc1")
+    rc.set_account_paused("acc2", True, reason="test")
+    rc.resume_account("acc2")
+    assert sorted(rc.get_all_active_cooldown_account_ids()) == ["acc1", "acc2"]
+
+
+def test_disabling_safety_cooldown_hides_the_info_banner_too(isolated_runtime_config):
+    """Regression for a real inconsistency found in review (2026-09-15,
+    same session as the rewrite): get_active_cooldown_rate_limits()
+    checked cfg.enabled but get_resume_cooldown_info() did not, so
+    toggling the feature off mid-cooldown left /admin/accounts still
+    showing "🧊 Đang hạ nhiệt" for an account that, per the OTHER
+    function, was already back to full speed. Both must agree."""
+    rc.set_account_paused("acc1", True, reason="test")
+    rc.resume_account("acc1")
+    assert rc.get_active_cooldown_rate_limits("acc1") is not None
+    assert rc.get_resume_cooldown_info("acc1") is not None
+
+    import dataclasses
+    # Read-merge-write, not a partial dict (a bare {"enabled": False}
+    # would silently drop every other field via _save_overrides()'s
+    # "replace the whole section" behavior — see the project's own
+    # no-live-config-partial-writes convention).
+    cfg = rc.get_safety_cooldown_config()
+    rc.save_safety_cooldown_overrides({**dataclasses.asdict(cfg), "enabled": False})
+    assert rc.get_active_cooldown_rate_limits("acc1") is None
+    assert rc.get_resume_cooldown_info("acc1") is None
+
+    # And the dormant record isn't destroyed by having been checked while
+    # disabled — re-enabling picks it back up from the same started_at.
+    rc.save_safety_cooldown_overrides({**dataclasses.asdict(cfg), "enabled": True})
+    info = rc.get_resume_cooldown_info("acc1")
+    assert info is not None
+    assert info["week"] == 1

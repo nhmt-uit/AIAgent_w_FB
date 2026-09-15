@@ -55,6 +55,8 @@ from human_bot.browser_pool import close_all, warm_up  # noqa: E402
 from human_bot.config import AccountStatus, get_all_accounts  # noqa: E402
 from human_bot.logging_setup import configure_logging  # noqa: E402
 from human_bot.runtime_config import (  # noqa: E402
+    get_active_cooldown_rate_limits,
+    get_all_active_cooldown_account_ids,
     get_config_changed_event,
     get_data_sync_config,
     get_sync_disabled_account_ids,
@@ -203,6 +205,57 @@ async def _screenshot_cleanup_loop() -> None:
         await asyncio.sleep(SCHEDULE_CLEANUP_INTERVAL_SECONDS)
 
 
+# How often this loop re-checks for cooldown work when it currently has
+# NONE — short enough that a resume happening right after a check still
+# gets picked up same-day, but far cheaper than the 1x/day cadence used
+# once there's real work (owner request 2026-09-15).
+_RESUME_COOLDOWN_IDLE_CHECK_SECONDS = 60 * 60
+
+
+async def _resume_cooldown_maintenance_loop() -> None:
+    """Background loop for human_bot/runtime_config.py's post-resume
+    cooldown (see get_active_cooldown_rate_limits()'s docstring for the
+    full 2-week floor/step-up design and the bug it replaced).
+
+    Every rate-limit check this project actually enforces already reads
+    the cooldown-adjusted numbers fresh, on demand, via human_bot/
+    config.py's get_all_accounts() — so correctness never depended on
+    this loop running at all; a cooldown transitioning from week 1 to
+    week 2, or finishing entirely, takes effect the very next time
+    anything asks for that account's rate limits, with or without this
+    loop. What this loop adds is PROMPTNESS for anyone just watching
+    (e.g. /admin/accounts' "🧊 Đang hạ nhiệt" banner, or
+    runtime_config.json itself) — without it, a finished cooldown's
+    record would keep sitting there, stale, until the next time some
+    other code path happened to touch that account.
+
+    Owner-specified shape (2026-09-15): checks once an hour for whether
+    ANY account has a cooldown record at all
+    (get_all_active_cooldown_account_ids(), cheap — just reads the raw
+    key list); if none, there's nothing to do, so it just waits and
+    checks again next hour. Once at least one exists, it switches to a
+    1x/day cadence, nudging every such account via
+    get_active_cooldown_rate_limits() (which does the real, lazy
+    "has cooldown_days actually passed?" check and drops the record
+    itself if so) so records don't go stale for a full 14 days between
+    checks. Restarting the service re-enters this same loop from
+    scratch, which immediately re-reads runtime_config.json — cooldown
+    state is plain JSON on disk (started_at + base_tier), not in-memory,
+    so a restart mid-cooldown loses no progress and this loop simply
+    picks the same accounts back up on its very first check."""
+    while True:
+        active_ids = get_all_active_cooldown_account_ids()
+        if not active_ids:
+            await asyncio.sleep(_RESUME_COOLDOWN_IDLE_CHECK_SECONDS)
+            continue
+        for account_id in active_ids:
+            try:
+                get_active_cooldown_rate_limits(account_id)  # lazily expires if due
+            except Exception:  # noqa: BLE001 - one bad record must not kill the loop
+                logger.exception("resume-cooldown maintenance failed for %s", account_id)
+        await asyncio.sleep(SCHEDULE_CLEANUP_INTERVAL_SECONDS)
+
+
 def _missing_auth_env_vars() -> list[str]:
     """.env is gitignored, so cloning/redeploying this project to a new
     machine starts with NONE of these set — and _require_auth()/
@@ -286,12 +339,14 @@ async def lifespan(app: FastAPI):
     fire_task = asyncio.create_task(_data_sync_fire_loop())
     cleanup_task = asyncio.create_task(_schedule_cleanup_loop())
     screenshot_cleanup_task = asyncio.create_task(_screenshot_cleanup_loop())
+    resume_cooldown_task = asyncio.create_task(_resume_cooldown_maintenance_loop())
     yield
     poll_task.cancel()
     fire_task.cancel()
     cleanup_task.cancel()
     screenshot_cleanup_task.cancel()
-    for t in (poll_task, fire_task, cleanup_task, screenshot_cleanup_task):
+    resume_cooldown_task.cancel()
+    for t in (poll_task, fire_task, cleanup_task, screenshot_cleanup_task, resume_cooldown_task):
         try:
             await t
         except asyncio.CancelledError:

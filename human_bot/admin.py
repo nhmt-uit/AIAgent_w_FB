@@ -105,6 +105,10 @@ from human_bot.runtime_config import (
     get_pause_info,
     get_resume_cooldown_info,
     clear_resume_cooldown,
+    get_account_age_tier,
+    set_account_age_tier,
+    clear_account_age_tier,
+    DEFAULT_ACCOUNT_AGE_TIER,
     get_rate_limits_overrides,
     save_rate_limits_overrides,
     EDITABLE_RATE_LIMITS_FIELDS,
@@ -506,13 +510,21 @@ _CONFIG_SECTIONS.append(
 
 _SAFETY_COOLDOWN_LABELS: dict[str, str] = {
     "enabled": "Bật hạ nhiệt sau khi 'Kích hoạt lại' một tài khoản từng bị tạm dừng",
-    "cooldown_days": "Số ngày áp giới hạn thấp sau khi kích hoạt lại, trước khi tự trở về giới hạn cũ",
-    "posts_per_day": "Số bài đăng tối đa/ngày trong lúc hạ nhiệt",
-    "comments_per_hour": "Số comment tối đa/giờ trong lúc hạ nhiệt",
-    "comments_per_day": "Số comment tối đa/ngày trong lúc hạ nhiệt",
-    "likes_per_hour": "Số lượt thích tối đa/giờ trong lúc hạ nhiệt",
-    "min_delay_seconds": "Khoảng chờ giữa 2 hành động — tối thiểu (giây) trong lúc hạ nhiệt",
-    "max_delay_seconds": "Khoảng chờ giữa 2 hành động — tối đa (giây) trong lúc hạ nhiệt",
+    # "trong lúc hạ nhiệt" nói chung dễ gây hiểu lầm từ 2026-09-15 (đổi
+    # sang 2 tuần có nấc) — các con số dưới đây CHỈ áp dụng tuần 1 (và
+    # cả cooldown_days cho riêng tier "Dưới 1 tháng", vốn không có tier
+    # thấp hơn để nhích lên); tuần 2 của các tier khác dùng preset của
+    # tier thấp hơn liền kề (human_bot/config.py's
+    # COOLDOWN_WEEK2_STEP_UP_TIER), không đọc các field này — chỉnh số
+    # ở đây không ảnh hưởng gì tới mức tuần 2 của 1 tài khoản đã "trưởng
+    # thành".
+    "cooldown_days": "Tổng số ngày hạ nhiệt (chia đôi thành 2 tuần: tuần 1 = mức sàn dưới đây cho MỌI tier, tuần 2 = nhích lên 1 tier thấp hơn — xem COOLDOWN_WEEK2_STEP_UP_TIER), trước khi tự trở về giới hạn cũ",
+    "posts_per_day": "Số bài đăng tối đa/ngày ở TUẦN 1 hạ nhiệt (mọi tier)",
+    "comments_per_hour": "Số comment tối đa/giờ ở TUẦN 1 hạ nhiệt (mọi tier)",
+    "comments_per_day": "Số comment tối đa/ngày ở TUẦN 1 hạ nhiệt (mọi tier)",
+    "likes_per_hour": "Số lượt thích tối đa/giờ ở TUẦN 1 hạ nhiệt (mọi tier)",
+    "min_delay_seconds": "Khoảng chờ giữa 2 hành động — tối thiểu (giây) ở TUẦN 1 hạ nhiệt (mọi tier)",
+    "max_delay_seconds": "Khoảng chờ giữa 2 hành động — tối đa (giây) ở TUẦN 1 hạ nhiệt (mọi tier)",
 }
 
 _ICONS["safety_cooldown"] = "🧊"
@@ -1472,7 +1484,7 @@ def _account_modal_html(account_id: str = "", display_name: str = "", error: str
     closes it."""
     err_html = f'<p class="error">⚠️ {html.escape(error)}</p>' if error else ""
     tier_options = "".join(
-        f'<option value="{tier_key}"{" selected" if tier_key == "under_1_month" else ""}>'
+        f'<option value="{tier_key}"{" selected" if tier_key == DEFAULT_ACCOUNT_AGE_TIER else ""}>'
         f'{html.escape(label)} ({rl.posts_per_day} bài/ngày)</option>'
         for tier_key, (label, rl) in ACCOUNT_AGE_TIERS.items()
     )
@@ -1685,11 +1697,23 @@ def _rate_limits_modal_body_html(account_id: str, limits: RateLimits, is_overrid
     # a tier click must leave whatever the account currently has there
     # untouched, same as the save route already does), so JS never
     # hardcodes or risks drifting from the real preset numbers.
+    #
+    # ALSO fills the form's hidden `tier_key` field (2026-09-15, added
+    # alongside human_bot/runtime_config.py's get_account_age_tier()) via
+    # the exact same generic initApplyTierButton() loop — `data-tier_key`
+    # uses an underscore, not a hyphen, so it lands in btn.dataset as
+    # `tier_key` (unchanged) rather than being camelCased to `tierKey`,
+    # matching the hidden field's `name="tier_key"` with no JS change
+    # needed. accounts_rate_limits_save() reads it to persist WHICH tier
+    # this save came from — separate from the raw numbers, since the
+    # numbers alone can't tell a tier-button click apart from someone
+    # typing coincidentally-matching values by hand.
     tier_buttons = "".join(
         f'''<button type="button" class="btn-small btn-secondary" style="margin:2px;" data-apply-tier
+        data-tier_key="{tier_key}"
         {" ".join(f'data-{field}="{getattr(rl, field)}"' for field in _RATE_LIMITS_LABELS if field != "max_groups_per_post")}
         >{html.escape(label)} ({rl.posts_per_day} bài/ngày)</button>'''
-        for _tier_key, (label, rl) in ACCOUNT_AGE_TIERS.items()
+        for tier_key, (label, rl) in ACCOUNT_AGE_TIERS.items()
     )
     return f"""<div id="rate-limits-body">
     {reset_note}
@@ -1698,6 +1722,16 @@ def _rate_limits_modal_body_html(account_id: str, limits: RateLimits, is_overrid
     <div>{tier_buttons}</div>
     <form method="post" action="/admin/accounts/rate-limits" hx-post="/admin/accounts/rate-limits" hx-target="#modal-root" hx-swap="innerHTML">
       <input type="hidden" name="account_id" value="{html.escape(account_id)}">
+      <!-- Filled by initApplyTierButton() (this module's page script) when
+           a quick-apply tier button above is clicked — tells
+           accounts_rate_limits_save() which age tier (if any) to persist
+           via set_account_age_tier() alongside the raw numbers below.
+           Stays empty if the admin only ever typed numbers by hand,
+           which correctly leaves the account's existing age tier
+           untouched (see human_bot/runtime_config.py's
+           get_account_age_tier()'s docstring for why that field is kept
+           separate from these raw numbers in the first place). -->
+      <input type="hidden" name="tier_key" value="">
       <div class="field-grid">{rows}</div>
       <div class="form-actions">
         <button type="submit" name="reset" value="1" class="btn-secondary" style="margin-right:8px;">Khôi phục mặc định</button>
@@ -1882,8 +1916,17 @@ def _accounts_content_html(saved: bool = False, error: str | None = None, oob: b
             if cooldown:
                 until_txt = _local_dt_html(cooldown.get("until"))
                 reason_txt = html.escape(cooldown.get("reason") or "không rõ")
+                week = cooldown.get("week")
+                base_tier_key = cooldown.get("base_tier")
+                base_tier_label = ACCOUNT_AGE_TIERS.get(base_tier_key, (base_tier_key or "?", None))[0]
+                week_txt = (
+                    f"tuần {week}/2 — mức sàn thấp nhất"
+                    if week == 1
+                    else f"tuần {week}/2 — đã nhích lên 1 bậc"
+                )
                 status_detail = (
-                    f'<div class="row-url">🧊 Hạ nhiệt tới {until_txt} (giới hạn thấp) '
+                    f'<div class="row-url">🧊 Đang hạ nhiệt ({html.escape(str(week_txt))}), '
+                    f'xong vào {until_txt}, sẽ quay về mức "{html.escape(base_tier_label)}" '
                     f'— lần trước bị dừng vì: {reason_txt}</div>'
                 )
         # Pausing is a runtime override that applies to ANY account
@@ -2024,10 +2067,19 @@ async def accounts_add(request: Request, _: None = Depends(_require_auth)):
         return RedirectResponse(url=f"/admin/accounts?{urlencode({'error': error})}", status_code=303)
     save_registered_account(account_id, display_name or account_id)
     set_account_removed(account_id, False)  # undo a previous "Xoá", if any
+    # Falls back to "under_1_month" (owner decision 2026-09-15) rather
+    # than silently applying no override at all (the code-level RateLimits
+    # default is actually "over_12_months", 30 posts/day — the opposite of
+    # the safe assumption a brand-new registration should start from) —
+    # the <select> itself already defaults to "under_1_month" too (see
+    # _account_modal_html()), so this only ever matters for a direct API
+    # call that skips the field entirely.
     age_tier = str(form.get("age_tier", "")).strip()
-    if age_tier in ACCOUNT_AGE_TIERS:
-        _, preset = ACCOUNT_AGE_TIERS[age_tier]
-        save_rate_limits_overrides(account_id, dataclasses.asdict(preset))
+    if age_tier not in ACCOUNT_AGE_TIERS:
+        age_tier = DEFAULT_ACCOUNT_AGE_TIER
+    _, preset = ACCOUNT_AGE_TIERS[age_tier]
+    save_rate_limits_overrides(account_id, dataclasses.asdict(preset))
+    set_account_age_tier(account_id, age_tier)
     if _is_htmx(request):
         # No primary content for #modal-root (the form's own hx-target) —
         # htmx empties it, closing the modal — plus an out-of-band refresh
@@ -2101,9 +2153,13 @@ async def accounts_delete(request: Request, _: None = Depends(_require_auth)):
     - any still-running post-resume cooldown record
       (clear_resume_cooldown()) — found 2026-09-07: left alone, a
       cooldown active at delete time would keep ticking in
-      runtime_config.json and could later overwrite a freshly
-      re-registered account's rate limits once its `until` naturally
-      passed, reaching back from before the account even existed again
+      runtime_config.json and its "🧊 Đang hạ nhiệt" banner could
+      confusingly reappear for a freshly re-registered account_id later
+    - the saved age tier (clear_account_age_tier()) — same "don't
+      silently inherit stale state from before the delete" reasoning;
+      without this, re-registering the same account_id and picking a
+      DIFFERENT age tier would still cooldown-phase using the old,
+      never-cleared tier if it's ever paused/resumed
 
     Deliberately does NOT touch accounts/<id>/storage_state.json (the
     real Facebook login session), action_log.jsonl / the action_log DB
@@ -2119,6 +2175,7 @@ async def accounts_delete(request: Request, _: None = Depends(_require_auth)):
     save_joined_groups(account_id, [])
     save_rate_limits_overrides(account_id, {})
     clear_resume_cooldown(account_id)
+    clear_account_age_tier(account_id)
     for task in schedule_store.list_pending():
         if task.account_id == account_id:
             schedule_store.cancel(task.task_id)
@@ -2183,6 +2240,15 @@ async def accounts_rate_limits_save(request: Request, _: None = Depends(_require
         return _fail("Khoảng chờ tối thiểu giữa 2 comment phải nhỏ hơn hoặc bằng khoảng chờ tối đa", RateLimits(**values))
 
     save_rate_limits_overrides(account_id, values)
+    # Only set when a quick-apply tier button was actually clicked (see
+    # _rate_limits_modal_body_html()'s tier_buttons comment) — typing
+    # numbers by hand leaves this blank, which correctly leaves the
+    # account's existing age tier (used only for post-resume cooldown
+    # phasing, human_bot/runtime_config.py's get_active_cooldown_rate_
+    # limits()) untouched.
+    tier_key = str(form.get("tier_key", "")).strip()
+    if tier_key:
+        set_account_age_tier(account_id, tier_key)
     if _is_htmx(request):
         return HTMLResponse(_accounts_content_html(saved=True, oob=True))
     return RedirectResponse(url="/admin/accounts?saved=1", status_code=303)

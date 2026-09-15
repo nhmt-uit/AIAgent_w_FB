@@ -29,6 +29,7 @@ from pathlib import Path
 from typing import Any
 
 from human_bot.humanize import HumanMouseConfig, HumanPacingConfig, HumanScrollConfig, HumanTypingConfig
+from human_bot.config import ACCOUNT_AGE_TIERS, COOLDOWN_WEEK2_STEP_UP_TIER, RateLimits
 from human_bot.data_sync_config import DataSyncConfig
 from human_bot.scheduling_config import SchedulingConfig
 from human_bot.media import MediaConfig
@@ -715,6 +716,71 @@ def set_account_removed(account_id: str, removed: bool) -> None:
     )
 
 
+# --- Per-account age tier ----------------------------------------------------
+#
+# Which human_bot/config.py ACCOUNT_AGE_TIERS key this account is currently
+# assigned to — set at registration (the "Tuổi tài khoản Facebook" dropdown
+# in /admin/accounts' add-account modal) or later via the rate-limits
+# modal's quick-apply tier buttons (human_bot/admin.py). Deliberately a
+# SEPARATE, stable field from the account's actual rate_limits override
+# below, never inferred from it — see the "Post-resume cooldown" section
+# further down for exactly why that distinction matters: it's what makes
+# a post-resume cooldown safe to restart any number of times without ever
+# losing track of "which tier does this account really belong to".
+#
+# An account custom-edited by hand in the rate-limits modal (not via a
+# tier button) keeps whatever age tier it last had — typing numbers that
+# happen not to match any tier doesn't erase "which tier this account is
+# nominally at" for cooldown purposes, it only changes what its NORMAL
+# (non-cooldown) rate limits are.
+_ACCOUNT_AGE_TIER_KEY = "account_age_tier"
+DEFAULT_ACCOUNT_AGE_TIER = "under_1_month"
+
+
+def get_account_age_tier(account_id: str) -> str:
+    """Always a valid human_bot/config.py ACCOUNT_AGE_TIERS key — falls
+    back to DEFAULT_ACCOUNT_AGE_TIER (the safest/lowest tier, per owner
+    decision 2026-09-15) for an account that's never had one explicitly
+    set, or if the stored value is somehow no longer a real tier key
+    (e.g. ACCOUNT_AGE_TIERS itself changed since it was saved)."""
+    data = _read_all()
+    raw = data.get(_ACCOUNT_AGE_TIER_KEY, {})
+    if not isinstance(raw, dict):
+        return DEFAULT_ACCOUNT_AGE_TIER
+    tier = raw.get(account_id)
+    return tier if tier in ACCOUNT_AGE_TIERS else DEFAULT_ACCOUNT_AGE_TIER
+
+
+def set_account_age_tier(account_id: str, tier_key: str) -> None:
+    if tier_key not in ACCOUNT_AGE_TIERS:
+        return
+    data = _read_all()
+    raw = data.get(_ACCOUNT_AGE_TIER_KEY, {})
+    if not isinstance(raw, dict):
+        raw = {}
+    raw[account_id] = tier_key
+    data[_ACCOUNT_AGE_TIER_KEY] = raw
+    RUNTIME_CONFIG_PATH.write_text(
+        json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8"
+    )
+
+
+def clear_account_age_tier(account_id: str) -> None:
+    """Used by /admin/accounts' "Xoá" (accounts_delete()) — same "leave
+    nothing for a future re-registration to silently inherit" reasoning
+    as clear_resume_cooldown()/save_rate_limits_overrides(account_id, {})
+    right there."""
+    data = _read_all()
+    raw = data.get(_ACCOUNT_AGE_TIER_KEY, {})
+    if not isinstance(raw, dict) or account_id not in raw:
+        return
+    raw.pop(account_id, None)
+    data[_ACCOUNT_AGE_TIER_KEY] = raw
+    RUNTIME_CONFIG_PATH.write_text(
+        json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8"
+    )
+
+
 # --- Per-account rate limit overrides ---------------------------------------
 #
 # human_bot/config.py's AccountConfig.rate_limits (a RateLimits dataclass:
@@ -744,12 +810,11 @@ EDITABLE_RATE_LIMITS_FIELDS: list[str] = [
 
 
 def get_rate_limits_overrides(account_id: str) -> dict[str, Any]:
-    # Read-time expiry check (same "check and persist-back on read" pattern
-    # as get_joined_groups()'s GroupRef.id migration above) — this is the
-    # one call site human_bot/config.py's get_all_accounts() always goes
-    # through per account, so it's the natural choke point for "has this
-    # account's post-resume cooldown ended?" without a separate poller.
-    _expire_resume_cooldown_if_due(account_id)
+    # No cooldown-expiry check here anymore (2026-09-15 rewrite) — a
+    # post-resume cooldown no longer ever reads or writes this section at
+    # all (see the "Post-resume cooldown" block below for why); it's
+    # purely the admin's own manually-set override, untouched by
+    # anything cooldown-related in either direction.
     data = _read_all()
     raw = data.get(_RATE_LIMITS_KEY, {})
     if not isinstance(raw, dict):
@@ -781,111 +846,187 @@ def save_rate_limits_overrides(account_id: str, values: dict[str, Any]) -> None:
 
 # --- Post-resume cooldown (reduced rate limits right after "Kích hoạt lại") -
 #
-# See human_bot/safety_cooldown_config.py for the "why". resume_account()
-# (above) is the only writer; get_rate_limits_overrides() (above) is the
-# only reader that matters, since human_bot/config.py's get_all_accounts()
-# always goes through it. Not itself an EDITABLE_*_FIELDS-style admin
-# section — this key just records state, the *policy* (cooldown_days, the
-# reduced numbers) lives in SafetyCooldownConfig / "safety_cooldown"
-# instead.
-
+# See human_bot/safety_cooldown_config.py for the "why" and the 2-week
+# floor/step-up shape. human_bot/config.py's get_all_accounts() is the
+# only reader that matters — it calls get_active_cooldown_rate_limits()
+# below and layers the result OVER get_rate_limits_overrides(), last, so
+# human_bot/safety.py's RateLimiter (which just reads `account.
+# rate_limits`) picks up whichever is currently in effect with no
+# separate call site to remember. Not itself an EDITABLE_*_FIELDS-style
+# admin section — this key just records state (which tier, since when),
+# the *policy* (cooldown_days, the floor numbers) lives in
+# SafetyCooldownConfig / "safety_cooldown" instead, and the step-up
+# mapping lives in human_bot/config.py's COOLDOWN_WEEK2_STEP_UP_TIER.
+#
+# Rewritten 2026-09-15 after a real, confirmed bug: the previous design
+# stored a "prior_overrides" snapshot — whatever get_rate_limits_
+# overrides() returned AT THE MOMENT resume_account() ran — to restore
+# once the cooldown ended. That snapshot is only correct if the account
+# was NOT already mid-cooldown at that exact moment. Sequence that broke
+# it, reproduced live with an isolated runtime_config.json (never the
+# real one): pause → resume (cooldown #1 correctly snapshots the TRUE
+# original limits, e.g. 30/9/35/20) → paused AGAIN before cooldown #1's
+# `until` passed → resume AGAIN — cooldown #2's snapshot reads the
+# CURRENTLY-ACTIVE reduced numbers (1/1/2/2, cooldown #1 hadn't expired
+# yet), overwriting the true original forever; every later expiry then
+# just restored the account back to 1/1/2/2 in a loop, permanently, even
+# though `resume_cooldown`'s own `until` field kept showing a real,
+# correctly-computed future end date the whole time — a real project
+# account (tu_iizuki) was found stuck exactly like this.
+#
+# Root fix: never snapshot/restore a `rate_limits` value at all anymore.
+# The account's real override is simply never touched during the whole
+# cooldown — get_active_cooldown_rate_limits() computes the floor/step-up
+# numbers fresh every time from (base_tier, started_at, now) and
+# get_all_accounts() only ever layers them OVER the stored override in
+# memory, never writing them INTO it. So a repeat pause/resume mid-
+# cooldown is trivially safe now: it just resets `started_at` to now
+# (see resume_account() below) — there is no snapshot left to corrupt,
+# and once cooldown_days elapses the account's own real override
+# reappears exactly as it always was, with zero special-case "restore"
+# step needed.
 _RESUME_COOLDOWN_KEY = "resume_cooldown"
 
 
-def get_resume_cooldown_info(account_id: str) -> dict[str, Any] | None:
-    """For /admin/accounts to show "🧊 Đang hạ nhiệt tới <ngày>, vì: <lý
-    do>" — None if the account has no active cooldown (never paused, or
-    the cooldown already expired)."""
-    _expire_resume_cooldown_if_due(account_id)
+def _live_cooldown_entry(account_id: str) -> tuple[dict[str, Any], float] | None:
+    """(entry, elapsed_days) for account_id's resume_cooldown record if
+    it's still within SafetyCooldownConfig.cooldown_days of its
+    `started_at` — expires (drops) the record first if that's already
+    passed, or if `started_at` is missing/unparseable (defensive: never
+    get an account stuck in cooldown forever over a malformed
+    timestamp). Returns None in every case where there's nothing live —
+    caller doesn't need to distinguish "never had one" from "just
+    expired".
+
+    Also the single place that checks SafetyCooldownConfig.enabled
+    (2026-09-15 fix — was only checked in get_active_cooldown_rate_
+    limits(), not here, so toggling it off mid-cooldown left
+    get_resume_cooldown_info() still showing a "🧊 Đang hạ nhiệt" banner
+    for an account that was, per the other function, already back to
+    full speed — inconsistent). Disabled means "treat as if there is no
+    active cooldown" for BOTH callers, but deliberately does NOT expire
+    or touch the stored record — a still-valid, merely dormant record
+    picks back up exactly where it was if re-enabled later, rather than
+    losing progress or getting silently deleted while the feature
+    happens to be off."""
+    cfg = get_safety_cooldown_config()
+    if not cfg.enabled:
+        return None
     data = _read_all()
     raw = data.get(_RESUME_COOLDOWN_KEY, {})
     if not isinstance(raw, dict):
         return None
     entry = raw.get(account_id)
-    return entry if isinstance(entry, dict) else None
+    if not isinstance(entry, dict):
+        return None
+    started = None
+    try:
+        started = datetime.fromisoformat(entry.get("started_at", ""))
+    except (TypeError, ValueError):
+        pass
+    if started is not None and started.tzinfo is None:
+        started = started.replace(tzinfo=timezone.utc)
+    elapsed_days = (
+        (datetime.now(timezone.utc) - started).total_seconds() / 86400
+        if started is not None else None
+    )
+    if started is None or elapsed_days >= cfg.cooldown_days:
+        raw.pop(account_id, None)
+        data[_RESUME_COOLDOWN_KEY] = raw
+        RUNTIME_CONFIG_PATH.write_text(
+            json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8"
+        )
+        return None
+    return entry, elapsed_days
+
+
+def get_active_cooldown_rate_limits(account_id: str) -> RateLimits | None:
+    """The floor (week 1, or the whole cooldown for "under_1_month" —
+    see COOLDOWN_WEEK2_STEP_UP_TIER) or step-up (week 2, other tiers)
+    RateLimits currently in effect for account_id's cooldown, or None if
+    it has none / cooldown is disabled / the stored tier is somehow
+    invalid (defensive fallback to "under_1_month", the safest tier,
+    rather than crashing get_all_accounts() over a corrupted value).
+    Computed fresh every call — never reads or writes the account's real
+    rate_limits override (see this section's module comment for why).
+    The enabled check lives in _live_cooldown_entry() (shared with
+    get_resume_cooldown_info()), not duplicated here."""
+    live = _live_cooldown_entry(account_id)
+    if live is None:
+        return None
+    cfg = get_safety_cooldown_config()
+    entry, elapsed_days = live
+    base_tier = entry.get("base_tier")
+    if base_tier not in ACCOUNT_AGE_TIERS:
+        base_tier = DEFAULT_ACCOUNT_AGE_TIER
+    half = cfg.cooldown_days / 2
+    if elapsed_days < half:
+        step_up_tier = None
+    else:
+        step_up_tier = COOLDOWN_WEEK2_STEP_UP_TIER.get(base_tier)
+    if step_up_tier is None:
+        return RateLimits(
+            posts_per_day=cfg.posts_per_day,
+            comments_per_hour=cfg.comments_per_hour,
+            comments_per_day=cfg.comments_per_day,
+            likes_per_hour=cfg.likes_per_hour,
+            post_min_delay_seconds=cfg.min_delay_seconds,
+            post_max_delay_seconds=cfg.max_delay_seconds,
+            comment_min_delay_seconds=cfg.min_delay_seconds,
+            comment_max_delay_seconds=cfg.max_delay_seconds,
+        )
+    _label, preset = ACCOUNT_AGE_TIERS[step_up_tier]
+    return preset
+
+
+def get_resume_cooldown_info(account_id: str) -> dict[str, Any] | None:
+    """For /admin/accounts to show "🧊 Đang hạ nhiệt tới <ngày> (tuần
+    1/2), vì: <lý do>" — None if the account has no active cooldown
+    (never paused, or the cooldown already finished)."""
+    live = _live_cooldown_entry(account_id)
+    if live is None:
+        return None
+    entry, elapsed_days = live
+    cfg = get_safety_cooldown_config()
+    started = datetime.fromisoformat(entry["started_at"])
+    if started.tzinfo is None:
+        started = started.replace(tzinfo=timezone.utc)
+    return {
+        "until": (started + timedelta(days=cfg.cooldown_days)).isoformat(),
+        "week": 1 if elapsed_days < cfg.cooldown_days / 2 else 2,
+        "base_tier": entry.get("base_tier"),
+        "reason": entry.get("reason"),
+        "paused_at": entry.get("paused_at"),
+    }
 
 
 def _start_resume_cooldown(account_id: str, reason: str | None, paused_at: str | None) -> None:
+    """Always (re)starts the cooldown clock at `now`, unconditionally —
+    including when one is ALREADY active for this account (a pause
+    followed by another resume before the first cooldown finished): per
+    owner decision 2026-09-15, that's treated as a brand new cooldown,
+    not a continuation, since it's simplest to reason about and safest
+    (another round of "prove it's behaving normally" can't hurt). Safe
+    to do because `base_tier` always comes from get_account_age_tier() —
+    a stable, separately-set field (see that function's docstring) —
+    never from the account's current (possibly cooldown-reduced) rate
+    limits, which is exactly what made the old design corruptible."""
     cfg = get_safety_cooldown_config()
     if not cfg.enabled:
         return
-    # Capture whatever rate-limit override (if any) was in effect BEFORE
-    # we overwrite it with the reduced cooldown numbers below, so
-    # _expire_resume_cooldown_if_due() can put it back exactly as it was
-    # once the cooldown period ends.
-    prior_overrides = get_rate_limits_overrides(account_id)
-
     data = _read_all()
     raw = data.get(_RESUME_COOLDOWN_KEY, {})
     if not isinstance(raw, dict):
         raw = {}
-    now = datetime.now(timezone.utc)
     raw[account_id] = {
-        "until": (now + timedelta(days=cfg.cooldown_days)).isoformat(),
-        "prior_overrides": prior_overrides or None,
+        "base_tier": get_account_age_tier(account_id),
+        "started_at": datetime.now(timezone.utc).isoformat(),
         "reason": reason,
         "paused_at": paused_at,
-        "resumed_at": now.isoformat(),
     }
     data[_RESUME_COOLDOWN_KEY] = raw
     RUNTIME_CONFIG_PATH.write_text(
         json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8"
-    )
-
-    # SafetyCooldownConfig keeps its own single min/max_delay_seconds pair
-    # (not split into post_*/comment_* like RateLimits — cooldown is
-    # deliberately more conservative than either already, so applying the
-    # same one gap to both action types during cooldown stays safe).
-    save_rate_limits_overrides(account_id, {
-        "posts_per_day": cfg.posts_per_day,
-        "comments_per_hour": cfg.comments_per_hour,
-        "comments_per_day": cfg.comments_per_day,
-        "likes_per_hour": cfg.likes_per_hour,
-        "post_min_delay_seconds": cfg.min_delay_seconds,
-        "post_max_delay_seconds": cfg.max_delay_seconds,
-        "comment_min_delay_seconds": cfg.min_delay_seconds,
-        "comment_max_delay_seconds": cfg.max_delay_seconds,
-    })
-
-
-def _expire_resume_cooldown_if_due(account_id: str) -> None:
-    data = _read_all()
-    raw = data.get(_RESUME_COOLDOWN_KEY, {})
-    if not isinstance(raw, dict):
-        return
-    entry = raw.get(account_id)
-    if not isinstance(entry, dict):
-        return
-    until = entry.get("until")
-    try:
-        expired = bool(until) and datetime.fromisoformat(until) <= datetime.now(timezone.utc)
-    except ValueError:
-        expired = True  # malformed timestamp — don't get stuck in cooldown forever
-    if not expired:
-        return
-
-    raw.pop(account_id, None)
-    data[_RESUME_COOLDOWN_KEY] = raw
-    RUNTIME_CONFIG_PATH.write_text(
-        json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8"
-    )
-
-    # Restore whatever rate-limit override existed right before the
-    # cooldown started (possibly none, i.e. back to the code-level
-    # default) — NOT a call to get_rate_limits_overrides() here, that
-    # would immediately re-trigger this same expiry check.
-    prior = entry.get("prior_overrides") or {}
-    rl_data = _read_all()
-    rl_raw = rl_data.get(_RATE_LIMITS_KEY, {})
-    if not isinstance(rl_raw, dict):
-        rl_raw = {}
-    if prior:
-        rl_raw[account_id] = {k: v for k, v in prior.items() if k in EDITABLE_RATE_LIMITS_FIELDS}
-    else:
-        rl_raw.pop(account_id, None)
-    rl_data[_RATE_LIMITS_KEY] = rl_raw
-    RUNTIME_CONFIG_PATH.write_text(
-        json.dumps(rl_data, indent=2, ensure_ascii=False), encoding="utf-8"
     )
 
 
@@ -929,19 +1070,32 @@ def set_account_sync_enabled(account_id: str, enabled: bool) -> None:
     notify_config_changed()
 
 
+def get_all_active_cooldown_account_ids() -> list[str]:
+    """Every account_id with a resume_cooldown record on disk right now
+    — used only by human_bot/service.py's daily maintenance loop to know
+    whether there's any work to do at all (see that loop's docstring),
+    and which accounts to nudge via get_active_cooldown_rate_limits()
+    (which does the real, lazy expiry check). Does NOT itself check
+    whether each entry is still live vs already past cooldown_days —
+    intentionally cheap, just a raw key listing."""
+    data = _read_all()
+    raw = data.get(_RESUME_COOLDOWN_KEY, {})
+    return list(raw.keys()) if isinstance(raw, dict) else []
+
+
 def clear_resume_cooldown(account_id: str) -> None:
-    """Drops account_id's resume_cooldown record outright — NO restore of
-    prior_overrides (unlike the normal expiry path in
-    _expire_resume_cooldown_if_due() above). Used by /admin/accounts'
-    "Xoá" (human_bot/admin.py's accounts_delete()): without this, a
-    cooldown still running at delete time would keep sitting in
-    runtime_config.json, and whenever its `until` naturally passed later
-    — even after the account_id was registered again with a fresh
-    rate-limit override (e.g. a different age tier) — the ordinary expiry
-    path would silently overwrite that fresh override with whatever
-    prior_overrides had been captured back before the account was ever
-    deleted. Deletion should leave nothing that can reach back and mutate
-    a future re-registration's config."""
+    """Drops account_id's resume_cooldown record outright. Used by
+    /admin/accounts' "Xoá" (human_bot/admin.py's accounts_delete()):
+    without this, a cooldown still running at delete time would keep
+    sitting in runtime_config.json and could confuse a later
+    re-registration of the same account_id (e.g. get_resume_cooldown_info()
+    showing a stale "đang hạ nhiệt" banner for an account that, as far as
+    the fresh registration is concerned, was never paused). Since 2026-09-15
+    this section no longer reads or writes rate_limits at all (see this
+    module's "Post-resume cooldown" comment), so — unlike before that
+    rewrite — dropping this record can no longer reach back and corrupt a
+    future re-registration's rate limits; this is purely about not
+    showing a stale cooldown banner."""
     data = _read_all()
     raw = data.get(_RESUME_COOLDOWN_KEY, {})
     if not isinstance(raw, dict) or account_id not in raw:
