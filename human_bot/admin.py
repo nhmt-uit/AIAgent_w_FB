@@ -3682,6 +3682,9 @@ def _attrs_summary_html(title, attrs: dict) -> str:
     return " &nbsp;·&nbsp; ".join(parts) if parts else '<span class="muted">—</span>'
 
 
+_RESCHEDULE_SEARCH_DAYS = 30
+
+
 def _suggest_reschedule_at(account, action: str) -> datetime:
     """The "🔄 Lên lịch lại" suggestion (owner request 2026-09-12): the
     earliest time this account could actually post/comment `action` again
@@ -3702,15 +3705,33 @@ def _suggest_reschedule_at(account, action: str) -> datetime:
       1. Cap check — a business day's effective usage is REAL count
          (daily_limits.count_since_business_day_start(), today only) +
          however many pending tasks already land in that same business-
-         day window; walk forward a day at a time (same bounded-iteration
-         shape as data_sync.py's _next_available_business_day()) until a
-         day has room.
+         day window.
       2. Gap check — same "kẹp sàn" as before via
          RateLimiter.next_allowed_at() (last REAL action), but also
          floored against the LATEST pending task's own scheduled_at +
          this account's min_delay_seconds for this bucket — otherwise 2
          reschedules in a row could still land back-to-back with no gap
          at all between them.
+
+    These 3 checks (gap floor, quiet hours, day cap) are applied in a
+    CONVERGING LOOP, not a single pass — owner-reported bug 2026-09-14:
+    a single pass (floor → quiet hours → done) let the gap floor push
+    the candidate BACK INTO quiet hours with nothing to catch it, and
+    let it land on a day whose capacity was never re-checked (the
+    day-cap loop only ran ONCE, before the floors were ever applied).
+    Looping until nothing moves anymore means each fix-up gets
+    re-validated against the other two.
+
+    Search depth: business days start at 2 AM JST, exactly the start of
+    the default quiet-hours window — so pushing to a fully-capped day's
+    start (cap check) never itself ends the loop; the NEXT iteration
+    still has to quiet-hours-clamp that 2 AM landing forward before the
+    cap can be usefully re-checked. Skipping one fully-capped day this
+    way costs 2 iterations (one to push to the next day, one to clamp
+    it out of quiet hours — which may itself push straight past ANOTHER
+    full day, so it's not always exactly 2, but never fewer), not 1 —
+    see `_RESCHEDULE_SEARCH_DAYS` below.
+
     Only a SUGGESTION — reports_reschedule_confirm() still re-checks
     everything for real via schedule_store's normal fire-time path, this
     is just what the admin sees before clicking "Xác nhận"."""
@@ -3751,19 +3772,6 @@ def _suggest_reschedule_at(account, action: str) -> datetime:
         return sum(1 for t in pending_times if day_start <= t < day_end)
 
     today_start = daily_limits.business_day_start(now)
-    candidate_day_start = today_start
-    for _ in range(60):  # same bound as data_sync.py's own day-rollover loop
-        real_used = (
-            daily_limits.count_since_business_day_start(account, bucket)
-            if bucket and candidate_day_start == today_start else 0
-        )
-        used = real_used + _pending_count_on(candidate_day_start)
-        if cap is None or used < cap:
-            break
-        candidate_day_start = candidate_day_start + timedelta(days=1)
-
-    candidate = now if candidate_day_start == today_start else candidate_day_start
-    candidate = apply_quiet_hours(candidate, get_data_sync_config())
 
     floors = []
     if bucket:
@@ -3774,8 +3782,38 @@ def _suggest_reschedule_at(account, action: str) -> datetime:
             floors.append(real_floor)
     if pending_times:
         floors.append(pending_times[-1] + timedelta(seconds=gap_seconds))
-    if floors:
-        candidate = max(candidate, *floors)
+
+    cfg = get_data_sync_config()
+    candidate = now
+    # 30 real days of search depth (project owner's call 2026-09-15 —
+    # 30 consecutive fully-capped business days is already a config
+    # problem worth surfacing, not something to keep searching past),
+    # at up to 3 iterations/day per this function's own docstring above.
+    for _ in range(_RESCHEDULE_SEARCH_DAYS * 3):
+        moved = False
+
+        if floors:
+            raised = max(candidate, *floors)
+            if raised != candidate:
+                candidate, moved = raised, True
+
+        clamped = apply_quiet_hours(candidate, cfg)
+        if clamped != candidate:
+            candidate, moved = clamped, True
+
+        if cap is not None:
+            day_start = daily_limits.business_day_start(candidate)
+            real_used = (
+                daily_limits.count_since_business_day_start(account, bucket)
+                if bucket and day_start == today_start else 0
+            )
+            used = real_used + _pending_count_on(day_start)
+            if used >= cap:
+                candidate = day_start + timedelta(days=1)
+                moved = True
+
+        if not moved:
+            break
     return candidate
 
 

@@ -8,52 +8,40 @@ from pathlib import Path
 import pytest
 
 import human_bot.schedule_store as schedule_store
-from human_bot.config import RateLimits
+from human_bot.config import GroupRef, RateLimits
 from human_bot.data_sync import (
     _count_scheduled_actions_by_day,
+    _has_room_for_drifted_group,
+    _last_scheduled_post_time,
     _next_available_business_day,
-    _next_available_post_slot,
+    _pick_groups_for_job,
+    apply_quiet_hours,
     sweep_overdue_on_startup,
 )
 from human_bot.data_sync_config import DataSyncConfig
 from human_bot.safety import RateLimiter
 
 
-# --- _next_available_post_slot (quiet hours + per-group gap only, no capacity) ---
+# --- apply_quiet_hours (per-group timing rule REMOVED 2026-09-15 — owner
+# clarified there was never meant to be one, only the account-wide
+# post_min/max_delay_seconds gap; _next_available_post_slot() — which
+# used to wrap this PLUS a per-group min-gap check — is gone entirely, its
+# quiet-hours-only behavior is exercised directly here instead) ----------
 
-def test_next_available_post_slot_pushes_out_of_quiet_hours():
+def test_apply_quiet_hours_pushes_out_of_the_window():
     cfg = DataSyncConfig()
-    # 03:00 UTC == 12:00 JST — well outside quiet hours (2-6 AM JST
-    # default), so this exact case doesn't clamp; use a real quiet-hours
-    # UTC time instead: 18:30 UTC == 03:30 JST next day, inside 2-6 AM.
+    # 18:30 UTC == 03:30 JST next day, inside the default 2-6 AM window.
     dt = datetime(2026, 9, 10, 18, 30, tzinfo=timezone.utc)
-    result = _next_available_post_slot(dt, cfg, "https://group.a", {})
+    result = apply_quiet_hours(dt, cfg)
     jst_hour = (result + timedelta(hours=9)).hour
-    assert cfg.quiet_hour_end_local <= jst_hour < cfg.quiet_hour_start_local + 24 or jst_hour >= cfg.quiet_hour_end_local
+    assert not (cfg.quiet_hour_start_local <= jst_hour < cfg.quiet_hour_end_local)
     assert result > dt
 
 
-def test_next_available_post_slot_leaves_active_hours_untouched():
+def test_apply_quiet_hours_leaves_active_hours_untouched():
     cfg = DataSyncConfig()
     dt = datetime(2026, 9, 10, 3, 0, tzinfo=timezone.utc)  # noon JST — active hours
-    result = _next_available_post_slot(dt, cfg, "https://group.a", {})
-    assert result == dt
-
-
-def test_next_available_post_slot_enforces_per_group_min_gap():
-    cfg = DataSyncConfig()
-    dt = datetime(2026, 9, 10, 3, 0, tzinfo=timezone.utc)
-    last_group_post_at = {"https://group.a": dt}
-    result = _next_available_post_slot(dt, cfg, "https://group.a", last_group_post_at)
-    expected_min = dt + timedelta(minutes=cfg.post_gap_min_minutes)
-    assert result >= expected_min
-
-
-def test_next_available_post_slot_different_group_unaffected_by_gap():
-    cfg = DataSyncConfig()
-    dt = datetime(2026, 9, 10, 3, 0, tzinfo=timezone.utc)
-    last_group_post_at = {"https://group.a": dt}
-    result = _next_available_post_slot(dt, cfg, "https://group.b", last_group_post_at)
+    result = apply_quiet_hours(dt, cfg)
     assert result == dt
 
 
@@ -127,7 +115,7 @@ def test_next_available_business_day_gives_up_after_60_days_when_pathological():
 def test_next_available_business_day_rollover_lands_at_2am_jst_boundary():
     """Confirms the rollover jumps to the business-day START (2 AM JST),
     not UTC midnight — the caller then runs this through
-    _next_available_post_slot()'s quiet-hours clamp separately."""
+    apply_quiet_hours() separately."""
     today = date(2026, 9, 11)
     dt = datetime(2026, 9, 11, 3, 0, tzinfo=timezone.utc)
     day_counts = {today: 1}
@@ -137,6 +125,129 @@ def test_next_available_business_day_rollover_lands_at_2am_jst_boundary():
     jst = new_dt + timedelta(hours=9)
     assert jst.hour == 2 and jst.minute == 0
     assert day_key == date(2026, 9, 12)
+
+
+# --- _has_room_for_drifted_group (owner-reported bug 2026-09-14: a late
+# group's per-group min-gap/quiet-hours clamp can push its slot past the
+# `post_day_key` capacity was checked for, onto a day nobody re-verified) --
+
+def test_has_room_for_drifted_group_true_when_day_has_room():
+    today = date(2026, 9, 14)
+    tomorrow = date(2026, 9, 15)
+    day_counts = {tomorrow: 3}
+    assert _has_room_for_drifted_group(
+        scheduled_day_key=tomorrow, post_day_key=today, day_counts=day_counts,
+        daily_limit=5, today_key=today, real_used_today=2,
+    ) is True
+
+
+def test_has_room_for_drifted_group_false_when_day_is_full():
+    """The exact owner-observed scenario: a group drifts from today onto
+    tomorrow, but tomorrow already has 5 queued against a cap of 5 —
+    scheduling a 6th here is exactly the bug that let 9 land on one day."""
+    today = date(2026, 9, 14)
+    tomorrow = date(2026, 9, 15)
+    day_counts = {tomorrow: 5}
+    assert _has_room_for_drifted_group(
+        scheduled_day_key=tomorrow, post_day_key=today, day_counts=day_counts,
+        daily_limit=5, today_key=today, real_used_today=0,
+    ) is False
+
+
+def test_has_room_for_drifted_group_checks_real_used_only_for_todays_key():
+    """If the drifted slot lands back on `today_key` itself (edge case,
+    but the function must not special-case it away), real posts already
+    made today count against the cap same as day_counts does."""
+    today = date(2026, 9, 14)
+    day_counts = {today: 1}
+    assert _has_room_for_drifted_group(
+        scheduled_day_key=today, post_day_key=date(2026, 9, 13), day_counts=day_counts,
+        daily_limit=5, today_key=today, real_used_today=5,
+    ) is False
+
+
+def test_has_room_for_drifted_group_future_day_ignores_real_used_today():
+    today = date(2026, 9, 14)
+    future = date(2026, 9, 20)
+    day_counts = {}
+    # real_used_today is huge, but it must only apply to `today_key`, not
+    # to some unrelated future business day that hasn't happened yet.
+    assert _has_room_for_drifted_group(
+        scheduled_day_key=future, post_day_key=today, day_counts=day_counts,
+        daily_limit=5, today_key=today, real_used_today=100,
+    ) is True
+
+
+# --- _pick_groups_for_job (fair round-robin + light random pick, 2026-09-15) -
+
+def _groups(*urls: str) -> list[GroupRef]:
+    return [GroupRef(name=u, url=u) for u in urls]
+
+
+def test_pick_groups_for_job_never_starves_the_longest_overdue_group():
+    """The group with NO last-post-time at all (never posted to) must
+    always end up in the candidate pool — across many trials, it must
+    actually get picked at least once (not silently starved by the
+    random step)."""
+    groups = _groups("a", "b", "c", "d", "e")
+    last_group_post_at = {
+        "b": datetime(2026, 9, 10, tzinfo=timezone.utc),
+        "c": datetime(2026, 9, 11, tzinfo=timezone.utc),
+        "d": datetime(2026, 9, 12, tzinfo=timezone.utc),
+        "e": datetime(2026, 9, 13, tzinfo=timezone.utc),
+        # "a" never posted to — sorts first via datetime.min.
+    }
+    picked_ever = set()
+    for _ in range(50):
+        picked = _pick_groups_for_job(groups, last_group_post_at, needed=1)
+        picked_ever.update(g.url for g in picked)
+    assert "a" in picked_ever
+
+
+def test_pick_groups_for_job_returns_fewer_when_not_enough_groups():
+    groups = _groups("a", "b")
+    result = _pick_groups_for_job(groups, {}, needed=5)
+    assert len(result) == 2
+    assert {g.url for g in result} == {"a", "b"}
+
+
+def test_pick_groups_for_job_returns_needed_count_when_enough_groups():
+    groups = _groups("a", "b", "c", "d", "e", "f", "g", "h")
+    last_group_post_at = {u: datetime(2026, 9, 10, tzinfo=timezone.utc) for u in "bcdefgh"}
+    result = _pick_groups_for_job(groups, last_group_post_at, needed=3)
+    assert len(result) == 3
+    assert len(set(g.url for g in result)) == 3  # no duplicates
+
+
+def test_pick_groups_for_job_never_picks_a_group_far_outside_the_pool():
+    """Owner request 2026-09-15: some variety is fine, but a group that
+    was posted to VERY recently (deep in the "already handled" set, far
+    from the pool boundary) must never win over the genuinely overdue
+    ones — the pool is only `needed + slack` wide, not the whole list."""
+    groups = _groups(*[f"g{i}" for i in range(10)])
+    # g0 is the ONLY overdue one; g1..g9 are all freshly posted, g9 most
+    # recently of all.
+    last_group_post_at = {
+        f"g{i}": datetime(2026, 9, 10, tzinfo=timezone.utc) + timedelta(hours=i)
+        for i in range(1, 10)
+    }
+    for _ in range(30):
+        picked = {g.url for g in _pick_groups_for_job(groups, last_group_post_at, needed=1)}
+        # With needed=1 and a small pool slack, the freshest groups
+        # (g7, g8, g9) should never be picked — only ones within the
+        # pool window starting from the most overdue (g0).
+        assert not picked & {"g8", "g9"}
+
+
+def test_pick_groups_for_job_varies_across_calls_not_always_identical():
+    """The exact reason this was added — owner: strict oldest-first
+    selection picked the identical cluster every time. Confirm repeated
+    calls (same input state) don't ALWAYS return the same set when the
+    pool is wider than what's needed."""
+    groups = _groups(*[f"g{i}" for i in range(6)])
+    last_group_post_at = {}  # all tied at datetime.min — pool = all 6
+    results = {tuple(sorted(g.url for g in _pick_groups_for_job(groups, last_group_post_at, needed=2))) for _ in range(30)}
+    assert len(results) > 1
 
 
 # --- _count_scheduled_actions_by_day (business-day keyed, not raw UTC date) ---
@@ -260,15 +371,93 @@ def isolated_schedule_dirs(tmp_path, monkeypatch):
     return schedule_store
 
 
-def _add_task(store, when, content="x"):
+def _add_task(store, when, content="x", action="post_to_group", account_id="acc-a"):
     task = store.ScheduledTask(
         task_id=store.new_task_id(when.isoformat()),
-        action="post_to_group", account_id="acc-a",
+        action=action, account_id=account_id,
         scheduled_at=when.isoformat(), content=content,
         target_url="https://facebook.com/groups/1",
     )
     store.add(task)
     return task
+
+
+# --- _last_scheduled_post_time (owner-reported 2026-09-15: posts landing
+# only 30 min apart across separate sync_all() polls, despite a 120-210
+# min account gap — mirrors _last_scheduled_comment_time, added 2026-09-10
+# for the identical comment-side bug but never ported to posts) ---------
+
+def test_last_scheduled_post_time_none_when_nothing_scheduled(isolated_schedule_dirs):
+    assert _last_scheduled_post_time("acc-a") is None
+
+
+def test_last_scheduled_post_time_returns_the_latest(isolated_schedule_dirs):
+    now = datetime.now(timezone.utc)
+    _add_task(isolated_schedule_dirs, now)
+    latest = _add_task(isolated_schedule_dirs, now + timedelta(hours=3))
+    _add_task(isolated_schedule_dirs, now + timedelta(hours=1))
+    result = _last_scheduled_post_time("acc-a")
+    assert result == datetime.fromisoformat(latest.scheduled_at)
+
+
+def test_last_scheduled_post_time_includes_own_profile_posts(isolated_schedule_dirs):
+    """RateLimiter's "post" bucket covers BOTH post_to_group and
+    post_to_own_profile — the floor must see either."""
+    now = datetime.now(timezone.utc)
+    profile_task = _add_task(isolated_schedule_dirs, now, action="post_to_own_profile")
+    result = _last_scheduled_post_time("acc-a")
+    assert result == datetime.fromisoformat(profile_task.scheduled_at)
+
+
+def test_last_scheduled_post_time_ignores_other_accounts_and_actions(isolated_schedule_dirs):
+    now = datetime.now(timezone.utc)
+    _add_task(isolated_schedule_dirs, now + timedelta(hours=5), account_id="acc-b")
+    _add_task(isolated_schedule_dirs, now + timedelta(hours=5), action="comment_on_group_post")
+    assert _last_scheduled_post_time("acc-a") is None
+
+
+def test_last_scheduled_post_time_counts_already_posted_too(isolated_schedule_dirs):
+    now = datetime.now(timezone.utc)
+    task = _add_task(isolated_schedule_dirs, now)
+    isolated_schedule_dirs.mark_posted(task.task_id, "ok")
+    assert isolated_schedule_dirs.list_pending() == []  # confirms it moved out of pending/
+
+
+# --- _parse_scheduled_at (2026-09-15): every "last scheduled" lookup goes
+# through this instead of a bare datetime.fromisoformat(), since not every
+# writer of scheduled_at is guaranteed to produce a tz-aware string (see
+# its own docstring) — a naive vs. aware mismatch raises TypeError on
+# comparison, which used to be reachable here. -----------------------------
+
+def test_parse_scheduled_at_normalizes_a_naive_string_to_utc():
+    from human_bot.data_sync import _parse_scheduled_at
+    parsed = _parse_scheduled_at("2026-09-15T11:00:00")
+    assert parsed.tzinfo is not None
+    assert parsed == datetime(2026, 9, 15, 11, 0, 0, tzinfo=timezone.utc)
+
+
+def test_parse_scheduled_at_returns_none_for_garbage():
+    from human_bot.data_sync import _parse_scheduled_at
+    assert _parse_scheduled_at("not-a-date") is None
+
+
+def test_last_scheduled_post_time_does_not_crash_on_a_naive_scheduled_at(isolated_schedule_dirs):
+    """A task whose scheduled_at was written without a timezone offset
+    (e.g. via /admin/schedule/update or .../missed/reschedule, which pass
+    the raw form value straight through with no normalization) must not
+    crash the comparison against an aware sibling task's time."""
+    now = datetime.now(timezone.utc)
+    aware_task = _add_task(isolated_schedule_dirs, now)
+    naive_when = (now + timedelta(hours=2)).replace(tzinfo=None)
+    naive_task = isolated_schedule_dirs.ScheduledTask(
+        task_id=isolated_schedule_dirs.new_task_id(naive_when.isoformat()),
+        action="post_to_group", account_id="acc-a",
+        scheduled_at=naive_when.isoformat(),
+        content="x", target_url="https://facebook.com/groups/1",
+    )
+    isolated_schedule_dirs.add(naive_task)
+    result = _last_scheduled_post_time("acc-a")
+    assert result == datetime.fromisoformat(naive_task.scheduled_at).replace(tzinfo=timezone.utc)
 
 
 def test_sweep_overdue_on_startup_moves_only_past_tasks(isolated_schedule_dirs):

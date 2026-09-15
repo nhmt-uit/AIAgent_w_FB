@@ -2221,3 +2221,216 @@
         thư mục tạm — xác nhận trang 1 hiện đúng 20, trang 2 hiện đúng
         5 còn lại, khối phân trang hiện "/ 2"; tab "Task đã lên lịch"
         không bị ảnh hưởng. Toàn bộ suite: 136 passed (không đổi).
+
+## Bug thật: vượt `posts_per_day` do nhóm bị "trôi" sang ngày khác giữa job (2026-09-14)
+
+- [x] Owner hỏi vì sao 1 lần sync lấy 132 job nhưng chỉ lên lịch được 1
+      bài — tra `_sync_status.json` xác nhận đúng (132 fetched, 1
+      scheduled). Nguyên nhân lần đó: capacity ngày hôm đó gần hết (đã
+      có 4/5 slot dùng từ các job trước), `job_capacities` chỉ còn 1 →
+      water-fill chỉ chia đúng 1 job, 131 job còn lại KHÔNG mất — quay
+      lại `deferred_jobs`, giữ cursor bên B để lần sync sau lấy lại.
+      Đây là hành vi ĐÚNG, không phải bug.
+      **Nhưng khi tra sâu hơn để xác nhận cơ chế tràn-ngày còn hoạt
+      động, phát hiện 1 bug thật riêng biệt**: ngày nghiệp vụ 15/9 có
+      tới **9 bài đã lên lịch** dù `posts_per_day = 5` — vượt hạn mức
+      thật sự (xác nhận bằng dữ liệu thật trong `schedule_store`, toàn
+      bộ 9 dòng đều `reasoning: "auto: ..."` — KHÔNG liên quan gì tới
+      tính năng "Đăng lại"/"Lên lịch lại" của admin vừa làm, loại trừ
+      hẳn nghi ngờ ban đầu của owner).
+      **Nguyên nhân gốc**: `_next_available_business_day()` chỉ kiểm
+      tra "còn chỗ không" **ĐÚNG 1 LẦN cho cả job** (tính ra
+      `post_day_key` + `available`, dùng để giới hạn CHỌN bao nhiêu
+      nhóm cho job đó) — nhưng giờ đăng THẬT của từng nhóm lại tính
+      SAU đó, riêng lẻ, qua `_next_available_post_slot()`. Hàm này áp
+      thêm khoảng cách tối thiểu RIÊNG cho từng nhóm (VD 120 phút nếu
+      nhóm đó vừa đăng gần đây) — có thể đẩy nhóm cuối của job **qua
+      khỏi mốc 2h sáng JST**, tức sang MỘT NGÀY NGHIỆP VỤ KHÁC với
+      `post_day_key` đã chốt — mà không ai kiểm tra lại ngày đó còn
+      chỗ hay không, cứ thế cộng dồn `day_post_counts` bất kể ngày đó
+      đã đầy chưa. Tích luỹ qua nhiều lần sync (mỗi ~15-20 phút) →
+      vượt hạn mức ngày đó.
+      **Hướng sửa (thảo luận kỹ với owner trước khi làm, xác nhận
+      từng bước qua ví dụ số cụ thể)**: kiểm tra lại hạn mức ngay khi
+      phát hiện 1 nhóm bị "trôi" sang ngày khác — nếu ngày đó cũng hết
+      chỗ, DỪNG job tại đó (không đăng nhóm này và các nhóm còn lại),
+      coi job đã xử lý xong VỚI SỐ NHÓM ĐÃ ĐĂNG ĐƯỢC (tái dùng đúng
+      nguyên tắc "đăng vừa đủ" đã có). **Owner tự phát hiện thêm 1 lỗ
+      hổng trong hướng sửa ban đầu**: nếu NHÓM ĐẦU TIÊN của job đã
+      dính (0 nhóm nào đăng được), code cũ vẫn gọi `_mark_seen()` vô
+      điều kiện sau vòng lặp → job bị đánh dấu "đã xong" dù chưa đăng
+      gì cả, mất vĩnh viễn — đúng loại lỗi đã từng sửa cho tài khoản 0
+      nhóm. Sửa lại: đếm số nhóm THẬT SỰ đăng được trong job
+      (`groups_posted_this_job`) — ≥1 nhóm mới `_mark_seen()`, 0 nhóm
+      thì đưa vào `deferred_jobs_inner` để thử lại lần sync sau.
+      - `human_bot/data_sync.py`: hàm mới `_has_room_for_drifted_group()`
+        (tách riêng, theo đúng kiểu các hàm logic thuần đã tách sẵn
+        như `_next_available_business_day()` — để viết test cô lập
+        được) — kiểm tra 1 ngày nghiệp vụ còn chỗ hay không, dùng
+        trong vòng lặp đăng từng nhóm của `sync_all()`: nhóm nào
+        `scheduled_day_key != post_day_key` (đã trôi ngày) mới cần
+        gọi hàm này; nếu hết chỗ thì `break` khỏi vòng lặp nhóm.
+      - Verify: 4 test mới cho `_has_room_for_drifted_group()` — đúng
+        kịch bản owner quan sát được (ngày đã đầy 5/5, nhóm trôi tới
+        → từ chối), ngày còn chỗ → chấp nhận, `real_used_today` chỉ
+        áp dụng đúng `today_key` không áp nhầm sang ngày tương lai
+        khác. `sync_all()` bản thân chưa unit-test được (cần gọi HTTP
+        thật tới bên B, đúng giới hạn test đã ghi nhận từ trước) —
+        verify bằng cách đọc lại đúng luồng code + logic đã tách hàm
+        con để test riêng. Toàn bộ suite: 140 passed (136 cũ + 4
+        mới).
+
+## Bug thật: `_suggest_reschedule_at()` áp giờ yên tĩnh trước, không tái kiểm tra sau (2026-09-14)
+
+- [x] Owner hỏi vì sao ngày nghiệp vụ 15/9 đang bị xếp nhiều hơn 5
+      comment và 5 post (câu hỏi này khác câu hỏi "132 job chỉ lên
+      lịch 1 bài" ở mục trên — dẫn tới 1 bug khác). Tra dữ liệu thật:
+      số lượng comment thực tế vẫn đúng (4 < cap 7), nhưng phát hiện
+      `_suggest_reschedule_at()` (hàm gợi ý giờ cho "🔄 Lên lịch lại")
+      áp giờ yên tĩnh **TRƯỚC** khi cộng "sàn" khoảng cách tối thiểu
+      (gap floor) — nếu sàn đẩy giờ gợi ý lùi lại rơi ĐÚNG vào khung
+      giờ yên tĩnh, không có bước nào tái kiểm tra lại; tương tự,
+      phép kiểm tra "ngày có đầy không" chỉ chạy ĐÚNG 1 LẦN trước khi
+      áp sàn, nên sàn có thể đẩy gợi ý sang đúng 1 ngày đã đầy sẵn mà
+      không ai biết.
+- [x] Sửa bằng cách viết lại thành **vòng lặp hội tụ**: áp sàn → áp
+      giờ yên tĩnh → kiểm tra lại hạn mức ngày, lặp lại tới khi không
+      còn gì thay đổi (giới hạn 60 lần lặp). Thêm file test mới
+      `tests/test_admin.py` (test đầu tiên cho `admin.py`) — 4 test:
+      tái hiện đúng cả 2 kịch bản bug (sàn đẩy vào giờ yên tĩnh, sàn
+      đẩy sang ngày đã đầy), hồi quy cho bug gợi ý trùng giờ gốc
+      (2026-09-12), và 1 test sanity không có lịch sử.
+
+## Owner làm rõ luật đăng vào nhóm bằng văn bản + rà soát code khớp/lệch (2026-09-15)
+
+- [x] Owner phát biểu rõ ràng bằng văn bản toàn bộ ràng buộc mong
+      muốn cho việc đăng bài vào nhóm: (1) tổng số bài đăng vào n
+      nhóm ≤ `posts_per_day`; (2) khoảng cách giữa 2 lần đăng vào BẤT
+      KỲ nhóm nào chỉ cần tuân `post_min/max_delay_seconds` (không có
+      luật riêng cho từng nhóm); (3) cần cơ chế chia đều nhóm được
+      chọn cho 1 tài khoản qua nhiều bài (không cố định cụm 1,2,3 rồi
+      4,5,6..., nhưng cũng không cần random thật sự — chỉ cần tránh
+      nhóm được đăng quá nhiều trong khi nhóm khác không được đăng
+      lần nào).
+- [x] Đối chiếu với code thật, báo lại owner: **THIẾU** — chưa có
+      chút ngẫu nhiên nào trong việc chọn nhóm (thuần sắp xếp
+      cũ-nhất-trước, luôn ra đúng 1 tổ hợp cố định); **KHÁC** — code
+      đang có thêm 1 luật riêng cho từng nhóm
+      (`_next_available_post_slot()`) mà owner chưa từng yêu cầu, và
+      luật đó còn đang dùng NHẦM giá trị cấu hình
+      (`cfg.post_gap_min_minutes` — khoảng cách chung 20 phút mặc
+      định — thay vì `post_min_delay_seconds` thật của tài khoản).
+      Owner xác nhận: bỏ hẳn luật riêng từng nhóm, và làm cơ chế chọn
+      nhóm "không cố định cụm nhưng không cần random thật sự".
+- [x] **Xoá hẳn `_next_available_post_slot()`** (`human_bot/
+      data_sync.py`) — chỗ gọi duy nhất đổi thành gọi thẳng
+      `apply_quiet_hours()`. **Thêm `_pick_groups_for_job()`** — sắp
+      xếp nhóm theo cũ-nhất-trước (đảm bảo không nhóm nào bị bỏ đói),
+      lấy 1 pool rộng hơn số cần chọn (`_GROUP_SELECTION_POOL_SLACK =
+      2`), rồi `random.sample()` trong pool đó — vừa đảm bảo công
+      bằng (nhóm lâu nhất chưa đăng luôn nằm trong pool) vừa tránh
+      lặp lại đúng y hệt tổ hợp mỗi lần. 5 test mới: không bao giờ bỏ
+      đói nhóm lâu nhất (50 lần thử), trả về ít hơn khi không đủ
+      nhóm, không trùng lặp, không bao giờ chọn ra ngoài pool, kết
+      quả thay đổi qua nhiều lần gọi (30 lần thử) — không cố định.
+
+## Bug thật: thiếu "sàn" cho `next_post_time` giữa các lần sync (2026-09-15)
+
+- [x] Trong lúc dọn dữ liệu thật bị xếp lịch sai (do 2 bug ở trên),
+      phát hiện nguyên nhân RIÊNG khiến bài đăng thật vẫn dồn cục dù
+      2 bug trên đã sửa: `next_comment_time` đã có "sàn" chống 2 lần
+      sync độc lập xếp giờ quá gần nhau
+      (`_last_scheduled_comment_time()`, thêm 2026-09-10 cho đúng sự
+      cố tương tự bên comment) — nhưng `next_post_time` **chưa từng
+      có sàn tương đương**. Mỗi lần `sync_all()` chạy đều tính
+      `next_post_time` mới hoàn toàn từ `now`, không biết lần sync
+      TRƯỚC đã xếp gì — 2 lần sync độc lập có thể ra giờ gần nhau
+      thuần do trùng hợp ngẫu nhiên (đúng hiện tượng owner quan sát:
+      các bài chỉ cách nhau ~30 phút dù cấu hình 120-210 phút).
+- [x] Sửa bằng hàm mới `_last_scheduled_post_time()` (rập khuôn y hệt
+      `_last_scheduled_comment_time()`) + `_POST_ACTIONS =
+      {post_to_group, post_to_own_profile}`, nối vào `sync_all()`
+      làm sàn cho `next_post_time` (cùng cách `next_comment_time`
+      đang làm) — cả sàn "lần sync trước đã xếp gì" lẫn sàn
+      `RateLimiter.next_allowed_at("post")` (chặn thật từ lần đăng
+      gần nhất). 5 test mới xác nhận đúng hành vi.
+
+## Dọn dữ liệu thật bị xếp sai do 3 bug trên (2026-09-15)
+
+- [x] Sau khi sửa xong cả 3 bug (trôi ngày, thiếu random chọn nhóm +
+      luật thừa, thiếu sàn `next_post_time`), 13 task `post_to_group`
+      đang `pending` của tài khoản `tu_iizuki` vẫn còn mang dấu vết
+      xếp lịch SAI từ trước khi sửa (ngày 15/9 có 9 bài dù cap 5,
+      giãn cách nhiều chỗ chỉ ~30 phút). Tính lại kế hoạch xếp lịch
+      cho đúng 13 task này theo luật đã sửa (cap 5/ngày, giãn cách
+      120-210 phút, né giờ yên tĩnh), dùng `random.seed(20260915)` cố
+      định để có thể trình bày trước cho owner xem đúng y hệt kết quả
+      sẽ áp dụng — owner duyệt ("Áp dụng"), chạy
+      `schedule_store.update()` cho từng task (chỉ đổi `scheduled_at`,
+      không đụng nội dung/URL/tài khoản). Xác nhận lại trạng thái
+      cuối: 14/9 = 4 (giữ nguyên, đã đúng từ trước), 15/9 = 5 (đủ
+      cap), 16/9 = 5 (đủ cap), 17/9 = 3 (tràn), mọi khoảng cách liên
+      tiếp ≥ 120 phút.
+
+## Rà soát lần 2 (yêu cầu owner "kiểm tra kĩ lưỡng") + sửa 3 lỗi phát hiện được (2026-09-15)
+
+- [x] Owner yêu cầu rà soát kỹ lại toàn bộ việc sửa trong ngày (dùng
+      1 agent review độc lập, tự tay verify lại từng phát hiện trước
+      khi báo owner — không tin thẳng kết quả agent). Phát hiện 5 vấn
+      đề, xếp theo mức nghiêm trọng, đã tự tay verify từng cái bằng
+      script/đọc code trực tiếp trước khi báo:
+      1. **[Đã sửa]** `max_groups_per_post = 0` (giá trị hợp lệ lưu
+         được qua `/admin/accounts` — form chỉ chặn số âm) khiến
+         `_pick_groups_for_job(..., needed=0)` trả về `[]`,
+         `groups_posted_this_job` không bao giờ > 0 → job bị hoãn
+         (defer) mãi mãi thay vì đánh dấu xong — hệ quả trực tiếp của
+         chính bản sửa "chỉ mark_seen khi ≥1 nhóm đăng được" ở trên.
+         Kiểm chứng bằng cách gọi thẳng hàm với `needed=0`, xác nhận
+         trả `[]`. Sửa: thêm chốt kiểm tra `max_groups_per_post <= 0`
+         y hệt cách xử lý `available <= 0` đã có sẵn, hoãn job ngay
+         từ đầu thay vì đi tiếp vào bước chọn nhóm vô ích. **Lưu ý
+         trung thực**: hành vi CUỐI CÙNG không đổi so với code cũ
+         (nhánh else có sẵn đã tự hoãn đúng job) — bản sửa chủ yếu
+         tránh lãng phí tính toán + làm rõ ý định bằng comment.
+      2. **[Chưa sửa, đã giải thích cho owner]** Vòng lặp comment
+         (candidate) chỉ mới có bước "phát hiện ngày đầy → hoãn",
+         CHƯA có bước "tràn sang ngày kế tiếp" như vòng lặp job đã
+         có (`_next_available_business_day()`) — 1 candidate rơi vào
+         ngày đầy sẽ khiến MỌI candidate còn lại trong cùng lượt sync
+         cũng bị hoãn theo (vì `next_comment_time` không được đẩy
+         sang ngày khác), dù ngày sau vẫn còn chỗ. Không mất dữ liệu
+         (đều vào hàng đợi hoãn để thử lại), chỉ bị chậm không cần
+         thiết. Owner xác nhận chưa cần làm ngay.
+      3. **[Đã sửa]** `_last_scheduled_post_time()`/
+         `_last_scheduled_comment_time()`/
+         `_last_scheduled_time_per_group()` không tự chuẩn hoá
+         naive/aware datetime (khác `RateLimiter` floor cạnh đó có
+         làm) — nếu 1 task có `scheduled_at` thiếu múi giờ (lý
+         thuyết: qua `/admin/schedule/update` hoặc `.../missed/
+         reschedule`, 2 route duy nhất đưa thẳng chuỗi form vào
+         `schedule_store` không qua parse) sẽ crash `TypeError` khi
+         so sánh. Tự kiểm chứng: ô nhập giờ trên UI thực chất luôn
+         convert sang ISO có "Z" qua JS (`toISOString()`) trước khi
+         submit, nên đường UI bình thường KHÔNG gặp — chỉ rủi ro nếu
+         JS lỗi/tắt hoặc gọi thẳng API. Sửa: hàm dùng chung
+         `_parse_scheduled_at()`, luôn trả về aware (tự gán UTC nếu
+         thiếu offset), thay cho `datetime.fromisoformat()` trần ở 4
+         chỗ. Thêm 3 test (chuẩn hoá đúng, chuỗi rác trả `None`,
+         không crash khi trộn naive/aware).
+      4. **[Đã sửa]** Sót 2 dòng comment/docstring trong `admin.py`
+         (~dòng 3715, 3776) vẫn nhắc tên hàm
+         `_next_available_post_slot()` đã bị xoá hẳn ở mục trên — chỉ
+         là dọn tài liệu, không ảnh hưởng chức năng.
+      5. **[Đã sửa theo yêu cầu owner]** Vòng lặp hội tụ mới của
+         `_suggest_reschedule_at()` (viết lại 2026-09-14, mục trên)
+         vô tình co hẹp phạm vi tìm ngày trống từ 60 ngày (code cũ)
+         xuống còn ~30 ngày thực — vì mỗi lần "nhảy" sang 1 ngày đã
+         đầy giờ tốn ~2 lần lặp thay vì 1: ngày nghiệp vụ luôn bắt
+         đầu đúng 2h sáng JST, mà giờ yên tĩnh mặc định cũng bắt đầu
+         đúng 2h sáng — nên mỗi lần đẩy sang ngày mới đều cần thêm 1
+         lần lặp riêng chỉ để né giờ yên tĩnh của ngày đó. Owner xác
+         nhận 30 ngày là đủ, không cần tận 60 — đặt tường minh bằng
+         hằng số `_RESCHEDULE_SEARCH_DAYS = 30` (ngân sách lặp `30 ×
+         3`) thay vì để co hẹp ngoài ý muốn.
+      - Toàn bộ suite sau khi sửa cả #1/#3/#4/#5: **155 passed**
+        (152 cũ + 3 mới cho `_parse_scheduled_at()`/naive-aware).
