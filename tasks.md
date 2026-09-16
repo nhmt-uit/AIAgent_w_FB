@@ -2721,3 +2721,74 @@ là comment giải thích lịch sử bug, không phải code thật).
 
 **171 test passed** (170 trước đó + 1 test hồi quy mới cho vụ
 `enabled`).
+
+- [x] **2026-09-15 — Sửa `post_to_group` crash "strict mode violation"
+      trên `get_by_role("paragraph")`** (action_log id 146, task thật
+      lúc 08:41:44 UTC, nhóm "Việc làm Kỹ Sư Nhật Bản (Uy tín hàng
+      đầu)"). Nguyên nhân: locator mở ô soạn bài ở `actions.py` không
+      giới hạn phạm vi trong hộp thoại "Create post" — đúng lúc đó có
+      cửa sổ chat Messenger ("Write to Thanh Loan") đang mở ở góc màn
+      hình, bong bóng tin nhắn trong đó cũng có role "paragraph", nên
+      locator khớp 2 phần tử và Playwright ném lỗi thay vì click liều.
+      Ảnh chụp lỗi (`screenshots/tu_iizuki/20260915T084144039Z_post_to_group_fail.png`)
+      xác nhận nhóm cũng dùng modal "Create post" giống hệt
+      `post_to_own_profile`, chứ không phải composer mở "inline" như
+      comment cũ trong code từng giả định. Sửa: bó toàn bộ các bước của
+      `post_to_group` (paragraph click, textbox, `_attach_media`, nút
+      Post) vào `composer_dialog = page.get_by_role("dialog")`, cùng
+      cách `post_to_own_profile` đã dùng; đồng thời bó luôn bước
+      paragraph-click trong nhánh audience khác "public" của
+      `post_to_own_profile` (chưa từng lỗi thật nhưng cùng dạng locator
+      không giới hạn phạm vi). Chưa có test tự động (các hàm trong
+      `actions.py` cần trình duyệt thật, không unit-test được) — cần
+      xác nhận lại khi `post_to_group` chạy thật lần tới.
+
+- [x] **2026-09-16 — Phát hiện & sửa lỗi thứ 2 cùng nguyên nhân gốc: cửa
+      sổ chat Messenger còn mở đè lên nút "Post comment"** (action_log id
+      151, task thật lúc 10:59 JST / 01:59:12 UTC, comment nhóm
+      "vieclamtimnguoi"). Lỗi trả về `comment_box_still_has_content_after_click`
+      — đúng như owner quan sát: focus/nhập text vào đúng ô, nhưng bấm nút
+      đăng không có tác dụng. Khác với lỗi hôm qua (id 146, trùng role
+      selector gây crash strict-mode), lần này không có exception nào cả:
+      `human_click()` (`humanize.py`) tự tính toạ độ tâm nút "Post
+      comment" rồi bấm chuột thật vào đúng toạ độ đó, KHÔNG kiểm tra phần
+      tử tại toạ độ đó có đang bị thứ khác che hay không (bỏ qua hẳn bước
+      "actionability check" mà `Locator.click()` chuẩn của Playwright vẫn
+      làm). Cửa sổ chat Messenger đang nổi đúng ngay vị trí nút "Post
+      comment" thật, nên click chuột thật rơi trúng cửa sổ chat thay vì
+      nút Facebook — không báo lỗi ngay, chỉ lộ ra 15 giây sau khi bước
+      xác minh "ô comment có rỗng lại không" phát hiện nội dung vẫn còn.
+      Đã hỏi owner chọn hướng sửa: **chủ động đóng mọi cửa sổ chat
+      Messenger đang mở trước khi thao tác** (thay vì sửa `human_click()`
+      để tự kiểm tra che khuất — hướng đó có thể làm sau nếu cần, áp dụng
+      chung cho mọi hành động). Thêm hàm `_close_chat_popups()` trong
+      `actions.py`, gọi ở đầu `post_to_own_profile`, `post_to_group`, và
+      `comment_on_group_post` (trước bước tương tác composer/comment
+      box).
+
+      **Cập nhật cùng ngày — đã xác nhận sống bằng Codegen**: owner tự
+      ghi lại (`codegen_close_chat_popup.py`, tài khoản `tu_iizuki`) cả 2
+      thao tác thu nhỏ và đóng chat thật, xác nhận tên accessible chính
+      xác là **"Minimize chat"** và **"Close chat"** (không cần regex,
+      match `exact=True`; cả 2 đều generic, không kèm tên người — chỉ nút
+      mở lại "Open chat with <tên>" mới cá nhân hoá). Theo yêu cầu owner
+      ("ưu tiên minimize, không được thì close"), sửa `_close_chat_popups()`
+      thử "Minimize chat" trước, phần chat nào không có nút đó (nếu có)
+      mới rơi xuống thử "Close chat". Vẫn best-effort/bọc try-except —
+      chỉ còn CHƯA XÁC NHẬN nhánh fallback "Close chat" có thật sự bao giờ
+      cần dùng tới không (Codegen ghi lại luôn thấy có nút minimize).
+
+      **Cập nhật cùng ngày — owner tự quan sát và chỉ ra 1 điểm quan
+      trọng:** 2 lỗi trên thực chất KHÁC cơ chế, dù cùng một thủ phạm là
+      khung chat. Modal "Create post" (đăng nhóm/cá nhân) luôn nổi ĐÈ LÊN
+      TRÊN khung chat — nên task 146 không phải do che khuất pixel, mà do
+      `get_by_role("paragraph")` quét toàn bộ accessibility tree, không
+      quan tâm thứ gì đang nổi trên/dưới về mặt hình ảnh. Ô comment (bài
+      viết trong nhóm) thì ngược lại — nằm inline trong luồng trang, KHÔNG
+      có z-index riêng để nổi lên, nên thực sự bị khung chat che đè lên
+      trên về mặt hiển thị, dẫn tới task 151 (click rơi trúng khung chat).
+      Kết luận: gọi `_close_chat_popups()` trước đăng bài vẫn cần thiết
+      (phòng lỗi kiểu 146), trước khi comment thì càng quan trọng hơn
+      (phòng cả 2 kiểu lỗi). Đã ghi lại phân biệt này vào docstring
+      `_close_chat_popups()` trong `actions.py` để tránh nhầm lẫn 2 lỗi
+      là một khi debug sau này.

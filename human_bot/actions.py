@@ -73,6 +73,80 @@ async def _check_anomaly_or_raise(page: Page) -> None:
         raise AnomalyDetected(signal)
 
 
+async def _close_chat_popups(page: Page, mouse, pacing) -> None:
+    """Minimize (preferred) or close any Messenger chat popup(s) docked at
+    the bottom-right of the page (e.g. "Write to <name>") before touching
+    a composer/comment box.
+
+    Added 2026-09-16 after TWO separate real production failures traced
+    back to a stray chat popup left open by ordinary Facebook usage on
+    this account:
+      - task 146 (2026-09-15): post_to_group crashed with a strict-mode
+        violation because an unscoped page.get_by_role("paragraph") also
+        matched a message bubble inside the open chat popup.
+      - task 151 (2026-09-16): comment_on_group_post's human_click()
+        computed the real bounding box of Facebook's own "Post comment"
+        button and physically clicked those page coordinates — but the
+        chat popup was floating on top of that exact spot, so the real
+        mouse click landed on the chat popup instead of the button.
+        Nothing threw (the click itself "succeeded"), so this only
+        surfaced later as comment_box_still_has_content_after_click.
+        human_click() intentionally bypasses Locator.click()'s own
+        "target not obscured" actionability check (see its docstring in
+        humanize.py) to get a real point-click, which is exactly what let
+        this slip through undetected until the post-submit verification.
+
+    These two failures are actually DIFFERENT mechanisms, per the owner's
+    own observation (2026-09-16) — worth keeping straight since they'd
+    otherwise look like the same bug: post_to_own_profile/post_to_group's
+    "Create post" composer is a real modal dialog, always stacked ABOVE
+    the chat popup, so it's never visually covered by one — task 146 was
+    an accessibility-TREE collision (get_by_role scans the whole a11y
+    tree regardless of visual stacking order), not a pixel-level overlap.
+    comment_on_group_post's comment box, by contrast, is inline in the
+    page's normal flow with no elevated stacking of its own, so it really
+    can sit BELOW the chat popup visually — that's what let task 151's
+    click physically land on the popup. Net effect: closing/minimizing
+    chat popups before posting guards against the task-146-style
+    collision (still worth doing, even though pixel-overlap isn't a risk
+    there); doing it before commenting guards against both.
+
+    Confirmed live 2026-09-16 via Codegen recording against account
+    tu_iizuki (see codegen_close_chat_popup.py): the popup's minimize
+    button has exact accessible name "Minimize chat", the close button
+    "Close chat" — both generic (not personalized per contact name; only
+    the reopen affordance, "Open chat with <name>", is personalized, and
+    isn't needed here).
+
+    Minimizing is tried first and preferred (owner's explicit choice,
+    2026-09-16): it's a smaller, more natural action for a real user who
+    just wants a chat out of the way mid-task, and — same as closing —
+    collapses the popup out of the layout so it can no longer collide
+    with a "paragraph"-role match (task 146) or physically cover a click
+    target (task 151). Falls back to closing only for any popup that has
+    no "Minimize chat" button (e.g. a UI variant without one) — that
+    fallback path itself is UNVERIFIED beyond the recording, since every
+    popup encountered while recording did have a minimize button.
+    Best-effort throughout: wrapped so a selector miss here never fails
+    the calling action — worst case an untouched popup causes the same
+    pre-existing failure this is meant to prevent, not a new one.
+    """
+    try:
+        for label in ("Minimize chat", "Close chat"):
+            buttons = page.get_by_role("button", name=label, exact=True)
+            # Cap iterations per label — best-effort cleanup, not a loop
+            # that should ever run long even with several chats docked.
+            for _ in range(5):
+                if await buttons.count() == 0:
+                    break
+                await human_click(page, buttons.first, mouse)
+                await pause_between_ui_steps(pacing)
+    except Exception:
+        # Never let a broken/missing selector here block the real action
+        # — see docstring above.
+        pass
+
+
 # --- Posting -----------------------------------------------------------
 
 async def _attach_media(page: Page, scope, media_path: str, mouse, pacing) -> None:
@@ -213,6 +287,7 @@ async def post_to_own_profile(
         # Land on the page and just... look at it for a while, like a
         # person actually would, before touching anything.
         await pause_after_page_load(pacing)
+        await _close_chat_popups(page, mouse, pacing)
         await _go_home(page, mouse, pacing)
 
         # Facebook UI language for all bot accounts is standardized to
@@ -226,6 +301,16 @@ async def post_to_own_profile(
             "button", name=re.compile("what.?s on your mind", re.IGNORECASE)
         ), mouse)
         await pause_after_composer_open(pacing)
+
+        # Confirmed live 2026-09-03: the composer's text field has an
+        # accessible role of "textbox" and Facebook doesn't render any
+        # other textbox while the composer dialog is open, so scoping to
+        # the dialog (not page-wide) is enough to keep this unique — no
+        # more fragile obfuscated CSS class combo needed here. Defined here
+        # (rather than right before its first use below) so the audience
+        # step right below can also scope its own "paragraph" click to it —
+        # see the 2026-09-15 fix note there.
+        composer_dialog = page.get_by_role("dialog")
 
         # --- Set audience (skipped for "public", the default) ---
         # Confirmed live 2026-09-03 for the "Only me" case (see docstring
@@ -250,20 +335,21 @@ async def post_to_own_profile(
                 "button", name=re.compile("done with privacy audience", re.IGNORECASE)
             ), mouse)
             await pause_between_ui_steps(pacing)
-            await human_click(page, page.get_by_role("paragraph"), mouse)
+            # Scoped to composer_dialog (2026-09-15, unverified live) —
+            # was unscoped page.get_by_role("paragraph") before, which
+            # crashed post_to_group with an identical strict-mode
+            # violation whenever an unrelated Messenger chat popup open on
+            # the page also rendered a "paragraph"-role element (task
+            # 146). Scoping here preemptively since the same page-wide
+            # locator shape is the root cause, even though this exact
+            # branch hasn't been observed failing yet.
+            await human_click(page, composer_dialog.get_by_role("paragraph"), mouse)
             await pause_between_ui_steps(pacing)
 
         # --- Type and submit the post ---
         # human_type() sends real keystrokes with human-like timing/typos
         # instead of instantly filling the field — see human_bot/humanize.py
         # and docs/skills/human-like-interaction.md.
-        #
-        # Confirmed live 2026-09-03: the composer's text field has an
-        # accessible role of "textbox" and Facebook doesn't render any
-        # other textbox while the composer dialog is open, so scoping to
-        # the dialog (not page-wide) is enough to keep this unique — no
-        # more fragile obfuscated CSS class combo needed here.
-        composer_dialog = page.get_by_role("dialog")
         await human_click(page, composer_dialog.get_by_role("textbox").first, mouse)
         await human_type(page, content, config=get_human_typing_config())
 
@@ -562,31 +648,40 @@ async def post_to_group(
             await _check_anomaly_or_raise(page)
             await pause_after_page_load(pacing)
 
+        await _close_chat_popups(page, mouse, pacing)
         await human_click(page, page.get_by_role(
             "button", name=re.compile("write something", re.IGNORECASE)
         ), mouse)
         await pause_after_composer_open(pacing)
-        await human_click(page, page.get_by_role("paragraph"), mouse)
+
+        # 2026-09-15 fix (task 146): the "UNSCOPED, no dialog wrapper"
+        # assumption previously here was wrong — a real production run
+        # against this exact group crashed with a strict-mode violation:
+        # page.get_by_role("paragraph") matched both the composer's own
+        # placeholder AND a message bubble inside an unrelated Messenger
+        # chat popup ("Write to Thanh Loan") that happened to be open in
+        # the corner of the page at the time. The failure screenshot
+        # confirms the group composer IS a centered modal dialog titled
+        # "Create post", visually identical to post_to_own_profile's
+        # composer — so it's scoped to composer_dialog the same way now,
+        # which also makes it immune to any other stray page content
+        # (chat popups, other paragraphs, etc.) matching the same role.
+        composer_dialog = page.get_by_role("dialog")
+        await human_click(page, composer_dialog.get_by_role("paragraph"), mouse)
         await pause_between_ui_steps(pacing)
 
         # Confirmed live 2026-09-04: same as post_to_own_profile, the
-        # composer's text field has role "textbox". UNSCOPED here (no
-        # `dialog` wrapper — a group's composer expands inline in the
-        # page, not as a modal like the profile composer) since it
-        # resolved uniquely in the recording; if this ever breaks with a
-        # strict-mode violation, scope it to whatever container wraps the
-        # composer, the same fix used for post_to_own_profile.
-        await human_click(page, page.get_by_role("textbox"), mouse)
+        # composer's text field has role "textbox".
+        await human_click(page, composer_dialog.get_by_role("textbox").first, mouse)
         await human_type(page, content, config=get_human_typing_config())
 
         if media_path:
             # Reuses _attach_media (see its docstring) — UNVERIFIED for
             # this function specifically, since the Codegen recording for
             # the attach step was only done against post_to_own_profile's
-            # composer. Scoped to `page` (not a dialog wrapper) since this
-            # composer expands inline, same reasoning as the textbox click
-            # right above.
-            await _attach_media(page, page, media_path, mouse, pacing)
+            # composer. Scoped to composer_dialog (see the 2026-09-15 fix
+            # note above) instead of `page`.
+            await _attach_media(page, composer_dialog, media_path, mouse, pacing)
 
         # A 2026-09-04 recording clicked back into the paragraph once more
         # here before submitting ("glance back over what I wrote") — kept
@@ -603,13 +698,15 @@ async def post_to_group(
         # happens to render first instead of failing loudly on a future
         # DOM change.
         await reading_pause(content, pacing)
-        post_button = page.get_by_role("button", name="Post", exact=True)
+        # Scoped to composer_dialog (see the 2026-09-15 fix note above),
+        # and exact=True since "Post" is a common word that could
+        # otherwise match unrelated buttons elsewhere on the page.
+        post_button = composer_dialog.get_by_role("button", name="Post", exact=True)
         await human_click(page, post_button, mouse)
 
         # Same verification as post_to_own_profile (see its comment) —
-        # NEEDS LIVE CONFIRMATION. This composer is inline (no dialog
-        # wrapper), so "the Post button leaves the DOM" is the best
-        # generic signal available without a live recording of a
+        # NEEDS LIVE CONFIRMATION. "The Post button leaves the DOM" is the
+        # best generic signal available without a live recording of a
         # successful vs. failed submit to compare against; still applies
         # equally to the pending-approval case below, since that only
         # affects whether the post is visible yet, not whether the
@@ -674,7 +771,7 @@ async def comment_on_group_post(
     "goto is the guaranteed-to-work path" reasoning as post_to_group's
     Tier 4. Clicking the post's own body text (role "paragraph") first to
     reveal the comment textbox, THEN typing into it, mirrors the exact
-    two-step reveal post_to_group's inline composer already uses.
+    two-step reveal post_to_group's composer already uses.
     """
     pacing = get_pacing_config()
     mouse = get_mouse_config()
@@ -686,6 +783,7 @@ async def comment_on_group_post(
             return ActionResult(success=False, message=unavailable)
         await pause_after_page_load(pacing)
 
+        await _close_chat_popups(page, mouse, pacing)
         await human_click(page, page.get_by_role("paragraph").first, mouse)
         await pause_between_ui_steps(pacing)
 
