@@ -2886,3 +2886,40 @@ là comment giải thích lịch sử bug, không phải code thật).
       chạy thử `sync_all()` với dữ liệu thật có `sponsored_by`/
       `expires_at` (side B chưa deploy field mới) — cần xác nhận lại
       lần đầu tiên có dữ liệu thật.
+
+- [x] **2026-09-16 — Gọn lại UI `/admin/accounts` tab "Đồng bộ": gộp cột
+      Trạng thái+Hành động và Sponsored+Hành động thành switch, đổi tên
+      cột cho rõ nghĩa** (owner phản hồi: bảng vừa thêm cột Sponsored bị
+      rối vì có 2 cột "Hành động" trùng tên, khó biết nút nào của cột
+      nào). Trước đó mỗi công tắc là 1 cặp badge (trạng thái) + form/nút
+      bấm (hành động) — nay gộp thành 1 switch bật/tắt duy nhất mỗi cột
+      (`_toggle_switch()`, hàm dùng chung cho cả 2, `admin.py`). Bảng từ
+      6 cột (Tài khoản, Trạng thái, Hành động, Sponsored, Hành động, Lần
+      sync) rút còn 4 (Tài khoản, **Đồng bộ dữ liệu bên B**, **Chỉ đăng
+      sponsored**, Lần sync) — tên cột tự giải thích chức năng switch,
+      không cần đoán qua cột "Hành động" chung chung nữa; mỗi switch còn
+      có `title`/`aria-label` riêng làm tooltip.
+
+      Kỹ thuật: switch dùng `hx-vals` gửi thẳng `account_id` khi bấm
+      (mẫu đã có sẵn trong `admin.py` ở các nút bootstrap-login, không
+      phải pattern mới), tự biết bấm vào sẽ gọi endpoint bật hay tắt dựa
+      theo trạng thái hiện tại lúc render — không cần JS phía client để
+      tính. Vẫn tái dùng nguyên 4 route cũ
+      (`sync-enable`/`sync-disable`/`sponsored-only-enable`/`-disable`),
+      không đổi backend. Giữ nguyên 2 `hx-confirm` cảnh báo (tắt sync;
+      bật sponsored-only) — nay gắn đúng vào HƯỚNG bấm cần cảnh báo
+      (`confirm_on_check`/`confirm_on_uncheck` trong helper) thay vì
+      luôn hiện ở nút "Tắt"/nút "Bật" cố định như trước.
+
+      Không có test nào của `test_admin.py` phụ thuộc cấu trúc bảng cũ
+      (đã grep xác nhận) nên không có test bị ảnh hưởng — **191 test
+      vẫn pass**, xác nhận render UI thật qua `TestClient` (không POST
+      vào `runtime_config.json` thật, chỉ GET để so khớp text/markup
+      mới xuất hiện).
+
+      **Cập nhật cùng ngày — owner phản hồi tiếp**: câu giải thích dưới
+      tiêu đề bảng vẫn dồn cả 2 switch + link cấu hình vào 1 đoạn văn
+      dài, khó tách ý. Đổi thành danh sách `<ul>` — mỗi switch 1 dòng
+      riêng, in đậm đúng tên cột để khớp trực quan (label switch nói gì
+      → dòng giải thích đó), câu link cấu hình tách thành đoạn riêng bên
+      dưới. Test lại render qua `TestClient`, 191 test vẫn pass.

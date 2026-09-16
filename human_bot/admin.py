@@ -1784,52 +1784,69 @@ def _sync_content_html(saved: bool = False, oob: bool = False) -> str:
     sponsored_only_ids = get_sponsored_only_account_ids()
     flash = '<p class="flash">✅ Đã lưu.</p>' if saved else ""
 
+    def _toggle_switch(*, aid: str, checked: bool, enable_url: str, disable_url: str,
+                        title: str, confirm_on_check: str | None = None,
+                        confirm_on_uncheck: str | None = None) -> str:
+        """One checkbox-styled switch that fires the right hx-post the
+        instant it's flipped — replaces the old badge + separate button
+        pair. Which URL to hit is already known at RENDER time (this
+        row's current `checked` state), so the checkbox always posts to
+        whichever endpoint flips it to the OTHER state; no client-side
+        JS needed to compute that. `title` doubles as the tooltip and
+        the accessible name (aria-label) — the column header next to it
+        carries the same explanation for anyone just glancing at the
+        table rather than hovering. `confirm_on_check`/`confirm_on_uncheck`
+        fire hx-confirm only for whichever direction is actually the
+        consequential one for that particular switch (e.g. turning sync
+        OFF matters more than turning it back on; turning sponsored-only
+        ON matters more than turning it back off) — pass only the one
+        that applies, leave the other None."""
+        url = disable_url if checked else enable_url
+        confirm_text = confirm_on_uncheck if checked else confirm_on_check
+        confirm_attr = f' hx-confirm="{html.escape(confirm_text)}"' if confirm_text else ""
+        checked_attr = "checked" if checked else ""
+        return (
+            f'<label class="switch" title="{html.escape(title)}">'
+            f'<input type="checkbox" {checked_attr} aria-label="{html.escape(title)}" '
+            f'hx-post="{url}" hx-vals=\'{{"account_id": "{html.escape(aid)}"}}\' '
+            f'hx-target="#sync-content" hx-swap="outerHTML" hx-trigger="change"{confirm_attr}>'
+            f'<span class="switch-slider"></span></label>'
+        )
+
     rows = []
     for aid, account in accounts.items():
         is_paused = account.status == AccountStatus.PAUSED
         # Paused blocks EVERY action (agent.py's run_task() rejects any
         # status != ACTIVE), sync included — so it already can't run
         # regardless of this override, and the toggle is replaced with a
-        # plain note instead of an actionable button.
+        # plain note instead of an actionable switch.
         if is_paused:
-            status_cell = '<span class="row-url">tạm dừng — đã chặn sync</span>'
-            action_cell = ""
-        elif aid in sync_disabled_ids:
-            status_cell = '<span class="badge" style="background:#fef2f2;color:#dc2626;">⏸ Tắt</span>'
-            action_cell = f"""<form method="post" action="/admin/accounts/sync-enable" style="display:inline;"
-        hx-post="/admin/accounts/sync-enable" hx-target="#sync-content" hx-swap="outerHTML">
-  <input type="hidden" name="account_id" value="{html.escape(aid)}">
-  <button type="submit" class="btn-small">Bật lại</button>
-</form>"""
+            sync_cell = '<span class="row-url">tạm dừng — đã chặn sync</span>'
         else:
-            status_cell = '<span class="badge" style="background:#ecfdf5;color:#059669;">● Bật</span>'
-            action_cell = f"""<form method="post" action="/admin/accounts/sync-disable" style="display:inline;"
-        hx-post="/admin/accounts/sync-disable" hx-target="#sync-content" hx-swap="outerHTML"
-        hx-confirm="Tắt đồng bộ dữ liệu bên B cho tài khoản {html.escape(aid)}? Tài khoản vẫn hoạt động bình thường (đăng tay, comment...) — chỉ riêng việc tự lấy job/candidate mới từ bên B bị bỏ qua.">
-  <input type="hidden" name="account_id" value="{html.escape(aid)}">
-  <button type="submit" class="btn-small btn-secondary">Tắt</button>
-</form>"""
+            sync_cell = _toggle_switch(
+                aid=aid, checked=aid not in sync_disabled_ids,
+                enable_url="/admin/accounts/sync-enable", disable_url="/admin/accounts/sync-disable",
+                title="Tự động lấy job/candidate mới từ bên B cho tài khoản này",
+                confirm_on_uncheck=(
+                    f"Tắt đồng bộ dữ liệu bên B cho tài khoản {aid}? Tài khoản vẫn hoạt động bình thường "
+                    "(đăng tay, comment...) — chỉ riêng việc tự lấy job/candidate mới từ bên B bị bỏ qua."
+                ),
+            )
 
         # sponsored_only (2026-09-16): a dedicated switch, independent of
         # the sync on/off toggle above — even a paused account can keep
         # its sponsored_only flag (it just has no effect while paused,
         # same as every other setting), so this doesn't need the
         # is_paused branch above.
-        if aid in sponsored_only_ids:
-            sponsored_cell = '<span class="badge" style="background:#fffbeb;color:#b45309;">⭐ Chỉ sponsored</span>'
-            sponsored_action_cell = f"""<form method="post" action="/admin/accounts/sponsored-only-disable" style="display:inline;"
-        hx-post="/admin/accounts/sponsored-only-disable" hx-target="#sync-content" hx-swap="outerHTML">
-  <input type="hidden" name="account_id" value="{html.escape(aid)}">
-  <button type="submit" class="btn-small btn-secondary">Bỏ chế độ</button>
-</form>"""
-        else:
-            sponsored_cell = '<span class="row-url">đăng cả sponsored + thường</span>'
-            sponsored_action_cell = f"""<form method="post" action="/admin/accounts/sponsored-only-enable" style="display:inline;"
-        hx-post="/admin/accounts/sponsored-only-enable" hx-target="#sync-content" hx-swap="outerHTML"
-        hx-confirm="Tài khoản {html.escape(aid)} sẽ CHỈ nhận job sponsored_by từ bên B — không nhận job thường nữa, kể cả khi còn dư hạn mức ngày. Dùng để luôn chừa chỗ phản ứng nhanh khi có job sponsored gấp.">
-  <input type="hidden" name="account_id" value="{html.escape(aid)}">
-  <button type="submit" class="btn-small">Bật</button>
-</form>"""
+        sponsored_cell = _toggle_switch(
+            aid=aid, checked=aid in sponsored_only_ids,
+            enable_url="/admin/accounts/sponsored-only-enable", disable_url="/admin/accounts/sponsored-only-disable",
+            title="Chỉ nhận job sponsored_by từ bên B — không bao giờ nhận job thường",
+            confirm_on_check=(
+                f"Tài khoản {aid} sẽ CHỈ nhận job sponsored_by từ bên B — không nhận job thường nữa, "
+                "kể cả khi còn dư hạn mức ngày. Dùng để luôn chừa chỗ phản ứng nhanh khi có job sponsored gấp."
+            ),
+        )
 
         entry = statuses.get(aid)
         if entry is None:
@@ -1850,18 +1867,16 @@ def _sync_content_html(saved: bool = False, oob: bool = False) -> str:
         rows.append(f"""
 <tr>
   <td>{html.escape(account.display_name)}<div class="row-url">{html.escape(aid)}</div></td>
-  <td>{status_cell}</td>
-  <td class="col-actions">{action_cell}</td>
+  <td>{sync_cell}</td>
   <td>{sponsored_cell}</td>
-  <td class="col-actions">{sponsored_action_cell}</td>
   <td>{last_run_cell}</td>
 </tr>""")
 
     table = f"""
 <div class="table-scroll">
   <table class="data-table">
-    <thead><tr><th>Tài khoản</th><th>Trạng thái</th><th>Hành động</th><th>Sponsored</th><th>Hành động</th><th>Lần sync gần nhất</th></tr></thead>
-    <tbody>{"".join(rows) or '<tr><td colspan="6" class="empty-state">Chưa có tài khoản nào</td></tr>'}</tbody>
+    <thead><tr><th>Tài khoản</th><th>Đồng bộ dữ liệu bên B</th><th>Chỉ đăng sponsored</th><th>Lần sync gần nhất</th></tr></thead>
+    <tbody>{"".join(rows) or '<tr><td colspan="4" class="empty-state">Chưa có tài khoản nào</td></tr>'}</tbody>
   </table>
 </div>"""
 
@@ -1870,7 +1885,11 @@ def _sync_content_html(saved: bool = False, oob: bool = False) -> str:
 {flash}
 <div class="card">
   <h2>🔄 Đồng bộ dữ liệu bên B theo tài khoản</h2>
-  <p class="page-desc">Bật/tắt riêng cho từng tài khoản — một tài khoản ACTIVE bị tắt ở đây vẫn đăng/comment bình thường qua /admin/post, chỉ riêng việc tự lấy job/candidate mới từ bên B bị bỏ qua. Cột "Sponsored" bật thì tài khoản đó CHỈ nhận job có <code>sponsored_by</code> (tin trả tiền), không bao giờ nhận job thường — dùng để luôn chừa hạn mức ngày sẵn sàng cho job sponsored đến gấp. Cấu hình chu kỳ, khoảng cách, ngưỡng lọc, giới hạn tràn ngày... ở <a href="/admin/config?tab=sync">Cấu hình → Đồng bộ dữ liệu</a>.</p>
+  <ul class="page-desc" style="margin:0 0 12px;padding-left:20px;">
+    <li><strong>Đồng bộ dữ liệu bên B</strong>: tắt thì tài khoản này ngừng tự lấy job/candidate mới từ bên B — vẫn đăng/comment bình thường qua /admin/post, chỉ riêng bước tự lấy dữ liệu mới bị bỏ qua.</li>
+    <li><strong>Chỉ đăng sponsored</strong>: bật thì tài khoản này CHỈ nhận job có <code>sponsored_by</code> (tin trả tiền) — không bao giờ nhận job thường, dù còn dư hạn mức ngày. Dùng để luôn chừa sẵn chỗ, phản ứng ngay khi có job sponsored đến gấp.</li>
+  </ul>
+  <p class="page-desc">Cấu hình chu kỳ, khoảng cách, ngưỡng lọc, giới hạn tràn ngày... ở <a href="/admin/config?tab=sync">Cấu hình → Đồng bộ dữ liệu</a>.</p>
   {table}
 </div>
 </div>"""
