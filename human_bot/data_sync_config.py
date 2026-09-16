@@ -130,6 +130,22 @@ class DataSyncConfig:
         default_factory=lambda: int(_env_float("DATA_SYNC_MAX_OVERFLOW_BUSINESS_DAYS", 2.0))
     )
 
+    # How many days sync_all() is allowed to hold the jobs_since/
+    # candidates_since cursor back for a job/candidate that keeps getting
+    # deferred (capacity exhausted every poll — see data_sync.py's
+    # _cursor()). Added 2026-09-16 after a real incident: a single
+    # chronically-undeliverable candidate pinned candidates_since to a
+    # date over a week stale, forcing EVERY poll to re-fetch and
+    # re-evaluate side B's entire history since then — at least 3
+    # already-contacted candidates slipped past the local dedup cache
+    # during that window and got a duplicate comment. Past this many
+    # days, sync_all() gives up holding the cursor for that item (marks
+    # it seen, accepts it as lost) instead of freezing the whole
+    # pipeline indefinitely.
+    max_cursor_holdback_days: float = field(
+        default_factory=lambda: _env_float("DATA_SYNC_MAX_CURSOR_HOLDBACK_DAYS", 7.0)
+    )
+
     base_url: str = field(
         default_factory=lambda: _env_str("DATA_INGESTION_BASE_URL", "http://localhost:3100")
     )

@@ -45,6 +45,7 @@ from __future__ import annotations
 import json
 import os
 import random
+import tempfile
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -64,6 +65,40 @@ CONTACTED_PATH = CACHE_ROOT / "_contacted_contacts.json"
 SYNC_STATUS_PATH = CACHE_ROOT / "_sync_status.json"
 
 MAX_PAGES_PER_ENDPOINT = 50  # defensive cap — real pulls should be tiny once `since` is narrow
+
+
+def _atomic_write_json(path: Path, data: Any) -> None:
+    """Write `data` as JSON to `path` atomically: write to a sibling temp
+    file, then os.replace() it into place. Every JSON cache file this
+    module owns (_state.json, the day-partitioned seen-cache,
+    _contacted_contacts.json, _sync_status.json) used to write via plain
+    `path.write_text(...)` — NOT atomic, so a process kill mid-write
+    (routine in this project: the service is restarted after nearly
+    every code change) can leave `path` truncated/invalid JSON.
+
+    That combination caused a real production incident (2026-09-16):
+    _state.json got corrupted this way, _load_sync_state() silently
+    treated the read failure as "never synced before" (its documented,
+    otherwise-reasonable defensive fallback), triggering a since-less
+    refetch of side B's ENTIRE candidate/job history. That in turn
+    permanently pinned the sync cursor to a single old, chronically-
+    undeliverable item's timestamp (see _cursor()'s own docstring below)
+    — every poll re-fetched and re-evaluated that whole history for 2+
+    days, and at least 3 already-contacted candidates slipped past the
+    local dedup cache and got a duplicate Facebook comment. os.replace()
+    is atomic on both POSIX and Windows — the destination is either the
+    old complete file or the new complete file, never something
+    in-between, which closes off this failure mode at its source rather
+    than just handling the corruption better after the fact."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(dir=str(path.parent), prefix=f".{path.name}.", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2, ensure_ascii=False)
+        os.replace(tmp_name, path)
+    except BaseException:
+        Path(tmp_name).unlink(missing_ok=True)
+        raise
 
 
 # --- Dedup cache (day-partitioned, per docs/architecture.md section 3c) ---
@@ -122,7 +157,7 @@ def _mark_seen(item_id: str, kind: str) -> None:
     except (OSError, json.JSONDecodeError):
         data = {}
     data[str(item_id)] = {"kind": kind, "seen_at": datetime.now(timezone.utc).isoformat()}
-    path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+    _atomic_write_json(path, data)
 
 
 def prune_old_cache(retention_days: float) -> int:
@@ -168,9 +203,7 @@ def _mark_contacted(contact: str) -> None:
     contacts = _load_contacted_contacts()
     contacts.add(contact)
     _ensure_cache_dir()
-    CONTACTED_PATH.write_text(
-        json.dumps(sorted(contacts), indent=2, ensure_ascii=False), encoding="utf-8"
-    )
+    _atomic_write_json(CONTACTED_PATH, sorted(contacts))
 
 
 def _load_sync_state() -> dict[str, Any]:
@@ -185,7 +218,7 @@ def _load_sync_state() -> dict[str, Any]:
 
 def _save_sync_state(state: dict[str, Any]) -> None:
     _ensure_cache_dir()
-    STATE_PATH.write_text(json.dumps(state, indent=2, ensure_ascii=False), encoding="utf-8")
+    _atomic_write_json(STATE_PATH, state)
 
 
 # --- Last-sync outcome, per account (for /admin visibility) -----------------
@@ -214,7 +247,7 @@ def _record_sync_status(account_id: str, status: dict[str, Any]) -> None:
     _ensure_cache_dir()
     all_status = _load_sync_status()
     all_status[account_id] = status
-    SYNC_STATUS_PATH.write_text(json.dumps(all_status, indent=2, ensure_ascii=False), encoding="utf-8")
+    _atomic_write_json(SYNC_STATUS_PATH, all_status)
 
 
 def get_sync_status(account_id: str) -> dict[str, Any] | None:
@@ -266,6 +299,54 @@ def _is_expired(expires_at: str | None, now_iso: str) -> bool:
     generates), same string-comparison approach sync_all() already uses
     for its own `latest_job_ts` cursor — no need for datetime parsing."""
     return bool(expires_at) and expires_at <= now_iso
+
+
+def _cursor(latest_ts: str | None, deferred_items: list[dict], kind: str, max_holdback_days: float) -> str | None:
+    """Where sync_all()'s jobs_since/candidates_since cursor for the NEXT
+    poll comes from. Holding the cursor back to the earliest DEFERRED
+    item's own timestamp (capacity-exhausted this poll, not yet marked
+    seen) is what lets it be re-fetched next cycle instead of falling
+    permanently out of side B's `since` window — safe to advance all the
+    way to `latest_ts` only when nothing was deferred.
+
+    `max_holdback_days` bounds how long any ONE item is allowed to hold
+    the cursor hostage — added 2026-09-16 after a real incident: a
+    single chronically-undeliverable candidate pinned candidates_since
+    to a date over a week stale (root cause was actually _state.json
+    corruption from a non-atomic write, see _atomic_write_json()'s
+    docstring, but this cursor logic is what turned that one corrupted
+    read into a multi-day-long, self-perpetuating loop), forcing EVERY
+    poll to re-fetch and re-evaluate side B's ENTIRE history since then
+    — during which at least 3 already-contacted candidates slipped past
+    the local dedup cache and got duplicate Facebook comments. Past this
+    many days, an individual deferred item is given up on (marked seen
+    — same as any other permanently-skipped item, e.g. _is_expired()'s
+    branch) rather than being allowed to freeze the whole pipeline
+    indefinitely; the cursor advances past it using whatever OTHER
+    deferred items (or `latest_ts`) remain. This is a real, accepted
+    trade-off, not a free lunch: an item given up on this way is gone
+    for good, same as any other permanently-skipped item — but a
+    single stuck item blocking progress forever is strictly worse."""
+    if not deferred_items:
+        return latest_ts
+    cutoff = datetime.now(timezone.utc) - timedelta(days=max_holdback_days)
+    kept_ts = []
+    for item in deferred_items:
+        ts = item.get("last_seen_at") or item.get("published_at")
+        if not ts:
+            continue
+        try:
+            ts_dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+        except ValueError:
+            kept_ts.append(ts)  # unparsable — don't silently drop it, fall back to old behavior
+            continue
+        if ts_dt < cutoff:
+            item_id = str(item.get("id") or "")
+            if item_id:
+                _mark_seen(item_id, kind)
+        else:
+            kept_ts.append(ts)
+    return min(kept_ts) if kept_ts else latest_ts
 
 
 # --- Scheduling --------------------------------------------------------------
@@ -1371,20 +1452,8 @@ async def sync_all(account_ids: list[str], cfg: DataSyncConfig | None = None) ->
         results[aid] = result
         _record_sync_status(aid, {"last_run_at": now_iso, "status": "ok", **result})
 
-    # Hold the cursor back to the earliest DEFERRED item's own timestamp
-    # (capacity-exhausted, not yet marked seen) so it's re-fetched next
-    # cycle instead of falling permanently out of the `since` window —
-    # only safe to advance all the way to the latest fetched timestamp
-    # when nothing was deferred.
-    def _cursor(latest_ts, deferred_items):
-        if not deferred_items:
-            return latest_ts
-        deferred_ts = [d.get("last_seen_at") or d.get("published_at") for d in deferred_items]
-        deferred_ts = [t for t in deferred_ts if t]
-        return min(deferred_ts) if deferred_ts else latest_ts
-
-    jobs_cursor = _cursor(latest_job_ts, deferred_jobs)
-    candidates_cursor = _cursor(latest_candidate_ts, deferred_candidates)
+    jobs_cursor = _cursor(latest_job_ts, deferred_jobs, "job", cfg.max_cursor_holdback_days)
+    candidates_cursor = _cursor(latest_candidate_ts, deferred_candidates, "candidate", cfg.max_cursor_holdback_days)
     if jobs_cursor:
         state["jobs_since"] = jobs_cursor
     if candidates_cursor:

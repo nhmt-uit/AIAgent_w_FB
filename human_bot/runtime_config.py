@@ -127,6 +127,7 @@ EDITABLE_DATA_SYNC_FIELDS: list[str] = [
     "candidate_max_age_days",
     "cache_retention_days",
     "max_overflow_business_days",
+    "max_cursor_holdback_days",
     "job_post_ai_enabled",
     "candidate_reply_ai_enabled",
 ]

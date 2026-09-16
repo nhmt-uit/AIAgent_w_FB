@@ -7,10 +7,13 @@ from pathlib import Path
 
 import pytest
 
+import human_bot.data_sync as data_sync
 import human_bot.schedule_store as schedule_store
 from human_bot.config import GroupRef, RateLimits
 from human_bot.data_sync import (
+    _atomic_write_json,
     _count_scheduled_actions_by_day,
+    _cursor,
     _distribute_jobs_with_sponsored_priority,
     _has_room_for_drifted_group,
     _is_expired,
@@ -65,6 +68,101 @@ def test_is_expired_future_deadline_not_yet_expired():
 def test_is_expired_exact_now_counts_as_expired():
     now = "2026-09-16T00:00:00+00:00"
     assert _is_expired(now, now) is True
+
+
+# --- _atomic_write_json / _cursor (2026-09-16 fix for a real incident: a
+# non-atomic write to _state.json got corrupted by a service restart
+# mid-write, which _load_sync_state() silently treated as "never synced",
+# triggering a since-less refetch of side B's ENTIRE history; a single
+# chronically-undeliverable candidate then pinned candidates_since to that
+# stale date forever, causing at least 3 already-contacted candidates to
+# slip past local dedup and get a duplicate Facebook comment) ---------------
+
+@pytest.fixture
+def isolated_data_sync_cache(tmp_path, monkeypatch):
+    cache_root = tmp_path / "data_sync_cache"
+    monkeypatch.setattr(data_sync, "CACHE_ROOT", cache_root)
+    monkeypatch.setattr(data_sync, "STATE_PATH", cache_root / "_state.json")
+    monkeypatch.setattr(data_sync, "CONTACTED_PATH", cache_root / "_contacted_contacts.json")
+    monkeypatch.setattr(data_sync, "SYNC_STATUS_PATH", cache_root / "_sync_status.json")
+    return cache_root
+
+
+def test_atomic_write_json_leaves_no_temp_file_behind(tmp_path):
+    path = tmp_path / "sub" / "file.json"
+    _atomic_write_json(path, {"a": 1})
+    assert json.loads(path.read_text()) == {"a": 1}
+    assert list(path.parent.glob("*.tmp")) == []
+
+
+def test_atomic_write_json_never_leaves_a_half_written_file(tmp_path, monkeypatch):
+    """The failure mode this fix closes: a crash mid-write must never
+    leave `path` truncated/invalid — os.replace() only swaps in a
+    COMPLETE temp file, so a raised exception during the write must
+    leave the ORIGINAL file (or no file) untouched, never a partial
+    one."""
+    path = tmp_path / "file.json"
+    _atomic_write_json(path, {"good": True})
+
+    def _boom(*a, **kw):
+        raise OSError("simulated crash mid-write")
+    monkeypatch.setattr(json, "dump", _boom)
+    with pytest.raises(OSError):
+        _atomic_write_json(path, {"bad": True})
+
+    assert json.loads(path.read_text()) == {"good": True}  # untouched
+    assert list(path.parent.glob(".*.tmp")) == []  # temp file cleaned up
+
+
+def test_mark_seen_survives_via_atomic_write(isolated_data_sync_cache):
+    data_sync._mark_seen("42", "candidate")
+    seen = data_sync._load_seen_ids(45.0)
+    assert "42" in seen
+
+
+def _deferred(item_id: str, ts: str) -> dict:
+    return {"id": item_id, "last_seen_at": ts}
+
+
+def test_cursor_no_deferred_items_advances_to_latest():
+    assert _cursor("2026-09-16T00:00:00Z", [], "job", 7.0) == "2026-09-16T00:00:00Z"
+
+
+def test_cursor_holds_back_to_earliest_recent_deferred_item():
+    now = datetime.now(timezone.utc)
+    recent = (now - timedelta(hours=1)).isoformat()
+    older = (now - timedelta(hours=2)).isoformat()
+    deferred = [_deferred("a", recent), _deferred("b", older)]
+    assert _cursor("latest", deferred, "job", 7.0) == older
+
+
+def test_cursor_gives_up_on_item_past_max_holdback_days(isolated_data_sync_cache):
+    """The core fix: an item deferred for longer than max_holdback_days
+    must not keep pinning the cursor — it gets marked seen (given up on)
+    and the cursor advances past it instead."""
+    now = datetime.now(timezone.utc)
+    stale = (now - timedelta(days=10)).isoformat()
+    recent = (now - timedelta(hours=1)).isoformat()
+    deferred = [_deferred("stuck-item", stale), _deferred("recent-item", recent)]
+    result = _cursor("latest", deferred, "candidate", 7.0)
+    assert result == recent  # holds back only to the still-within-window item
+    seen = data_sync._load_seen_ids(45.0)
+    assert "stuck-item" in seen  # given up on, marked seen
+    assert "recent-item" not in seen  # still legitimately deferred, not given up
+
+
+def test_cursor_falls_back_to_latest_when_every_deferred_item_is_stale(isolated_data_sync_cache):
+    now = datetime.now(timezone.utc)
+    stale = (now - timedelta(days=10)).isoformat()
+    result = _cursor("latest-ts", [_deferred("stuck-item", stale)], "job", 7.0)
+    assert result == "latest-ts"
+
+
+def test_cursor_unparsable_timestamp_falls_back_to_old_behavior_not_dropped():
+    """A malformed timestamp must not be silently discarded — same
+    defensive stance as the rest of this module (e.g. _is_too_old())."""
+    deferred = [_deferred("weird", "not-a-real-timestamp")]
+    assert _cursor("latest", deferred, "job", 7.0) == "not-a-real-timestamp"
 
 
 # --- _next_available_business_day (day-rollover, business-day keyed) --------

@@ -2923,3 +2923,60 @@ là comment giải thích lịch sử bug, không phải code thật).
       riêng, in đậm đúng tên cột để khớp trực quan (label switch nói gì
       → dòng giải thích đó), câu link cấu hình tách thành đoạn riêng bên
       dưới. Test lại render qua `TestClient`, 191 test vẫn pass.
+
+- [x] **2026-09-16 — Phát hiện & sửa bug nghiêm trọng: cursor đồng bộ
+      bên B bị kẹt tại 08/09 suốt 2 ngày, gây comment trùng ít nhất 3
+      candidate** (owner báo: 1 candidate bị comment 2 lần cách nhau 4
+      ngày, nội dung y hệt owner nhớ). Điều tra qua `human_bot.db`,
+      `data_sync_cache/`, và `logs/human_bot.log` xác nhận chuỗi
+      nguyên nhân đầy đủ:
+      1. `_save_sync_state()`/`_mark_seen()`/`_mark_contacted()`/
+         `_record_sync_status()` đều ghi file bằng `path.write_text()`
+         trực tiếp — KHÔNG an toàn khi service bị restart giữa lúc ghi
+         (dự án này restart rất thường xuyên mỗi lần đổi code).
+      2. `_load_sync_state()` bắt mọi lỗi đọc (file hỏng/thiếu) và trả
+         về `{}` — hợp lý để tránh crash, nhưng `{}` trông giống hệt
+         "chưa từng đồng bộ lần nào".
+      3. Log thật xác nhận đúng chuỗi này xảy ra lúc 2026-09-14 18:49:
+         poll trước đó vẫn đang chạy đúng
+         (`since=2026-09-14T02:31...`), đột ngột 1 lần gọi API
+         **không có `since`** (lấy lại toàn bộ lịch sử), ngay sau đó
+         cursor bị tính lại thành `2026-09-08T09:50:40` và **kẹt
+         nguyên tại đó tới tận 16/09** (2 ngày, hàng trăm vòng poll).
+      4. `_cursor()` (giữ con trỏ lùi về đúng job/candidate bị hoãn sớm
+         nhất, để thử lại — cơ chế ĐÚNG cho trường hợp bình thường)
+         không có giới hạn — nếu luôn có ít nhất 1 item bị hoãn mãi
+         mãi trong batch khổng lồ vừa lấy lại, cursor bị ghim vĩnh
+         viễn, tạo vòng lặp tự duy trì: mỗi poll lấy lại y hệt lịch sử
+         cũ → luôn có item bị hoãn → lại ghim ở đúng chỗ cũ.
+      5. Trong hàng trăm candidate bị đánh giá lại mỗi 15 phút, cache
+         `seen` (đúng ra phải chặn) thỉnh thoảng vẫn để lọt — 3
+         candidate (id 62, 103, 107) bị comment lại lần 2, trong đó
+         103 và 107 bị trùng ngay trong CÙNG 1 NGÀY.
+
+      **Sửa tận gốc** (`human_bot/data_sync.py`): thêm
+      `_atomic_write_json()` (ghi file tạm + `os.replace()` — nguyên tử
+      ở cấp OS, không bao giờ để file ở trạng thái nửa vời), áp dụng
+      cho cả 4 chỗ ghi cache (`_state.json`, ngày-cache seen,
+      `_contacted_contacts.json`, `_sync_status.json`). Thêm setting
+      mới `DataSyncConfig.max_cursor_holdback_days` (mặc định 7 ngày,
+      chỉnh được qua `/admin/config`) — `_cursor()` (tách thành hàm
+      module-level, không còn closure, để test được) giờ chỉ giữ lùi
+      cursor cho item còn TRONG hạn; item bị hoãn quá lâu bị đánh dấu
+      seen (chấp nhận bỏ qua) thay vì ghim cứng vĩnh viễn.
+
+      **Khắc phục dữ liệu đang kẹt** (owner chọn: đẩy cursor lên hiện
+      tại, chấp nhận đánh đổi bỏ qua item cũ chưa từng xử lý nếu có,
+      đổi lấy dừng ngay việc quét lại lịch sử): sao lưu
+      `data_sync_cache/_state.json` cũ thành `_state.json.bak-20260916`
+      trước khi sửa, dùng chính `_save_sync_state()` (đã atomic) để ghi
+      `jobs_since`/`candidates_since` = thời điểm hiện tại.
+
+      **199 test passed** (191 trước đó + 8 mới cho
+      `_atomic_write_json()`/`_cursor()`, gồm test mô phỏng đúng lỗi
+      thật: crash giữa lúc ghi không được để lại file nửa vời; item bị
+      hoãn quá `max_holdback_days` bị đánh dấu seen và cursor bỏ qua
+      nó). Không đụng `runtime_config.json` thật (đã xác nhận md5sum).
+      Có đụng `data_sync_cache/_state.json` THẬT — đây là hành động
+      khắc phục owner yêu cầu trực tiếp, không phải test, đã sao lưu
+      trước khi sửa.

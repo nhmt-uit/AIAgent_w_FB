@@ -301,6 +301,7 @@ _DATA_SYNC_LABELS: dict[str, str] = {
     "candidate_min_confidence": "Độ tin cậy tối thiểu để nhắn ứng viên (0-1)",
     "candidate_max_age_days": "Chỉ nhắn ứng viên có bài đăng trong vòng bao nhiêu ngày",
     "max_overflow_business_days": "Giới hạn số ngày nghiệp vụ được phép tràn khi hết hạn mức hôm nay (job sponsored cần chỗ trống gần, xem tài khoản 'Chỉ đăng sponsored' ở /admin/accounts)",
+    "max_cursor_holdback_days": "Số ngày tối đa giữ lùi con trỏ đồng bộ cho 1 job/candidate cứ bị hoãn mãi — quá hạn thì bỏ qua nó thay vì quét lại toàn bộ lịch sử vô thời hạn",
     "cache_retention_days": "Số ngày giữ lại cache chống trùng trước khi dọn",
     "job_post_ai_enabled": "Dùng AI soạn lại bài tin tuyển dụng đăng nhóm",
     "candidate_reply_ai_enabled": "Dùng AI để soạn câu reply comment bài viết ứng viên",
