@@ -2980,3 +2980,36 @@ là comment giải thích lịch sử bug, không phải code thật).
       Có đụng `data_sync_cache/_state.json` THẬT — đây là hành động
       khắc phục owner yêu cầu trực tiếp, không phải test, đã sao lưu
       trước khi sửa.
+
+      **Cập nhật cùng ngày — owner yêu cầu soát lại `_cursor()` thật
+      kỹ.** `_cursor()` bản thân đúng (trace tay + test không tìm ra
+      lỗi), nhưng soát rộng ra cơ chế `seen` mà nó gọi tới phát hiện
+      thêm 1 bug thật KHÁC, đã XÁC NHẬN bằng dữ liệu thật: `seen` dùng
+      chung 1 namespace ID cho cả job lẫn candidate — `human_bot.db`
+      cho thấy id `"1042"` tồn tại đồng thời ở CẢ job và candidate.
+      Đánh dấu 1 loại seen khiến loại kia bị coi là đã xử lý, bỏ qua
+      VĨNH VIỄN, không exception/log — đây là lỗi NGƯỢC với bug hôm
+      nay (mất hẳn job/candidate thay vì đăng trùng), và việc sửa
+      `_cursor()` gọi `_mark_seen()` nhiều hơn cho item "bỏ cuộc" làm
+      tăng khả năng gặp phải nó (không phải nguyên nhân, nhưng làm
+      trầm trọng hơn). Vụ 1042 may mắn chưa gây hại vì cả 2 xuất hiện
+      cùng 1 vòng poll (snapshot `seen` trong bộ nhớ load 1 lần đầu
+      vòng, chưa thấy write của bên kia).
+
+      Sửa: thêm `_seen_key(kind, item_id)` — key ghép `"job:1042"` /
+      `"candidate:1042"` thay vì bare id. `_load_seen_ids()` đọc file
+      cache cũ (key trần, có sẵn trên đĩa) VÀ file mới (key ghép) đúng
+      cả 2 dạng — không cần migrate file cũ. `_mark_seen()` giờ ghi
+      xuống đĩa bằng key ghép luôn (bug thứ 2 phát hiện thêm: nếu chỉ
+      sửa phần đọc mà không sửa phần ghi, job và candidate trùng ID vẫn
+      ĐÈ LÊN NHAU ngay trên đĩa cùng 1 ngày — bắt được bằng chính test
+      hồi quy mới viết, fail ngay lần chạy đầu trước khi sửa tiếp).
+
+      Thêm 3 test mới (job/candidate trùng ID không còn đụng nhau cả 2
+      chiều; file cache cũ định dạng bare-id vẫn đọc đúng sau nâng cấp)
+      — **201 test passed** (199 + 3, con số 202 lẽ ra đúng nhưng 1 test
+      cũ `test_mark_seen_survives_via_atomic_write` sửa lại assertion
+      cho khớp key mới thay vì thêm mới). Không đụng `runtime_config.json`
+      thật. Đã xác nhận với dữ liệu cache thật (`candidate:62` đọc đúng
+      từ file `2026-09-15.json` định dạng cũ) — tương thích ngược hoạt
+      động đúng trên dữ liệu thật, không chỉ trong test giả lập.

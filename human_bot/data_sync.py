@@ -123,11 +123,37 @@ def _utc_today() -> date:
     return datetime.now(timezone.utc).date()
 
 
+def _seen_key(kind: str, item_id: str) -> str:
+    """The lookup key callers of _load_seen_ids() must use — NEVER the
+    bare id alone. Added 2026-09-16 after finding a real, already-
+    triggered collision in production data: job id "1042" and candidate
+    id "1042" both genuinely exist (side B evidently uses separate id
+    sequences per entity type, so an eventual collision was only a
+    matter of time). The on-disk day-cache files are keyed by bare id
+    with `kind` stored alongside in each entry's value (see
+    _mark_seen()) — that part is UNCHANGED here, so no migration of
+    existing cache files is needed; _load_seen_ids() below builds this
+    composite key only in the MERGED in-memory dict it returns, reading
+    each entry's own stored `kind` to do it. Before this fix, both of
+    sync_all()'s dedup checks (`jid in seen` / `cid in seen`) queried
+    one shared, kind-blind namespace — marking one seen could silently
+    and permanently hide the OTHER kind's item with the same id, with
+    no error or log anywhere. It happened to do no visible harm for
+    1042 specifically only because both arrived in the SAME poll cycle
+    (the in-memory `seen` snapshot used for filtering that whole cycle
+    is loaded once at the top of sync_all(), before either got
+    written) — a later poll seeing them at different times would not
+    have been so lucky."""
+    return f"{kind}:{item_id}"
+
+
 def _load_seen_ids(retention_days: float) -> dict[str, dict]:
     """Merge every day-file within the retention window into one lookup
-    dict. Small-scale by design (this project's data volume) — loading a
-    few dozen small JSON files per sync is cheap; if that ever stops being
-    true, this is the function to replace with an index file instead."""
+    dict, KEYED BY _seen_key(kind, id) — never the bare id, see that
+    function's docstring for why. Small-scale by design (this project's
+    data volume) — loading a few dozen small JSON files per sync is
+    cheap; if that ever stops being true, this is the function to
+    replace with an index file instead."""
     _ensure_cache_dir()
     seen: dict[str, dict] = {}
     cutoff = _utc_today() - timedelta(days=int(retention_days))
@@ -145,18 +171,35 @@ def _load_seen_ids(retention_days: float) -> dict[str, dict]:
         except (OSError, json.JSONDecodeError):
             continue
         if isinstance(data, dict):
-            seen.update(data)
+            for raw_key, entry in data.items():
+                kind = entry.get("kind", "") if isinstance(entry, dict) else ""
+                # Back-compat with day-files written before this fix
+                # (_mark_seen() used to store by bare id): if raw_key
+                # already looks like _seen_key(kind, ...) it was written
+                # by the NEW code — use it as-is. Otherwise it's a
+                # legacy bare-id key; synthesize the composite key from
+                # the entry's own stored `kind` so old marks still work
+                # correctly instead of silently vanishing on upgrade.
+                key = raw_key if kind and raw_key.startswith(f"{kind}:") else _seen_key(kind, raw_key)
+                seen[key] = entry
     return seen
 
 
 def _mark_seen(item_id: str, kind: str) -> None:
+    """Stores under the COMPOSITE key (_seen_key(kind, item_id)), not the
+    bare id — 2026-09-16 fix. Storing by bare id let a job and a
+    candidate sharing the same id (confirmed real: job "1042" / candidate
+    "1042") clobber EACH OTHER'S entry on disk the moment both got
+    marked seen on the same day, since they'd both write to the exact
+    same dict key within that day's file — see _seen_key()'s docstring
+    for the full incident this was found investigating."""
     _ensure_cache_dir()
     path = _day_cache_path(_utc_today())
     try:
         data = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
     except (OSError, json.JSONDecodeError):
         data = {}
-    data[str(item_id)] = {"kind": kind, "seen_at": datetime.now(timezone.utc).isoformat()}
+    data[_seen_key(kind, item_id)] = {"kind": kind, "seen_at": datetime.now(timezone.utc).isoformat()}
     _atomic_write_json(path, data)
 
 
@@ -1003,7 +1046,7 @@ async def sync_all(account_ids: list[str], cfg: DataSyncConfig | None = None) ->
         if job_ts and (latest_job_ts is None or job_ts > latest_job_ts):
             latest_job_ts = job_ts
         jid = str(job.get("id") or "")
-        if not jid or jid in seen:
+        if not jid or _seen_key("job", jid) in seen:
             continue
         # expires_at (2026-09-16, side B API addition) — see _is_expired().
         # A job whose listing has already closed is fully handled here
@@ -1061,7 +1104,7 @@ async def sync_all(account_ids: list[str], cfg: DataSyncConfig | None = None) ->
         if cand_ts and (latest_candidate_ts is None or cand_ts > latest_candidate_ts):
             latest_candidate_ts = cand_ts
         cid = str(cand.get("id") or "")
-        if not cid or cid in seen:
+        if not cid or _seen_key("candidate", cid) in seen:
             continue
         attrs = cand.get("attributes") or {}
         confidence = attrs.get("confidence")

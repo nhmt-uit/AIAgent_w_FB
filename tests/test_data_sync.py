@@ -20,6 +20,7 @@ from human_bot.data_sync import (
     _last_scheduled_post_time,
     _next_available_business_day,
     _pick_groups_for_job,
+    _seen_key,
     _water_fill_distribute,
     apply_quiet_hours,
     sweep_overdue_on_startup,
@@ -117,7 +118,43 @@ def test_atomic_write_json_never_leaves_a_half_written_file(tmp_path, monkeypatc
 def test_mark_seen_survives_via_atomic_write(isolated_data_sync_cache):
     data_sync._mark_seen("42", "candidate")
     seen = data_sync._load_seen_ids(45.0)
-    assert "42" in seen
+    assert _seen_key("candidate", "42") in seen
+
+
+def test_mark_seen_job_and_candidate_with_same_id_do_not_collide(isolated_data_sync_cache):
+    """Regression test for a real production incident, 2026-09-16: job
+    id "1042" and candidate id "1042" both genuinely existed in side B's
+    data. Before this fix, `_load_seen_ids()` returned one dict keyed by
+    bare id shared across both kinds — marking one seen made `X in seen`
+    true for the OTHER kind's id too, silently and permanently hiding
+    it from sync_all() with no error anywhere. Marking one kind seen
+    must never affect a lookup for the other kind."""
+    data_sync._mark_seen("1042", "job")
+    seen = data_sync._load_seen_ids(45.0)
+    assert _seen_key("job", "1042") in seen
+    assert _seen_key("candidate", "1042") not in seen  # NOT hidden by the job's mark
+
+    data_sync._mark_seen("1042", "candidate")
+    seen = data_sync._load_seen_ids(45.0)
+    assert _seen_key("job", "1042") in seen
+    assert _seen_key("candidate", "1042") in seen  # both now legitimately seen, independently
+
+
+def test_load_seen_ids_still_reads_legacy_bare_id_day_files(isolated_data_sync_cache):
+    """Back-compat: a day-file written by the code BEFORE this fix has
+    bare-id keys (kind only inside the entry's value) — _load_seen_ids()
+    must still recognize those as seen under the new composite key
+    instead of silently losing them on upgrade (which would itself
+    reproduce the original incident: already-contacted candidates
+    treated as new again)."""
+    isolated_data_sync_cache.mkdir(parents=True, exist_ok=True)
+    legacy_path = isolated_data_sync_cache / f"{data_sync._utc_today().isoformat()}.json"
+    legacy_path.write_text(json.dumps({
+        "1042": {"kind": "job", "seen_at": "2026-09-09T00:00:00+00:00"},
+    }))
+    seen = data_sync._load_seen_ids(45.0)
+    assert _seen_key("job", "1042") in seen
+    assert _seen_key("candidate", "1042") not in seen
 
 
 def _deferred(item_id: str, ts: str) -> dict:
@@ -147,8 +184,8 @@ def test_cursor_gives_up_on_item_past_max_holdback_days(isolated_data_sync_cache
     result = _cursor("latest", deferred, "candidate", 7.0)
     assert result == recent  # holds back only to the still-within-window item
     seen = data_sync._load_seen_ids(45.0)
-    assert "stuck-item" in seen  # given up on, marked seen
-    assert "recent-item" not in seen  # still legitimately deferred, not given up
+    assert _seen_key("candidate", "stuck-item") in seen  # given up on, marked seen
+    assert _seen_key("candidate", "recent-item") not in seen  # still legitimately deferred, not given up
 
 
 def test_cursor_falls_back_to_latest_when_every_deferred_item_is_stale(isolated_data_sync_cache):
