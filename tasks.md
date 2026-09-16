@@ -2792,3 +2792,31 @@ là comment giải thích lịch sử bug, không phải code thật).
       (phòng cả 2 kiểu lỗi). Đã ghi lại phân biệt này vào docstring
       `_close_chat_popups()` trong `actions.py` để tránh nhầm lẫn 2 lỗi
       là một khi debug sau này.
+
+- [x] **2026-09-16 — Sửa bug thứ tự hiển thị `/admin/schedule`: bài quá
+      hạn dời lịch sang ngày sau lại hiện lên ĐẦU danh sách** (owner báo
+      trực tiếp: dời 1 bài quá hạn sang 17/9, nó hiện trước cả bài 16/9).
+      Nguyên nhân: `task_id` (cũng là tên file) được sinh 1 LẦN DUY NHẤT
+      lúc tạo task, với tiền tố là `scheduled_at` LÚC ĐÓ
+      (`new_task_id()`); `list_pending()`/`list_missed()` sort theo TÊN
+      FILE (giả định filename luôn khớp nội dung). Khi "Đặt lịch"/"Lên
+      lịch lại" (`restore_to_pending()`) hoặc sửa giờ 1 task đang chờ
+      (`update()`) đổi `scheduled_at`, cả 2 hàm chỉ ghi đè field bên
+      trong JSON, KHÔNG đổi tên file/sinh `task_id` mới — filename vẫn
+      mang mốc giờ CŨ (đã quá hạn), nên vẫn thắng khi sort theo tên file,
+      dù nội dung thật đã dời sang tận 17/9. Sửa tận gốc: thêm
+      `_scheduled_at_sort_key()` trong `schedule_store.py`, sort
+      `list_pending()`/`list_missed()` theo `scheduled_at` ĐỌC LẠI TỪ NỘI
+      DUNG file, không dựa vào tên file/task_id nữa — đúng luôn cho mọi
+      trường hợp sau này kể cả nếu filename lệch nội dung vì lý do khác.
+      Xử lý thêm ca `scheduled_at` bị ghi dạng "naive" (không timezone) —
+      vốn là tình trạng thật đã biết (form `/admin/schedule/update` và
+      reschedule bài quá hạn ghi thẳng giá trị form, không chuẩn hoá) —
+      coi là UTC, cùng quy ước `data_sync.py`'s `_last_scheduled_post_time()`
+      đã dùng, để tránh crash khi so sánh naive với aware. Thêm 4 test hồi
+      quy trong `test_schedule_store.py`: dời bài quá hạn sang sau vẫn
+      xếp đúng vị trí, sửa giờ 1 bài pending vẫn xếp lại đúng, `list_missed()`
+      cũng sort đúng, và ca `scheduled_at` naive không bị crash.
+      **175 test passed** (171 trước đó + 4 mới), không đụng
+      `runtime_config.json`/DB thật (đã xác nhận bằng `md5sum` không đổi
+      và `git status` sạch ngoài các file code/test/docs vừa sửa).

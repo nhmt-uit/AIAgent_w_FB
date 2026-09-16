@@ -144,15 +144,53 @@ def get(task_id: str) -> ScheduledTask | None:
     return _read(_safe_pending_path(task_id))
 
 
+def _scheduled_at_sort_key(task: ScheduledTask) -> datetime:
+    """Sort key for list_pending()/list_missed() — parses the task's
+    CURRENT scheduled_at field rather than trusting task_id's timestamp
+    prefix, which goes stale the moment a task is rescheduled (update()
+    and restore_to_pending() both change scheduled_at in place without
+    renaming the file/regenerating task_id — see the 2026-09-16 fix note
+    on list_pending() below). A task with an unparsable scheduled_at
+    (shouldn't happen in practice) sorts last instead of crashing the
+    whole list or silently jumping to the front. A naive scheduled_at
+    (no timezone — /admin/schedule/update and the missed-task reschedule
+    form both pass the raw form value through with no normalization, a
+    known real data shape, see test_last_scheduled_post_time_does_not_
+    crash_on_a_naive_scheduled_at in test_data_sync.py) is treated as
+    UTC, same convention data_sync.py's _last_scheduled_post_time()
+    already uses — otherwise comparing it against an aware sibling
+    crashes the whole sort."""
+    try:
+        dt = datetime.fromisoformat(task.scheduled_at.replace("Z", "+00:00"))
+    except (ValueError, AttributeError):
+        return datetime.max.replace(tzinfo=timezone.utc)
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt
+
+
 def list_pending() -> list[ScheduledTask]:
-    """All pending tasks, soonest-due first (filenames are timestamp-
-    prefixed, so plain sort order is chronological)."""
+    """All pending tasks, soonest-due first by their CURRENT scheduled_at
+    (not by filename/task_id).
+
+    2026-09-16 fix: this used to just be `sorted(PENDING_DIR.glob(...))`
+    on the assumption that task_id's timestamp prefix (set once, at
+    creation — see new_task_id()) always matches the task's current
+    scheduled_at. That assumption breaks the moment a task is
+    rescheduled: a real production report found a missed post moved
+    forward to 2026-09-17 via "Đặt lịch" still sorting AHEAD of every
+    2026-09-16 post, because restore_to_pending()/update() only rewrite
+    scheduled_at inside the JSON — they never rename the file or call
+    new_task_id() again, so the stale (earlier) task_id prefix kept
+    winning the filename sort. Fixed by sorting on the real scheduled_at
+    read back out of each file's content instead."""
     ensure_dirs()
     items = []
     for path in sorted(PENDING_DIR.glob("*.json")):
         task = _read(path)
         if task is not None:
             items.append(task)
+    items.sort(key=_scheduled_at_sort_key)
     return items
 
 
@@ -191,13 +229,16 @@ def get_missed_reason(task_id: str) -> str | None:
 
 def list_missed() -> list[ScheduledTask]:
     """Tasks the startup sweep pulled out of pending/ — see MISSED_DIR's
-    docstring. Soonest-originally-due first, same as list_pending()."""
+    docstring. Soonest-originally-due first, by scheduled_at (same fix
+    and same reasoning as list_pending(), 2026-09-16) rather than by
+    filename/task_id."""
     ensure_dirs()
     items = []
     for path in sorted(MISSED_DIR.glob("*.json")):
         task = _read(path)
         if task is not None:
             items.append(task)
+    items.sort(key=_scheduled_at_sort_key)
     return items
 
 

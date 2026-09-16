@@ -109,6 +109,73 @@ def test_cancel_missed_false_when_absent(isolated_store):
     assert isolated_store.cancel_missed("nonexistent") is False
 
 
+def test_list_pending_sorts_by_current_scheduled_at_not_stale_task_id(isolated_store):
+    """Regression test for a real production report, 2026-09-16: a missed
+    (overdue) post originally due 2026-09-15 was rescheduled forward to
+    2026-09-17 via "Đặt lịch" (restore_to_pending), but /admin/schedule
+    still showed it FIRST — ahead of ordinary 2026-09-16 posts. task_id's
+    timestamp prefix is set once at creation (new_task_id()) and never
+    regenerated on reschedule, so sorting by filename/task_id kept using
+    the stale 2026-09-15 prefix instead of the real, now-later
+    scheduled_at. list_pending() must sort by each task's CURRENT
+    scheduled_at instead."""
+    now = datetime.now(timezone.utc)
+    sep_16 = _make_task(isolated_store, now.replace(2026, 9, 16, 8, 0, 0), content="16th")
+    overdue = _make_task(isolated_store, now.replace(2026, 9, 15, 8, 0, 0), content="was overdue")
+    isolated_store.mark_missed(overdue.task_id, "server was down")
+    rescheduled_to_17th = now.replace(2026, 9, 17, 8, 0, 0).isoformat()
+    isolated_store.restore_to_pending(overdue.task_id, scheduled_at=rescheduled_to_17th)
+
+    pending = isolated_store.list_pending()
+    assert [t.content for t in pending] == ["16th", "was overdue"]
+
+
+def test_list_pending_sorts_by_current_scheduled_at_after_plain_edit(isolated_store):
+    """Same bug, reached via the other code path: editing a PENDING
+    task's time forward through update() (the /admin/schedule inline
+    "Sửa" form) must also re-sort it, not leave it pinned at its
+    original position by task_id."""
+    now = datetime.now(timezone.utc)
+    earlier = _make_task(isolated_store, now + timedelta(hours=1), content="earlier")
+    later = _make_task(isolated_store, now + timedelta(hours=2), content="later")
+    isolated_store.update(earlier.task_id, scheduled_at=(now + timedelta(hours=5)).isoformat())
+
+    pending = isolated_store.list_pending()
+    assert [t.content for t in pending] == ["later", "earlier"]
+
+
+def test_list_pending_sort_handles_naive_scheduled_at(isolated_store):
+    """scheduled_at can legitimately be naive (no tzinfo) — form values
+    from /admin/schedule/update and the missed-reschedule form are passed
+    through with no normalization (same real data shape covered by
+    test_data_sync.py's test_last_scheduled_post_time_does_not_crash_on_a_
+    naive_scheduled_at). The sort must treat it as UTC, not crash by
+    comparing it against an aware sibling task's time."""
+    now = datetime.now(timezone.utc)
+    aware_task = _make_task(isolated_store, now + timedelta(hours=1), content="aware")
+    naive_when = (now + timedelta(minutes=30)).replace(tzinfo=None)
+    naive_task = isolated_store.ScheduledTask(
+        task_id=isolated_store.new_task_id(naive_when.isoformat()),
+        action="post_to_group", account_id="acc-a",
+        scheduled_at=naive_when.isoformat(),
+        content="naive", target_url="https://facebook.com/groups/1",
+    )
+    isolated_store.add(naive_task)
+
+    pending = isolated_store.list_pending()
+    assert [t.content for t in pending] == ["naive", "aware"]
+
+
+def test_list_missed_sorts_by_current_scheduled_at(isolated_store):
+    now = datetime.now(timezone.utc)
+    t1 = _make_task(isolated_store, now - timedelta(hours=1), content="a")
+    t2 = _make_task(isolated_store, now - timedelta(hours=3), content="b")
+    isolated_store.mark_missed(t1.task_id, "r1")
+    isolated_store.mark_missed(t2.task_id, "r2")
+    missed = isolated_store.list_missed()
+    assert [t.content for t in missed] == ["b", "a"]
+
+
 def test_due_tasks_unaffected_by_missed(isolated_store):
     """A task moved to missed/ must never show up as "due" again — the
     recurring fire_due_tasks() loop only ever reads list_pending()."""
