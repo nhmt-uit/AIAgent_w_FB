@@ -55,6 +55,50 @@ def test_non_dict_json_file_falls_back_to_defaults(isolated_runtime_config):
     assert rc._read_all() == {}
 
 
+# --- max_overflow_business_days (data_sync) ---------------------------------
+
+def test_data_sync_config_defaults_max_overflow_business_days_to_2(isolated_runtime_config):
+    from human_bot.data_sync_config import DataSyncConfig
+    assert DataSyncConfig().max_overflow_business_days == 2
+
+
+def test_save_data_sync_overrides_roundtrips_max_overflow_business_days(isolated_runtime_config):
+    rc.save_data_sync_overrides({"max_overflow_business_days": 5})
+    cfg = rc.get_data_sync_config()
+    assert cfg.max_overflow_business_days == 5
+
+
+# --- Per-account sponsored_only (side-B poller priority) --------------------
+
+def test_get_sponsored_only_account_ids_defaults_empty(isolated_runtime_config):
+    assert rc.get_sponsored_only_account_ids() == set()
+
+
+def test_set_account_sponsored_only_roundtrip(isolated_runtime_config):
+    rc.set_account_sponsored_only("acc-a", True)
+    assert rc.get_sponsored_only_account_ids() == {"acc-a"}
+    rc.set_account_sponsored_only("acc-a", False)
+    assert rc.get_sponsored_only_account_ids() == set()
+
+
+def test_set_account_sponsored_only_does_not_affect_other_accounts(isolated_runtime_config):
+    rc.set_account_sponsored_only("acc-a", True)
+    rc.set_account_sponsored_only("acc-b", True)
+    rc.set_account_sponsored_only("acc-a", False)
+    assert rc.get_sponsored_only_account_ids() == {"acc-b"}
+
+
+def test_get_all_accounts_layers_sponsored_only_flag(isolated_runtime_config, monkeypatch):
+    from human_bot import config as cfg_mod
+    monkeypatch.setitem(
+        cfg_mod.ACCOUNTS, "acc-a",
+        cfg_mod.AccountConfig(account_id="acc-a", display_name="A"),
+    )
+    rc.set_account_sponsored_only("acc-a", True)
+    accounts = cfg_mod.get_all_accounts()
+    assert accounts["acc-a"].sponsored_only is True
+
+
 # --- Secrets / multi-provider AI config -------------------------------------
 
 def test_get_secrets_config_defaults(isolated_runtime_config):

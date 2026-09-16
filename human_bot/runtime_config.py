@@ -126,6 +126,7 @@ EDITABLE_DATA_SYNC_FIELDS: list[str] = [
     "candidate_min_confidence",
     "candidate_max_age_days",
     "cache_retention_days",
+    "max_overflow_business_days",
     "job_post_ai_enabled",
     "candidate_reply_ai_enabled",
 ]
@@ -1064,6 +1065,47 @@ def set_account_sync_enabled(account_id: str, enabled: bool) -> None:
         ids.add(account_id)
     data = _read_all()
     data[_SYNC_DISABLED_ACCOUNTS_KEY] = sorted(ids)
+    RUNTIME_CONFIG_PATH.write_text(
+        json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8"
+    )
+
+
+# --- Per-account "sponsored-only" (side-B poller only) ----------------------
+#
+# 2026-09-16, owner request: sponsored_by jobs must always be scheduled
+# ahead of ordinary jobs but must never exceed posts_per_day (see
+# data_sync.py's sync_all()) — so a job that arrives late in the day,
+# after ordinary jobs already claimed that day's whole quota on every
+# account, would still get bumped to tomorrow. Marking an account
+# sponsored-only means data_sync.py's sync_all() never assigns it an
+# ordinary job (any day, not just today — see its second
+# _water_fill_distribute() call), so that account's quota stays free to
+# react immediately whenever a sponsored job actually shows up. Same
+# bare-id-list pattern as _SYNC_DISABLED_ACCOUNTS_KEY above — this is
+# also layered onto AccountConfig.sponsored_only in
+# human_bot/config.py's get_all_accounts(), unlike the sync-disable list,
+# since data_sync.py's own code needs to read it as a plain
+# account.sponsored_only attribute, not call back into this module.
+
+_SPONSORED_ONLY_ACCOUNTS_KEY = "sponsored_only_accounts"
+
+
+def get_sponsored_only_account_ids() -> set[str]:
+    data = _read_all()
+    raw = data.get(_SPONSORED_ONLY_ACCOUNTS_KEY, [])
+    if not isinstance(raw, list):
+        return set()
+    return {str(aid) for aid in raw if str(aid).strip()}
+
+
+def set_account_sponsored_only(account_id: str, sponsored_only: bool) -> None:
+    ids = get_sponsored_only_account_ids()
+    if sponsored_only:
+        ids.add(account_id)
+    else:
+        ids.discard(account_id)
+    data = _read_all()
+    data[_SPONSORED_ONLY_ACCOUNTS_KEY] = sorted(ids)
     RUNTIME_CONFIG_PATH.write_text(
         json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8"
     )

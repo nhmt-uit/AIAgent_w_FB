@@ -183,6 +183,16 @@ class AccountConfig:
     # docs/skills/group-targeting.md, "Numeric ID vs. custom (vanity) group
     # URL". Populate manually per account as groups are joined/pinned.
     joined_groups: list[GroupRef] = field(default_factory=list)
+    # When True, human_bot/data_sync.py's sync_all() never assigns this
+    # account an ordinary (non-sponsored) job — its posts_per_day quota
+    # stays free so a sponsored_by job can always claim it immediately,
+    # rather than finding the day's quota already spent by ordinary jobs.
+    # Code-level default is always False; day-to-day toggling happens at
+    # /admin/accounts via human_bot/runtime_config.py's
+    # get_sponsored_only_account_ids()/set_account_sponsored_only(),
+    # layered on top below in get_all_accounts() — see that function's
+    # docstring.
+    sponsored_only: bool = False
 
     @property
     def storage_state_path(self) -> Path:
@@ -241,6 +251,7 @@ def get_all_accounts() -> dict[str, AccountConfig]:
         get_rate_limits_overrides,
         get_registered_accounts,
         get_removed_account_ids,
+        get_sponsored_only_account_ids,
     )
 
     result = dict(ACCOUNTS)
@@ -255,6 +266,9 @@ def get_all_accounts() -> dict[str, AccountConfig]:
     for aid in paused_ids:
         if aid in result and result[aid].status != AccountStatus.PAUSED:
             result[aid] = replace(result[aid], status=AccountStatus.PAUSED)
+    for aid in get_sponsored_only_account_ids():
+        if aid in result and not result[aid].sponsored_only:
+            result[aid] = replace(result[aid], sponsored_only=True)
     for aid, account in list(result.items()):
         overrides = get_rate_limits_overrides(aid)
         if overrides:

@@ -114,6 +114,8 @@ from human_bot.runtime_config import (
     EDITABLE_RATE_LIMITS_FIELDS,
     get_sync_disabled_account_ids,
     set_account_sync_enabled,
+    get_sponsored_only_account_ids,
+    set_account_sponsored_only,
     get_secrets_config,
     save_secrets_overrides,
     get_active_ai_provider_config,
@@ -298,6 +300,7 @@ _DATA_SYNC_LABELS: dict[str, str] = {
     "quiet_hour_end_local": "Giờ kết thúc khung giờ yên tĩnh (giờ địa phương, 0-23)",
     "candidate_min_confidence": "Độ tin cậy tối thiểu để nhắn ứng viên (0-1)",
     "candidate_max_age_days": "Chỉ nhắn ứng viên có bài đăng trong vòng bao nhiêu ngày",
+    "max_overflow_business_days": "Giới hạn số ngày nghiệp vụ được phép tràn khi hết hạn mức hôm nay (job sponsored cần chỗ trống gần, xem tài khoản 'Chỉ đăng sponsored' ở /admin/accounts)",
     "cache_retention_days": "Số ngày giữ lại cache chống trùng trước khi dọn",
     "job_post_ai_enabled": "Dùng AI soạn lại bài tin tuyển dụng đăng nhóm",
     "candidate_reply_ai_enabled": "Dùng AI để soạn câu reply comment bài viết ứng viên",
@@ -1778,6 +1781,7 @@ def _sync_content_html(saved: bool = False, oob: bool = False) -> str:
     accounts = get_all_accounts()
     statuses = get_all_sync_statuses()
     sync_disabled_ids = get_sync_disabled_account_ids()
+    sponsored_only_ids = get_sponsored_only_account_ids()
     flash = '<p class="flash">✅ Đã lưu.</p>' if saved else ""
 
     rows = []
@@ -1806,6 +1810,27 @@ def _sync_content_html(saved: bool = False, oob: bool = False) -> str:
   <button type="submit" class="btn-small btn-secondary">Tắt</button>
 </form>"""
 
+        # sponsored_only (2026-09-16): a dedicated switch, independent of
+        # the sync on/off toggle above — even a paused account can keep
+        # its sponsored_only flag (it just has no effect while paused,
+        # same as every other setting), so this doesn't need the
+        # is_paused branch above.
+        if aid in sponsored_only_ids:
+            sponsored_cell = '<span class="badge" style="background:#fffbeb;color:#b45309;">⭐ Chỉ sponsored</span>'
+            sponsored_action_cell = f"""<form method="post" action="/admin/accounts/sponsored-only-disable" style="display:inline;"
+        hx-post="/admin/accounts/sponsored-only-disable" hx-target="#sync-content" hx-swap="outerHTML">
+  <input type="hidden" name="account_id" value="{html.escape(aid)}">
+  <button type="submit" class="btn-small btn-secondary">Bỏ chế độ</button>
+</form>"""
+        else:
+            sponsored_cell = '<span class="row-url">đăng cả sponsored + thường</span>'
+            sponsored_action_cell = f"""<form method="post" action="/admin/accounts/sponsored-only-enable" style="display:inline;"
+        hx-post="/admin/accounts/sponsored-only-enable" hx-target="#sync-content" hx-swap="outerHTML"
+        hx-confirm="Tài khoản {html.escape(aid)} sẽ CHỈ nhận job sponsored_by từ bên B — không nhận job thường nữa, kể cả khi còn dư hạn mức ngày. Dùng để luôn chừa chỗ phản ứng nhanh khi có job sponsored gấp.">
+  <input type="hidden" name="account_id" value="{html.escape(aid)}">
+  <button type="submit" class="btn-small">Bật</button>
+</form>"""
+
         entry = statuses.get(aid)
         if entry is None:
             last_run_cell = '<span class="row-url">chưa chạy lần nào</span>'
@@ -1827,14 +1852,16 @@ def _sync_content_html(saved: bool = False, oob: bool = False) -> str:
   <td>{html.escape(account.display_name)}<div class="row-url">{html.escape(aid)}</div></td>
   <td>{status_cell}</td>
   <td class="col-actions">{action_cell}</td>
+  <td>{sponsored_cell}</td>
+  <td class="col-actions">{sponsored_action_cell}</td>
   <td>{last_run_cell}</td>
 </tr>""")
 
     table = f"""
 <div class="table-scroll">
   <table class="data-table">
-    <thead><tr><th>Tài khoản</th><th>Trạng thái</th><th>Hành động</th><th>Lần sync gần nhất</th></tr></thead>
-    <tbody>{"".join(rows) or '<tr><td colspan="4" class="empty-state">Chưa có tài khoản nào</td></tr>'}</tbody>
+    <thead><tr><th>Tài khoản</th><th>Trạng thái</th><th>Hành động</th><th>Sponsored</th><th>Hành động</th><th>Lần sync gần nhất</th></tr></thead>
+    <tbody>{"".join(rows) or '<tr><td colspan="6" class="empty-state">Chưa có tài khoản nào</td></tr>'}</tbody>
   </table>
 </div>"""
 
@@ -1843,7 +1870,7 @@ def _sync_content_html(saved: bool = False, oob: bool = False) -> str:
 {flash}
 <div class="card">
   <h2>🔄 Đồng bộ dữ liệu bên B theo tài khoản</h2>
-  <p class="page-desc">Bật/tắt riêng cho từng tài khoản — một tài khoản ACTIVE bị tắt ở đây vẫn đăng/comment bình thường qua /admin/post, chỉ riêng việc tự lấy job/candidate mới từ bên B bị bỏ qua. Cấu hình chu kỳ, khoảng cách, ngưỡng lọc... ở <a href="/admin/config?tab=sync">Cấu hình → Đồng bộ dữ liệu</a>.</p>
+  <p class="page-desc">Bật/tắt riêng cho từng tài khoản — một tài khoản ACTIVE bị tắt ở đây vẫn đăng/comment bình thường qua /admin/post, chỉ riêng việc tự lấy job/candidate mới từ bên B bị bỏ qua. Cột "Sponsored" bật thì tài khoản đó CHỈ nhận job có <code>sponsored_by</code> (tin trả tiền), không bao giờ nhận job thường — dùng để luôn chừa hạn mức ngày sẵn sàng cho job sponsored đến gấp. Cấu hình chu kỳ, khoảng cách, ngưỡng lọc, giới hạn tràn ngày... ở <a href="/admin/config?tab=sync">Cấu hình → Đồng bộ dữ liệu</a>.</p>
   {table}
 </div>
 </div>"""
@@ -2128,6 +2155,26 @@ async def accounts_sync_enable(request: Request, _: None = Depends(_require_auth
     return RedirectResponse(url="/admin/accounts?tab=sync&saved=1", status_code=303)
 
 
+@router.post("/accounts/sponsored-only-enable")
+async def accounts_sponsored_only_enable(request: Request, _: None = Depends(_require_auth)):
+    form = await request.form()
+    account_id = str(form.get("account_id", "")).strip()
+    set_account_sponsored_only(account_id, True)
+    if _is_htmx(request):
+        return HTMLResponse(_sync_content_html(saved=True))
+    return RedirectResponse(url="/admin/accounts?tab=sync&saved=1", status_code=303)
+
+
+@router.post("/accounts/sponsored-only-disable")
+async def accounts_sponsored_only_disable(request: Request, _: None = Depends(_require_auth)):
+    form = await request.form()
+    account_id = str(form.get("account_id", "")).strip()
+    set_account_sponsored_only(account_id, False)
+    if _is_htmx(request):
+        return HTMLResponse(_sync_content_html(saved=True))
+    return RedirectResponse(url="/admin/accounts?tab=sync&saved=1", status_code=303)
+
+
 @router.post("/accounts/delete")
 async def accounts_delete(request: Request, _: None = Depends(_require_auth)):
     """Removes the account from human_bot entirely, whatever its origin:
@@ -2146,6 +2193,9 @@ async def accounts_delete(request: Request, _: None = Depends(_require_auth)):
     - the saved joined-groups list
     - any pause status
     - any per-account data-sync opt-out (set_account_sync_enabled)
+    - any sponsored_only flag (set_account_sponsored_only) — same
+      "don't silently inherit stale state" reasoning as the sync opt-out
+      just above
     - the rate-limits override (human_bot/runtime_config.py's
       save_rate_limits_overrides({})) — without this, re-registering the
       same account_id later and picking a fresh age tier would be
@@ -2172,6 +2222,7 @@ async def accounts_delete(request: Request, _: None = Depends(_require_auth)):
     set_account_removed(account_id, True)
     set_account_paused(account_id, False)  # drop any stale pause override too
     set_account_sync_enabled(account_id, True)  # drop any stale sync opt-out too
+    set_account_sponsored_only(account_id, False)  # drop any stale sponsored_only flag too
     save_joined_groups(account_id, [])
     save_rate_limits_overrides(account_id, {})
     clear_resume_cooldown(account_id)

@@ -2820,3 +2820,69 @@ là comment giải thích lịch sử bug, không phải code thật).
       **175 test passed** (171 trước đó + 4 mới), không đụng
       `runtime_config.json`/DB thật (đã xác nhận bằng `md5sum` không đổi
       và `git status` sạch ngoài các file code/test/docs vừa sửa).
+
+- [x] **2026-09-16 — Ưu tiên job `sponsored_by` trong luồng `GET
+      /api/jobs` + lên lịch đăng** (side B thêm 2 field mới:
+      `sponsored_by` — khác `null` là tin trả tiền cần ưu tiên nhất,
+      `expires_at` — khác `null` là tin có hạn). Thiết kế chốt qua nhiều
+      vòng trao đổi với owner (xem `docs/plans` — plan file
+      `luminous-stirring-floyd.md` — cho lý luận đầy đủ từng bước), tóm
+      tắt:
+      1. **Lọc hết hạn**: `_is_expired()` (hàm mới, `data_sync.py`) so
+         `expires_at` với thời điểm mỗi vòng poll (`now_iso`), so string
+         ISO trực tiếp cùng kiểu `latest_job_ts` đang dùng. Job hết hạn
+         bị đánh dấu `seen` và bỏ hẳn (không chờ thử lại — càng để lâu
+         càng hết hạn thêm), áp dụng như nhau cho sponsored lẫn thường.
+      2. **Ưu tiên không vượt `posts_per_day`**: sponsored chỉ được chen
+         lên đầu hàng đợi TRONG hạn mức ngày hiện có, không bao giờ vượt
+         qua — giữ nguyên toàn bộ cơ chế an toàn chống Facebook flag.
+      3. **Dàn đều qua tài khoản**: hàm mới
+         `_distribute_jobs_with_sponsored_priority()` (`data_sync.py`,
+         tách riêng để test được, gọi thay cho
+         `_water_fill_distribute()` cũ trong `sync_all()`) — chạy
+         water-fill **2 lần**: lần 1 chia sponsored trên full capacity
+         mọi tài khoản, lần 2 chia normal trên capacity còn lại (loại
+         tài khoản `sponsored_only`). Lý do không gộp 1 list sort sẵn:
+         `_water_fill_distribute()` chia theo khối liên tục trong list,
+         dồn hết sponsored lên đầu 1 list sẽ có nguy cơ rơi hết vào 1
+         tài khoản duy nhất.
+      4. **Setting mới `AccountConfig.sponsored_only`** (mặc định
+         `False`) — tài khoản bật switch chỉ nhận sponsored, không bao
+         giờ nhận normal job (ở BẤT KỲ ngày nào), để luôn chừa hạn mức
+         phản ứng kịp job sponsored đến gấp. Lưu qua
+         `runtime_config.py`'s `get_sponsored_only_account_ids()`/
+         `set_account_sponsored_only()` (y hệt pattern
+         `sync_disabled_accounts` có sẵn), layer vào
+         `config.py`'s `get_all_accounts()`. UI: cột + nút bật/tắt mới
+         trong `/admin/accounts` tab "Đồng bộ" (route
+         `/accounts/sponsored-only-enable`/`-disable`), dọn dẹp luôn khi
+         xoá tài khoản (`accounts_delete()`).
+      5. **Giới hạn tràn ngày**: `_next_available_business_day()` nhận
+         thêm tham số `max_search_days` (mặc định 60 để không phá test
+         cũ, nhưng `sync_all()` luôn truyền
+         `DataSyncConfig.max_overflow_business_days`, setting mới, mặc
+         định **2**) — trước đây backlog job thường có thể tự đặt trước
+         hạn mức tới 60 ngày tương lai, khiến sponsored job mới tới
+         không còn chỗ gần để chen vào. Chỉnh được qua `/admin/config`
+         (tab "Đồng bộ dữ liệu") — thêm vào `EDITABLE_DATA_SYNC_FIELDS`
+         + `_DATA_SYNC_LABELS`, cơ chế form generic có sẵn tự lo phần
+         render/lưu/ép kiểu `int` đúng, không cần route riêng.
+      6. Traceability nhỏ: `job_data`/`reasoning` của `ScheduledTask`
+         giờ ghi thêm `sponsored_by`, để `/admin/schedule` và báo cáo
+         nhìn thấy bài nào từng được ưu tiên.
+
+      **Đã xác nhận với owner (2026-09-16)**: `expires_at` đã qua thì
+      dừng đăng hẳn, kể cả job `sponsored_by` — đúng như code đang xử lý
+      (`_is_expired()`), không cần sửa gì thêm.
+
+      **191 test passed** (175 trước đó + 16 mới — `_is_expired()`: 4
+      test; `_next_available_business_day()`'s `max_search_days`: 1
+      test mới; `_distribute_jobs_with_sponsored_priority()`: 5 test,
+      gồm đúng ví dụ tính tay 4 sponsored + 6 normal, capacity {A:3,
+      B:5} → A=[S,S,N], B=[S,S,N,N,N], dư 2 bị hoãn; `sponsored_only`
+      account setting + `max_overflow_business_days` config: 6 test
+      trong `test_runtime_config.py`). Không đụng `runtime_config.json`
+      thật — xác nhận bằng `md5sum` không đổi + `git status` sạch. Chưa
+      chạy thử `sync_all()` với dữ liệu thật có `sponsored_by`/
+      `expires_at` (side B chưa deploy field mới) — cần xác nhận lại
+      lần đầu tiên có dữ liệu thật.

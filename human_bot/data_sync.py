@@ -258,6 +258,16 @@ def _is_too_old(published_at: str | None, max_age_days: float) -> bool:
     return (datetime.now(timezone.utc) - published) > timedelta(days=max_age_days)
 
 
+def _is_expired(expires_at: str | None, now_iso: str) -> bool:
+    """2026-09-16, side B API addition to GET /api/jobs: expires_at is
+    null when the job listing has no deadline. Compared as plain
+    ISO-8601 UTC strings (both `expires_at` and `now_iso` are already in
+    the same "...Z"/"...+00:00" UTC form side B sends and this module
+    generates), same string-comparison approach sync_all() already uses
+    for its own `latest_job_ts` cursor — no need for datetime parsing."""
+    return bool(expires_at) and expires_at <= now_iso
+
+
 # --- Scheduling --------------------------------------------------------------
 
 # Fixed +9h JST offset, not zoneinfo — same reasoning as admin.py's
@@ -454,6 +464,58 @@ def _water_fill_distribute(items: list, capacities: dict[str, int]) -> tuple[dic
     return assignment, leftover
 
 
+def _distribute_jobs_with_sponsored_priority(
+    jobs: list[dict],
+    job_capacities: dict[str, int],
+    sponsored_only_ids: set[str],
+) -> tuple[dict[str, list], list]:
+    """Split `jobs` into sponsored_by-having vs. ordinary ones and run
+    `_water_fill_distribute()` TWICE — sponsored first against each
+    account's FULL capacity, then ordinary jobs against whatever's left
+    — instead of just sorting sponsored-first into one combined list and
+    calling `_water_fill_distribute()` once (2026-09-16, owner decision).
+
+    Why two calls: `_water_fill_distribute()` hands items out in
+    CONTIGUOUS per-account blocks (see its own docstring) — the first N
+    items in the input list go to whichever account is first in
+    `job_capacities`, the next M to the second, and so on. Sorting
+    sponsored-first into one list would risk every sponsored job landing
+    on a single account (whichever happens to be first) instead of being
+    spread fairly. Running water-fill once per priority tier keeps that
+    tier's own fair-share behavior independent of the other tier.
+
+    `sponsored_only_ids` (accounts with AccountConfig.sponsored_only set)
+    are excluded from the SECOND (ordinary-jobs) call only — never from
+    the first — so their quota can never be spent on an ordinary job,
+    keeping it free for whenever a sponsored job actually arrives, even
+    on a day where none has yet.
+
+    Returns `(job_assignment, deferred_jobs)` in the same shape
+    `_water_fill_distribute()` itself returns: sponsored items always
+    come BEFORE ordinary items in each account's list, so the caller's
+    existing sequential per-account scheduling loop (which grants
+    earlier `next_post_time`/capacity to whatever's first) naturally
+    posts sponsored jobs first without needing any change of its own.
+    `deferred_jobs` merges leftovers from both calls — same "never drop,
+    only delay" contract as _water_fill_distribute()'s own leftover."""
+    sponsored_jobs = [j for j in jobs if j.get("sponsored_by")]
+    ordinary_jobs = [j for j in jobs if not j.get("sponsored_by")]
+
+    sponsored_assignment, deferred_sponsored = _water_fill_distribute(sponsored_jobs, job_capacities)
+    ordinary_capacities = {
+        aid: cap - len(sponsored_assignment.get(aid, []))
+        for aid, cap in job_capacities.items()
+        if aid not in sponsored_only_ids
+    }
+    ordinary_assignment, deferred_ordinary = _water_fill_distribute(ordinary_jobs, ordinary_capacities)
+
+    job_assignment = {
+        aid: sponsored_assignment.get(aid, []) + ordinary_assignment.get(aid, [])
+        for aid in job_capacities
+    }
+    return job_assignment, deferred_sponsored + deferred_ordinary
+
+
 def _effective_gap_minutes(cfg_min: float, cfg_max: float, account: AccountConfig, kind: str) -> tuple[float, float]:
     """Widen (cfg_min, cfg_max) if needed so the auto-scheduler's gap
     between two tasks never lands under this account's real RateLimiter
@@ -564,6 +626,7 @@ def _next_available_business_day(
     day_counts: dict[date, int],
     today_key: date,
     real_used_today: int,
+    max_search_days: int = 60,
 ) -> tuple[datetime, date, int]:
     """Tràn-ngày (2026-09-11, mang lại sau khi bỏ đi cùng đợt chuyển sang
     kẹp sàn cửa sổ trượt — xem git history cho lịch sử đầy đủ): đẩy `dt`
@@ -579,12 +642,21 @@ def _next_available_business_day(
     (`today_key`) — chỉ áp dụng cho đúng `today_key`, vì các ngày nghiệp
     vụ tương lai chưa có gì xảy ra thật (real = 0 mặc định cho chúng).
 
+    `max_search_days` (mặc định 60, nhưng caller thật sự luôn truyền
+    `DataSyncConfig.max_overflow_business_days` — mặc định 2, xem
+    data_sync_config.py): giới hạn số ngày nghiệp vụ được phép dò tiếp.
+    Hạ từ 60 xuống một con số nhỏ (2026-09-16, owner request) để 1
+    backlog job thường lớn không thể tự đặt trước hàng chục ngày
+    capacity tương lai, làm mất chỗ gần của 1 job `sponsored_by` mới tới
+    cần ưu tiên — xem sync_all()'s tách sponsored/normal ở dưới.
+
     Trả về `(dt mới, business-day key của dt đó, số slot còn trống ở đó)`
-    — số slot có thể là 0 nếu vượt quá 60 ngày tìm kiếm (cấu hình bệnh
-    lý, VD daily_limit=0) — caller tự quyết định hoãn job trong trường
-    hợp đó, không lặp vô hạn."""
+    — số slot có thể là 0 nếu vượt quá `max_search_days` ngày tìm kiếm
+    (cấu hình bệnh lý, VD daily_limit=0, HOẶC đơn giản là backlog đã lấp
+    kín hết cửa sổ tìm kiếm hiện tại) — caller tự quyết định hoãn job
+    trong trường hợp đó, không lặp vô hạn."""
     day_key = daily_limits.business_day_key(dt)
-    for _ in range(60):
+    for _ in range(max_search_days):
         real_used = real_used_today if day_key == today_key else 0
         available = daily_limit - max(day_counts.get(day_key, 0), real_used)
         if available > 0:
@@ -850,8 +922,17 @@ async def sync_all(account_ids: list[str], cfg: DataSyncConfig | None = None) ->
         if job_ts and (latest_job_ts is None or job_ts > latest_job_ts):
             latest_job_ts = job_ts
         jid = str(job.get("id") or "")
-        if jid and jid not in seen:
-            new_jobs.append(job)
+        if not jid or jid in seen:
+            continue
+        # expires_at (2026-09-16, side B API addition) — see _is_expired().
+        # A job whose listing has already closed is fully handled here
+        # (marked seen, like any other permanently-skipped item) rather
+        # than deferred — re-fetching it every poll forever would be
+        # pointless, it can only get MORE expired with time.
+        if _is_expired(job.get("expires_at"), now_iso):
+            _mark_seen(jid, "job")
+            continue
+        new_jobs.append(job)
 
     # Accounts with NO joined groups excluded entirely (2026-09-11, project
     # owner's call) — confirmed live as a real bug: such an account still
@@ -882,7 +963,11 @@ async def sync_all(account_ids: list[str], cfg: DataSyncConfig | None = None) ->
         for aid, acc in accounts.items()
         if get_joined_groups(aid)
     }
-    job_assignment, deferred_jobs = _water_fill_distribute(new_jobs, job_capacities)
+
+    sponsored_only_ids = {aid for aid, acc in accounts.items() if acc.sponsored_only}
+    job_assignment, deferred_jobs = _distribute_jobs_with_sponsored_priority(
+        new_jobs, job_capacities, sponsored_only_ids,
+    )
 
     # --- Candidates: same idea, but the confidence/age/contact skip check
     # is account-independent, so it's applied ONCE up front — a candidate
@@ -1045,10 +1130,13 @@ async def sync_all(account_ids: list[str], cfg: DataSyncConfig | None = None) ->
             # docstring): tìm ngày nghiệp vụ sớm nhất (bắt đầu từ chỗ
             # `next_post_time` đang đứng) còn ít nhất 1 slot, đẩy
             # next_post_time sang đúng ngày đó nếu cần. available==0 chỉ
-            # còn xảy ra khi vượt quá 60 ngày tìm kiếm (cấu hình bệnh lý)
-            # — hoãn cả job trong trường hợp đó.
+            # còn xảy ra khi vượt quá cfg.max_overflow_business_days ngày
+            # tìm kiếm (mặc định 2, hạ từ 60 hôm 2026-09-16 — xem
+            # data_sync_config.py và job_capacities'/sponsored_jobs' comment
+            # phía trên) — hoãn cả job trong trường hợp đó.
             next_post_time, post_day_key, available = _next_available_business_day(
                 next_post_time, daily_post_limit, day_post_counts, today, real_recent_posts,
+                cfg.max_overflow_business_days,
             )
             if available <= 0:
                 deferred_jobs_inner.append(job)
@@ -1098,7 +1186,15 @@ async def sync_all(account_ids: list[str], cfg: DataSyncConfig | None = None) ->
             # redraft with AI later — see schedule_store.ScheduledTask.
             # job_data's docstring. Small subset only, same shape
             # content_strategist._job_summary() builds for the AI prompt.
-            job_data = {"title": job.get("title"), "attributes": job.get("attributes") or {}}
+            job_data = {
+                "title": job.get("title"),
+                "attributes": job.get("attributes") or {},
+                # Stashed purely for /admin/schedule + reports traceability
+                # (2026-09-16) — lets an operator see which tasks were
+                # actually sponsored-priority after the fact; not read by
+                # any scheduling logic itself.
+                "sponsored_by": job.get("sponsored_by"),
+            }
             groups_posted_this_job = 0
             for group, content in zip(groups, variants):
                 # Clamp the CHAIN variable itself (not a throwaway copy) —
@@ -1137,6 +1233,10 @@ async def sync_all(account_ids: list[str], cfg: DataSyncConfig | None = None) ->
                     break
                 day_post_counts[scheduled_day_key] = day_post_counts.get(scheduled_day_key, 0) + 1
                 last_group_post_at[group.url] = scheduled_at
+                # Sponsored jobs get a distinguishable reasoning prefix
+                # (2026-09-16) — same traceability motivation as job_data's
+                # sponsored_by key above.
+                job_kind = f"sponsored job (by {job.get('sponsored_by')})" if job.get("sponsored_by") else "job"
                 task = schedule_store.ScheduledTask(
                     task_id=schedule_store.new_task_id(scheduled_at.isoformat()),
                     action="post_to_group",
@@ -1152,8 +1252,8 @@ async def sync_all(account_ids: list[str], cfg: DataSyncConfig | None = None) ->
                     # here always wins over the random-meme default — see
                     # human_bot/agent.py's run_task() — so this is the one place
                     # to change; no other file needs to know about it.
-                    reasoning=f"auto: new job {jid} broadcast to joined group '{group.name}'" if group.name
-                    else f"auto: new job {jid} broadcast to joined group",
+                    reasoning=f"auto: new {job_kind} {jid} broadcast to joined group '{group.name}'" if group.name
+                    else f"auto: new {job_kind} {jid} broadcast to joined group",
                     source_kind="job",
                     source_id=jid,
                     job_data=job_data,

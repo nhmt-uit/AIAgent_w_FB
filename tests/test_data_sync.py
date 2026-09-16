@@ -11,10 +11,13 @@ import human_bot.schedule_store as schedule_store
 from human_bot.config import GroupRef, RateLimits
 from human_bot.data_sync import (
     _count_scheduled_actions_by_day,
+    _distribute_jobs_with_sponsored_priority,
     _has_room_for_drifted_group,
+    _is_expired,
     _last_scheduled_post_time,
     _next_available_business_day,
     _pick_groups_for_job,
+    _water_fill_distribute,
     apply_quiet_hours,
     sweep_overdue_on_startup,
 )
@@ -43,6 +46,25 @@ def test_apply_quiet_hours_leaves_active_hours_untouched():
     dt = datetime(2026, 9, 10, 3, 0, tzinfo=timezone.utc)  # noon JST — active hours
     result = apply_quiet_hours(dt, cfg)
     assert result == dt
+
+
+# --- _is_expired (2026-09-16, side B GET /api/jobs added expires_at) --------
+
+def test_is_expired_null_never_expires():
+    assert _is_expired(None, "2026-09-16T00:00:00+00:00") is False
+
+
+def test_is_expired_past_deadline():
+    assert _is_expired("2026-09-15T00:00:00+00:00", "2026-09-16T00:00:00+00:00") is True
+
+
+def test_is_expired_future_deadline_not_yet_expired():
+    assert _is_expired("2026-09-20T00:00:00+00:00", "2026-09-16T00:00:00+00:00") is False
+
+
+def test_is_expired_exact_now_counts_as_expired():
+    now = "2026-09-16T00:00:00+00:00"
+    assert _is_expired(now, now) is True
 
 
 # --- _next_available_business_day (day-rollover, business-day keyed) --------
@@ -112,6 +134,28 @@ def test_next_available_business_day_gives_up_after_60_days_when_pathological():
     assert available == 0
 
 
+def test_next_available_business_day_respects_custom_max_search_days():
+    """2026-09-16, owner request: the search bound is now
+    DataSyncConfig.max_overflow_business_days (default 2, was a
+    hardcoded 60) — a big backlog of ordinary jobs must not be able to
+    pre-book weeks of future capacity, or a sponsored_by job arriving
+    later would find no near-term room left to claim. Today and the
+    next business day are both full; with max_search_days=2 the search
+    must give up there rather than rolling into day 3, which DOES have
+    room."""
+    today = date(2026, 9, 11)
+    tomorrow = date(2026, 9, 12)
+    day_after = date(2026, 9, 13)
+    dt = datetime(2026, 9, 11, 3, 0, tzinfo=timezone.utc)
+    day_counts = {today: 2, tomorrow: 2}  # day_after has room (not in dict)
+    _new_dt, _day_key, available = _next_available_business_day(
+        dt, daily_limit=2, day_counts=day_counts, today_key=today, real_used_today=2,
+        max_search_days=2,
+    )
+    assert available == 0  # gave up at the 2-day bound, never reached day_after
+    assert day_after not in day_counts  # sanity: that day genuinely had room
+
+
 def test_next_available_business_day_rollover_lands_at_2am_jst_boundary():
     """Confirms the rollover jumps to the business-day START (2 AM JST),
     not UTC midnight — the caller then runs this through
@@ -176,6 +220,68 @@ def test_has_room_for_drifted_group_future_day_ignores_real_used_today():
         scheduled_day_key=future, post_day_key=today, day_counts=day_counts,
         daily_limit=5, today_key=today, real_used_today=100,
     ) is True
+
+
+# --- _distribute_jobs_with_sponsored_priority (2026-09-16, owner request:
+# sponsored_by jobs must always be scheduled ahead of ordinary ones,
+# without ever exceeding posts_per_day, and spread fairly across
+# accounts rather than dumped onto whichever is first) -----------------------
+
+def _job(jid: str, sponsored_by: str | None = None) -> dict:
+    return {"id": jid, "sponsored_by": sponsored_by}
+
+
+def test_distribute_jobs_sponsored_spread_evenly_matches_owners_worked_example():
+    """The exact walkthrough given in conversation: 4 sponsored + 6
+    ordinary jobs, accounts A (cap 3) and B (cap 5) — sponsored must
+    split 2/2 (not all onto A, which a single sorted-list water-fill
+    would risk), THEN ordinary jobs fill each account's remaining room,
+    with the leftover 2 deferred."""
+    jobs = [_job("N1"), _job("N2"), _job("N3"), _job("N4"), _job("N5"), _job("N6"),
+            _job("S1", "X"), _job("S2", "X"), _job("S3", "X"), _job("S4", "X")]
+    capacities = {"A": 3, "B": 5}
+    assignment, deferred = _distribute_jobs_with_sponsored_priority(jobs, capacities, sponsored_only_ids=set())
+
+    assert [j["id"] for j in assignment["A"]] == ["S1", "S2", "N1"]
+    assert [j["id"] for j in assignment["B"]] == ["S3", "S4", "N2", "N3", "N4"]
+    assert [j["id"] for j in deferred] == ["N5", "N6"]
+
+
+def test_distribute_jobs_sponsored_never_exceeds_total_capacity():
+    jobs = [_job(f"S{i}", "X") for i in range(5)]
+    capacities = {"A": 2, "B": 2}
+    assignment, deferred = _distribute_jobs_with_sponsored_priority(jobs, capacities, sponsored_only_ids=set())
+    assert len(assignment["A"]) + len(assignment["B"]) == 4
+    assert len(deferred) == 1
+
+
+def test_distribute_jobs_sponsored_only_account_never_gets_ordinary_jobs():
+    """AccountConfig.sponsored_only=True accounts must be excluded from
+    the ordinary-jobs pass even though they have leftover capacity after
+    sponsored jobs (which may be zero, or fewer than their full quota)."""
+    jobs = [_job("N1"), _job("N2"), _job("N3")]
+    capacities = {"A": 3, "B": 3}  # A is sponsored_only, no sponsored jobs arrived this poll
+    assignment, deferred = _distribute_jobs_with_sponsored_priority(jobs, capacities, sponsored_only_ids={"A"})
+
+    assert assignment["A"] == []
+    assert [j["id"] for j in assignment["B"]] == ["N1", "N2", "N3"]
+    assert deferred == []
+
+
+def test_distribute_jobs_sponsored_only_account_still_gets_sponsored_jobs():
+    jobs = [_job("S1", "X")]
+    capacities = {"A": 3, "B": 3}
+    assignment, _deferred = _distribute_jobs_with_sponsored_priority(jobs, capacities, sponsored_only_ids={"A"})
+    assert len(assignment["A"]) + len(assignment["B"]) == 1
+
+
+def test_distribute_jobs_no_sponsored_behaves_like_plain_water_fill():
+    jobs = [_job("N1"), _job("N2"), _job("N3")]
+    capacities = {"A": 2, "B": 2}
+    assignment, deferred = _distribute_jobs_with_sponsored_priority(jobs, capacities, sponsored_only_ids=set())
+    expected_assignment, expected_deferred = _water_fill_distribute(jobs, capacities)
+    assert assignment == expected_assignment
+    assert deferred == expected_deferred
 
 
 # --- _pick_groups_for_job (fair round-robin + light random pick, 2026-09-15) -

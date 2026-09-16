@@ -116,6 +116,20 @@ class DataSyncConfig:
         default_factory=lambda: _env_float("DATA_SYNC_CACHE_RETENTION_DAYS", 45.0)
     )
 
+    # How many business days ahead sync_all()'s day-overflow (see
+    # _next_available_business_day() in data_sync.py) is allowed to push a
+    # job whose current business day is already at posts_per_day capacity.
+    # Lowered from a hardcoded 60 (2026-09-16, owner request): a large
+    # backlog of ordinary jobs could otherwise pre-book capacity many
+    # weeks out, leaving no near-term room for a `sponsored_by` job that
+    # needs priority — a job that still can't fit within this window is
+    # deferred (retried next poll) rather than scheduled far in the
+    # future. No _env_int helper exists in this file, so this reuses
+    # _env_float and casts to int, same as every other numeric field here.
+    max_overflow_business_days: int = field(
+        default_factory=lambda: int(_env_float("DATA_SYNC_MAX_OVERFLOW_BUSINESS_DAYS", 2.0))
+    )
+
     base_url: str = field(
         default_factory=lambda: _env_str("DATA_INGESTION_BASE_URL", "http://localhost:3100")
     )
