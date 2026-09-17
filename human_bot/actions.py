@@ -772,16 +772,49 @@ async def comment_on_group_post(
     Tier 4. Clicking the post's own body text (role "paragraph") first to
     reveal the comment textbox, THEN typing into it, mirrors the exact
     two-step reveal post_to_group's composer already uses.
+
+    `wait_until="domcontentloaded"` (2026-09-17, owner-approved after a
+    week of real evidence — see tasks.md's "Đang triển khai" section for
+    the full incident): a group permalink page keeps some Facebook
+    background connection (chat/notifications long-polling) open near-
+    indefinitely, so the default `wait_until="load"` can simply never
+    fire even once the post/comment box are fully visible and
+    clickable. Confirmed via action_log as a real, RECURRING failure —
+    4 separate `Page.goto: Timeout 30000ms exceeded` errors across 2
+    different groups over 2026-09-08 through 2026-09-16, not a one-off
+    network blip — so this is applied now rather than waited on further.
+    UNVERIFIED LIVE as of this change: needs live confirmation that (a)
+    the goto timeout actually stops recurring, and (b) domcontentloaded
+    firing earlier than `load` doesn't itself cause a NEW failure mode
+    (Facebook's post/comment box are rendered client-side by JS AFTER
+    domcontentloaded, so this returns control to the script somewhat
+    before Facebook's own "load" would have) — see the reordered
+    pause_after_page_load() call below, which exists specifically to
+    give that client-side render time to finish before anything reads
+    the page. Monitor action_log for `comment_on_group_post` +
+    `Page.goto: Timeout` over the next several days rather than judging
+    this from one run, since the original failure itself only showed up
+    roughly once every 2-3 days.
     """
     pacing = get_pacing_config()
     mouse = get_mouse_config()
     try:
-        await page.goto(post_url)
+        await page.goto(post_url, wait_until="domcontentloaded")
+        # Moved ahead of the anomaly/unavailable checks below (2026-09-17,
+        # same change as above) — domcontentloaded can return control
+        # before Facebook's own JS has rendered the page's real text
+        # content, and both checks below read page.inner_text("body").
+        # An empty/near-empty body at that instant can't false-positive
+        # either check (both are substring searches — no match found is
+        # just treated as "nothing wrong"), but it COULD false-NEGATIVE a
+        # real checkpoint/anomaly page whose warning text hasn't rendered
+        # yet — giving the page a moment to actually render before either
+        # check reads it directly reduces (does not eliminate) that risk.
+        await pause_after_page_load(pacing)
         await _check_anomaly_or_raise(page)
         unavailable = await _check_target_content_available(page)
         if unavailable:
             return ActionResult(success=False, message=unavailable)
-        await pause_after_page_load(pacing)
 
         await _close_chat_popups(page, mouse, pacing)
         await human_click(page, page.get_by_role("paragraph").first, mouse)

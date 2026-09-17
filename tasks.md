@@ -1075,8 +1075,9 @@
       **Vẫn thiếu bước cuối:** chưa chạy 1 task `post_to_group` thật
       qua chính bot (end-to-end, không phải Codegen tay) để xác nhận
       `result.txt` ra đúng `posted_to_group_pending_approval`.
-- [ ] **(TẠM HOÃN — owner chủ động rewind, chờ xác nhận có phải lỗi code
-      thật không)** `comment_on_group_post` timeout 30s khi
+- [ ] **(2026-09-17 — hết tạm hoãn, xem cập nhật bên dưới: đã xác nhận
+      lặp lại thật, đã áp dụng lại fix, đang theo dõi)** `comment_on_group_post`
+      timeout 30s khi
       `page.goto(post_url)` vào permalink bài trong nhóm
       (`Page.goto: Timeout 30000ms exceeded... waiting until "load"`,
       task thật gây lỗi: `scheduled/failed/20260910T114429Z_c2545f89`,
@@ -1106,6 +1107,48 @@
       `action_log`, 12:25:04 UTC, `schedule_auto`) — cần thử "Đăng lại"
       thêm 1 lần nữa SAU khi qua mốc rate-limit (~14:14 UTC hôm đó) để
       mới thật sự có dữ liệu thứ 2 kiểm chứng có lặp lại hay không.
+
+      **Cập nhật 2026-09-17 — câu hỏi "chờ xác nhận có lặp lại không" đã
+      có câu trả lời: CÓ.** Tra lại `action_log` sau 1 tuần chạy với code
+      gốc (đã rewind) cho thấy đúng lỗi `Page.goto: Timeout` này tái diễn
+      thêm **3 lần nữa**: id 119 (11/09, nhóm khác — `592640401280590`),
+      id 121 (11/09, cùng ngày, nhóm `vieclamtimnguoi`), id 162 (16/09,
+      lại nhóm `592640401280590`). Tổng cộng 4 lần trên 2 nhóm khác nhau
+      trải dài 1 tuần — không phải sự cố mạng 1 lần, mà là đặc tính lặp
+      lại của trang permalink Facebook (chiếm 4/13 lỗi thật của
+      `comment_on_group_post`, không tính các lần bị `rate_limited` hợp
+      lệ). Không còn lý do để tiếp tục "chờ xem" nữa.
+
+      **Áp dụng lại fix (2026-09-17)**: `wait_until="domcontentloaded"`
+      + dời `pause_after_page_load()` lên trước 2 bước kiểm tra
+      anomaly/unavailable, đúng như thiết kế cũ hôm 10/09. **Lưu ý quan
+      trọng phát hiện khi owner hỏi lại**: giá trị `domcontentloaded`
+      này CHƯA TỪNG được ai kiểm chứng sống — `git log -p` xác nhận nó
+      chưa từng xuất hiện trong bất kỳ commit nào của `actions.py`, khớp
+      đúng việc nó bị rewind trước khi kịp chạy thử hôm 10/09. Assistant
+      lúc đầu trình bày như thể đây là hướng đã cân nhắc kỹ — thực chất
+      chỉ là lặp lại nguyên văn ghi chú cũ, chưa tự kiểm chứng gì thêm.
+      Về lý thuyết Playwright, `domcontentloaded` đúng là lựa chọn được
+      khuyến nghị cho trang có kết nối nền khiến `"load"` không bao giờ
+      bắn (thay vì `"networkidle"`, vốn bị chính Playwright khuyến cáo
+      tránh dùng cho web app hiện đại vì cùng lý do) — nhưng rủi ro thật
+      chưa loại trừ: `domcontentloaded` bắn TRƯỚC khi nội dung do JS
+      render xong, nên `_check_anomaly_or_raise()`/`_check_target_content_available()`
+      (đọc `page.inner_text("body")` ngay sau đó) có thể đọc phải body
+      gần như rỗng — không gây false-positive (cả 2 chỉ tìm chuỗi con,
+      rỗng thì đơn giản là "không thấy gì bất thường"), nhưng CÓ THỂ
+      false-negative 1 trang checkpoint/anomaly thật nếu cảnh báo chưa
+      kịp render. Đây là lý do giữ nguyên việc dời `pause_after_page_load()`
+      lên trước — giảm rủi ro này chứ không loại bỏ hẳn.
+
+      Vì lỗi gốc là xác suất thấp (~1 lần/2-3 ngày), **không thể xác
+      nhận bằng 1 lần chạy hay bằng Codegen** (Codegen ghi tay 1 lần gần
+      như chắc chắn sẽ không rơi vào đúng lúc lỗi xảy ra). Cách xác nhận
+      đúng: theo dõi `action_log` (lọc `comment_on_group_post` +
+      `Page.goto: Timeout`) qua NHIỀU NGÀY chạy thật tiếp theo — vừa xem
+      tần suất lỗi cũ có giảm hẳn, vừa xem có phát sinh lỗi MỚI nào do
+      đổi `wait_until` hay không. Chưa đánh dấu hoàn thành cho tới khi
+      có đủ dữ liệu theo dõi.
 - [x] **Sửa lỗi thật: comment lên lịch quá gần nhau giữa các lần poll
       `sync_all()` khác nhau — thêm "kẹp sàn" cho comment scheduling.**
       Owner phát hiện 3 comment cùng tài khoản chỉ cách nhau 5-20 phút
