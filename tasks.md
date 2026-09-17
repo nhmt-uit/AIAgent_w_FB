@@ -3060,3 +3060,24 @@ là comment giải thích lịch sử bug, không phải code thật).
       thật. Đã xác nhận với dữ liệu cache thật (`candidate:62` đọc đúng
       từ file `2026-09-15.json` định dạng cũ) — tương thích ngược hoạt
       động đúng trên dữ liệu thật, không chỉ trong test giả lập.
+
+- [ ] **2026-09-17 — Phát hiện (KHÔNG phải bug human_bot): 2 job ID khác
+      nhau từ bên B (444, 447) mang nội dung THẬT SỰ giống hệt nhau** —
+      owner nhận ra 2 bài đăng nhóm (16/09 16:35 JST và 17/09 13:28 JST)
+      đọc như trùng nội dung. Tra `job_data.attributes` của cả 2
+      (`action_log` id 155/source_id 447 và id 164/source_id 444) xác
+      nhận: cùng công ty (株式会社ケアリッツ・テクノロジーズ), cùng
+      lương (652~1.3 tờ/năm), cùng JLPT N2, cùng visa Gijinkoku, cùng
+      ngành IT/Quản lý dự án, cùng `confidence: 0.99` — chỉ khác phần
+      chữ do AI viết lại (2 lượt redraft độc lập cho 2 "job" riêng).
+      Cơ chế dedup của `human_bot` (`_seen_key`, `_cursor`...) chỉ chống
+      trùng theo ID job, không so sánh nội dung — nên cả 444 và 447 đều
+      hợp lệ được coi là "job mới", đăng đúng theo thiết kế, không có
+      bug trong `sync_all()`/`_mark_seen()`/`_cursor()`. Nguyên nhân
+      thật nằm ở phía B: cùng 1 tin tuyển dụng bị gán 2 ID khác nhau
+      trong dữ liệu nguồn (có thể do tin được nhiều nguồn/CTV đăng lại,
+      mỗi lượt crawl coi là bản ghi mới). **Owner quyết định: báo lại
+      cho bên B rà soát pipeline crawl của họ, KHÔNG thêm dedup theo nội
+      dung ở phía human_bot** (rủi ro false-positive nếu 2 job thật khác
+      nhau vô tình giống thuộc tính). Không có thay đổi code nào cho
+      mục này.
