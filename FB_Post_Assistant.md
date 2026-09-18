@@ -222,7 +222,15 @@ qua việc quan sát dữ liệu thật hằng ngày.
   đăng nếu bài đó chưa có sẵn ảnh riêng, nên bước "bấm nút thêm ảnh" vẫn luôn chạy
   dù người dùng không yêu cầu đính kèm gì. Nút này trên UI tiếng Việt chỉ có icon,
   không có chữ, nên không đọc được từ ảnh chụp lỗi — chủ dự án đã tự kiểm tra trên
-  trang thật và cho đúng chữ ("Ảnh/video"). Đã vá tương tự 3 lần trước.
+  trang thật và cho đúng chữ ("Ảnh/video"). Đã vá tương tự 3 lần trước. Sau khi
+  restart lại hệ thống để nạp code mới, bài đăng nhóm đầu tiên của `nhtu00` đã
+  đăng thành công thật (job công ty CMC Japan, nhóm "Chuyển việc kỹ sư").
+- **Ghi nhận (chưa xử lý): 1 tin tuyển dụng có mức lương đọc sai đơn vị.** Tra lại
+  thông tin gốc bài đăng thành công nói trên, chủ dự án phát hiện mức lương ghi
+  "5.000.000 JPY/**giờ**" — con số phi lý (gấp hàng nghìn lần lương giờ thực tế),
+  nhiều khả năng đúng ra là lương theo năm hoặc tháng nhưng bị đọc/gắn sai đơn vị.
+  Chưa rõ lỗi nằm ở dữ liệu nguồn (bên B) hay ở bước AI trích xuất — cần điều tra
+  thêm trước khi sửa, chưa có thay đổi nào cho mục này.
 - **Sửa lỗi thật: hệ thống lấy quá nhiều tin về đăng cho 1 tài khoản trong 1 lần
   đồng bộ**, khiến lịch đăng bị đẩy xa hơn nhiều so với quy định. Chủ dự án phát
   hiện tài khoản `nhtu00` vừa đồng bộ xong đã có lịch đăng tới tận 3 ngày sau.
@@ -277,16 +285,14 @@ Một vài lựa chọn thiết kế đáng chú ý, được cân nhắc kỹ c
 - Chuyển giao diện Facebook của tài khoản `nhtu00` sang tiếng Anh theo đúng quy
   định (mục 5) — đây vẫn là hướng xử lý chính; phần "hiểu cả tiếng Việt" vừa thêm
   chỉ là lưới an toàn dự phòng, không thay thế việc này.
-- Theo dõi lần đăng bài vào nhóm kế tiếp của `nhtu00` để xác nhận nút mở khung
-  soạn bài (vừa sửa) hoạt động đúng trên trình duyệt thật.
 - Theo dõi lần đăng lên tường cá nhân đầu tiên của `nhtu00` để xác nhận nút mở
-  khung soạn bài (vừa vá trước bằng chữ owner cho) hoạt động đúng trên thực tế.
-- Theo dõi lần đăng vào nhóm kế tiếp của `nhtu00` để xác nhận nút đính kèm
-  ảnh/video (vừa sửa) hoạt động đúng — đã fail 4 lỗi khác nhau liên tiếp trên
-  cùng 1 account do UI tiếng Việt, nên cần xem có phát sinh lỗi thứ 5 hay không.
+  khung soạn bài (vá trước bằng chữ owner cho, chưa có lỗi thật để đối chiếu)
+  hoạt động đúng trên thực tế.
 - Theo dõi lần đồng bộ dữ liệu kế tiếp để xác nhận sửa lỗi "lấy quá nhiều tin"
   hoạt động đúng trên hệ thống thật (mới test bằng dữ liệu giả lập, chưa chạy
   sống) — lần này `nhtu00` nên chỉ lấy về đúng khoảng 9 tin thay vì 35.
+- Điều tra tiếp lỗi mức lương "5.000.000 JPY/giờ" — xác định lỗi nằm ở bên B hay
+  ở bước AI trích xuất, trước khi quyết định sửa chỗ nào.
 - Nối toàn bộ hệ thống vào quy trình tự động hoàn chỉnh (chạy theo lịch/tín hiệu
   từ bên B), thay vì cần thao tác tay ở một số bước.
 - Cân nhắc thêm tính năng chọn nhóm đăng theo đúng chủ đề (VD tin ngành IT → nhóm

@@ -64,6 +64,7 @@
 - [17/09: Bug `job_capacities` lấy dư job + dọn dữ liệu `nhtu00`](#bug-thật-job_capacities-cổng-lấy-job-về-của-sync_all-chưa-bao-giờ-hiện-thực-đúng-công-thức-owner-đã-chốt-từ-trước-2026-09-17)
 - [18/09: Bug `post_to_group` timeout nút mở composer — cùng gốc UI tiếng Việt](#bug-thật-post_to_group-timeout-30s-chờ-nút-mở-composer-cùng-gốc-ui-tiếng-việt-trên-nhtu00-2026-09-18)
 - [18/09: Bug thứ 4 cùng gốc — nút "Photo/video" (icon, không chữ)](#bug-thật-thứ-4-cùng-gốc-nút-photovideo-icon-không-chữ-_attach_media-2026-09-18)
+- [18/09: [Chưa xử lý] Job 542 lương sai đơn vị "5tr JPY/giờ"](#phát-hiện-không-phải-bug-human_bot-job-542-có-mức-lương-đọc-sai-đơn-vị-5000000-jpygiờ-2026-09-18-chưa-xử-lý)
 
 ---
 
@@ -3358,3 +3359,29 @@ docstring hàm này) — dấu `/` trong pattern raw sẽ phá cú pháp DSL
 cách bản tiếng Anh `photo.video` đã làm: `photo.video|Ảnh.video`. 205
 test vẫn pass. **Chưa live-confirm** — cần theo dõi lần `post_to_group`
 kế tiếp của `nhtu00`.
+
+**Cập nhật cùng ngày — 4 fix trên đã xác nhận sống thành công**:
+`post_to_group` đầu tiên của `nhtu00` đăng thành công lúc 08:38:11 UTC
+(job 542, nhóm "Chuyển việc kỹ sư"), sau khi owner restart service để
+nạp code mới (service cũ khởi động 03:43:47 UTC — TRƯỚC khi fix
+"Ảnh/video" được lưu lúc 04:33:08 UTC, nên 2 lần fail sau đó
+(05:48, 07:19) vẫn dùng code cũ trong bộ nhớ, không phải regex sai —
+xác nhận bằng `ps`/thời điểm khởi động tiến trình, không đoán).
+
+## Phát hiện (KHÔNG phải bug human_bot): job 542 có mức lương đọc sai đơn vị — "5.000.000 JPY/giờ" (2026-09-18) [CHƯA XỬ LÝ]
+
+Owner phát hiện khi tra thông tin gốc bài đăng nhóm gần nhất (job id
+542, công ty CMC Japan, đăng thật lúc 08:38:11 UTC — xem mục ngay
+trên). `job_data.attributes.salary` = `{"min": 5000000, "period":
+"hour", "currency": "JPY"}` — 5 triệu yên/**giờ** là con số phi lý
+(gấp hàng nghìn lần lương giờ thực tế ở Nhật), nhiều khả năng đơn vị
+đúng phải là "/năm" hoặc "/tháng" và bị đọc/gắn sai `period` từ nguồn
+(bên B) hoặc lúc AI trích xuất — CHƯA điều tra tới gốc, chỉ mới quan
+sát 1 trường hợp.
+
+Chưa xác định được đây là lỗi ở bên B (dữ liệu nguồn) hay ở bước AI
+đọc/trích xuất `attributes` phía `human_bot` — cần tra thêm
+`job_data` gốc từ bên B cho job 542 (nếu còn giữ) hoặc log bước AI
+soạn bài để biết `period` bị gán sai ở đâu, trước khi quyết định sửa
+chỗ nào. Không có thay đổi code nào cho mục này — ghi nhận để điều tra
+tiếp, KHÔNG được coi là đã xử lý.
