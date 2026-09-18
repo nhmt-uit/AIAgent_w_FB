@@ -18,6 +18,7 @@ from human_bot.data_sync import (
     _has_room_for_drifted_group,
     _is_expired,
     _last_scheduled_post_time,
+    _max_jobs_over_window,
     _next_available_business_day,
     _pick_groups_for_job,
     _seen_key,
@@ -289,6 +290,81 @@ def test_next_available_business_day_respects_custom_max_search_days():
     )
     assert available == 0  # gave up at the 2-day bound, never reached day_after
     assert day_after not in day_counts  # sanity: that day genuinely had room
+
+
+# --- _max_jobs_over_window (multi-day + group-count-aware job pull cap) -----
+#
+# Real incident, 2026-09-17: job_capacities (sync_all()'s water-fill input)
+# used only today's leftover slot count as if 1 job == 1 slot — no
+# tomorrow/day-after, no division by max_groups_per_post. Account nhtu00
+# had 35 jobs pulled in one poll though its real today+2-day budget only
+# supported 9, and per-post spacing alone then spread the backlog out to a
+# 4th business day. This locks down the owner's own worked example.
+
+def test_max_jobs_over_window_matches_owners_worked_example():
+    """Owner's exact numbers: 3 slots left today, 12 tomorrow, 12 the day
+    after (today+2, the same window _next_available_business_day() is
+    allowed to search) = 27 total, ÷ 3 groups/post = 9 jobs exactly."""
+    today = date(2026, 9, 17)
+    account = _FakeAccount(
+        rate_limits=RateLimits(posts_per_day=12, max_groups_per_post=3),
+        action_log_path=Path("unused"),
+    )
+    day_post_counts = {today: 9}  # 12 - 9 = 3 slots left today
+    assert _max_jobs_over_window(
+        account, day_post_counts, today, real_used_today=9, max_overflow_business_days=2,
+    ) == 9
+
+
+def test_max_jobs_over_window_rounds_up_a_partial_remainder():
+    """25 total slots ÷ 3 groups/post = 8 remainder 1 — the owner's rule
+    is that a leftover partial slot still counts as one more job (it just
+    posts into fewer groups, same as _next_available_business_day()'s
+    existing "further capped to `available`" behavior for a single job),
+    so this must round UP to 9, not down to 8."""
+    today = date(2026, 9, 17)
+    account = _FakeAccount(
+        rate_limits=RateLimits(posts_per_day=12, max_groups_per_post=3),
+        action_log_path=Path("unused"),
+    )
+    day_post_counts = {today: 11}  # 12 - 11 = 1 slot left today (1 + 12 + 12 = 25)
+    assert _max_jobs_over_window(
+        account, day_post_counts, today, real_used_today=11, max_overflow_business_days=2,
+    ) == 9
+
+
+def test_max_jobs_over_window_deducts_jobs_already_scheduled_from_prior_polls():
+    """Tomorrow/day-after must be reduced by whatever an EARLIER poll
+    already scheduled there, not treated as a clean posts_per_day slate —
+    otherwise every poll would re-grant the same future slots on top of
+    what a previous poll already claimed."""
+    today = date(2026, 9, 17)
+    tomorrow = date(2026, 9, 18)
+    day_after = date(2026, 9, 19)
+    account = _FakeAccount(
+        rate_limits=RateLimits(posts_per_day=12, max_groups_per_post=3),
+        action_log_path=Path("unused"),
+    )
+    # Today fully used; tomorrow and day-after already fully booked by a
+    # prior poll — nothing left in the whole window.
+    day_post_counts = {today: 12, tomorrow: 12, day_after: 12}
+    assert _max_jobs_over_window(
+        account, day_post_counts, today, real_used_today=12, max_overflow_business_days=2,
+    ) == 0
+
+
+def test_max_jobs_over_window_zero_when_max_groups_per_post_is_zero():
+    """max_groups_per_post <= 0 must not raise ZeroDivisionError — the
+    per-job loop in sync_all() already treats this as "defer everything"
+    (see its own comment), so the pull-count cap should agree: 0 jobs."""
+    today = date(2026, 9, 17)
+    account = _FakeAccount(
+        rate_limits=RateLimits(posts_per_day=12, max_groups_per_post=0),
+        action_log_path=Path("unused"),
+    )
+    assert _max_jobs_over_window(
+        account, {}, today, real_used_today=0, max_overflow_business_days=2,
+    ) == 0
 
 
 def test_next_available_business_day_rollover_lands_at_2am_jst_boundary():

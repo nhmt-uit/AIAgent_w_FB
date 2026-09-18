@@ -523,6 +523,65 @@ def _count_scheduled_actions_by_day(account_id: str, actions: set[str]) -> dict[
     return counts
 
 
+def _max_jobs_over_window(
+    acc,
+    day_post_counts: dict[date, int],
+    today: date,
+    real_used_today: int,
+    max_overflow_business_days: int,
+) -> int:
+    """How many NEW jobs this account should be handed in one sync_all()
+    poll — owner-specified formula (2026-09-17): sum this account's
+    remaining post_to_group slots across "today" AND every business day
+    _next_available_business_day() is allowed to overflow into
+    (max_overflow_business_days, same window/same setting), THEN divide
+    by max_groups_per_post (one job can broadcast into up to that many
+    real posts) — rounding UP, because a day left with fewer slots than
+    max_groups_per_post still fits one more job that simply posts into
+    fewer groups (the existing "further capped to `available`" rule in
+    sync_all()'s per-job loop below already does exactly that for a
+    single job; this just makes the COUNT of jobs pulled from the
+    backlog agree with it up front). Owner's own worked example: 3 slots
+    today + 12 tomorrow + 12 day-after = 27, ÷ 3 groups/post = 9 (8 full
+    jobs + 1 partial), not floor(27/3)=9 coincidentally exact — with a
+    remainder the extra job is still counted (e.g. 25 slots ÷ 3 = 8
+    remainder 1 ⇒ 9 jobs).
+
+    Fixes a real gap found live 2026-09-17: `job_capacities` previously
+    used ONLY today's leftover slot count as if it directly meant "number
+    of jobs" (1 job == 1 slot, no group multiplier, no tomorrow/day-after
+    at all) — never actually implemented the owner's already-agreed
+    today+N-day/÷max_groups_per_post design despite the 2-day overflow
+    window (`cfg.max_overflow_business_days`, data_sync_config.py) having
+    existed since 2026-09-16 for the PER-JOB day-rollover check
+    (_next_available_business_day()) further down. Confirmed live: account
+    nhtu00 had 35 jobs pulled in one poll (its real today+2-day budget
+    only supported 9), which is what natural per-post spacing then spread
+    all the way out to a 4th business day — see the conversation this was
+    fixed from for the full trace.
+
+    `day_post_counts` must be this account's own
+    `_count_scheduled_actions_by_day(aid, {"post_to_group"})` result —
+    PENDING (from earlier polls, including today's own prior polls) AND
+    POSTED both count, same reasoning as that function's own docstring:
+    a slot already spoken for by an earlier poll must not be handed out
+    again by this one, for tomorrow/day-after exactly as much as for
+    today. `real_used_today` is `daily_limits.count_since_business_day_start()`
+    — only meaningful for `today` itself (future business days have no
+    real activity yet by definition)."""
+    total_slots = 0
+    for offset in range(max_overflow_business_days + 1):
+        day = today + timedelta(days=offset)
+        used = day_post_counts.get(day, 0)
+        if day == today:
+            used = max(used, real_used_today)
+        total_slots += max(acc.rate_limits.posts_per_day - used, 0)
+    per_job = acc.rate_limits.max_groups_per_post
+    if per_job <= 0 or total_slots <= 0:
+        return 0
+    return -(-total_slots // per_job)  # ceil division
+
+
 def _water_fill_distribute(items: list, capacities: dict[str, int]) -> tuple[dict[str, list], list]:
     """Split `items` across the accounts in `capacities` as evenly as
     possible WITHOUT ever giving an account more than its own remaining
@@ -1078,11 +1137,16 @@ async def sync_all(account_ids: list[str], cfg: DataSyncConfig | None = None) ->
     # chính là điều kiện khiến việc khoá 1 job vào "ngày nghiệp vụ mai"
     # (tràn-ngày, xem _next_available_business_day() bên dưới) AN TOÀN trở
     # lại, không còn rủi ro đảo thứ tự đã gặp hồi còn dùng cửa sổ trượt.
+    # Multi-day/group-aware capacity (2026-09-17, see _max_jobs_over_window()'s
+    # docstring for the full "why" and the real incident this fixes) —
+    # replaces the previous today-only, no-group-division count.
     job_capacities = {
-        aid: acc.rate_limits.posts_per_day
-        - max(
-            _count_scheduled_actions_by_day(aid, {"post_to_group"}).get(today, 0),
+        aid: _max_jobs_over_window(
+            acc,
+            _count_scheduled_actions_by_day(aid, {"post_to_group"}),
+            today,
             daily_limits.count_since_business_day_start(acc, "post"),
+            cfg.max_overflow_business_days,
         )
         for aid, acc in accounts.items()
         if get_joined_groups(aid)
