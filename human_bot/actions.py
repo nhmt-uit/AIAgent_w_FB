@@ -132,7 +132,11 @@ async def _close_chat_popups(page: Page, mouse, pacing) -> None:
     pre-existing failure this is meant to prevent, not a new one.
     """
     try:
-        for label in ("Minimize chat", "Close chat"):
+        # Vietnamese labels ("Thu nhỏ đoạn chat" / "Đóng đoạn chat") added
+        # 2026-09-17 — reported live by account owner on nhtu00, not yet
+        # Codegen-confirmed. Paired with their English originals so both
+        # are tried per popup regardless of UI language.
+        for label in ("Minimize chat", "Thu nhỏ đoạn chat", "Close chat", "Đóng đoạn chat"):
             buttons = page.get_by_role("button", name=label, exact=True)
             # Cap iterations per label — best-effort cleanup, not a loop
             # that should ever run long even with several chats docked.
@@ -197,8 +201,15 @@ async def _attach_media(page: Page, scope, media_path: str, mouse, pacing) -> No
     # file for apostrophes (see "what.?s on your mind" below, "." instead
     # of "'") — same fix here: "." matches any single character, including
     # the literal "/", without tripping the DSL's own delimiter parsing.
+    #
+    # Vietnamese variant "Ảnh/video" added 2026-09-18 (same lưới an toàn
+    # dự phòng as the other 3 selectors fixed this week) — confirmed live:
+    # this exact button timed out for nhtu00 (icon-only in the composer
+    # toolbar, no visible text, so the account owner read the real
+    # accessible name/tooltip directly off the live page rather than a
+    # screenshot). Same "/" gotcha applies here too — "." in place of it.
     photo_button = scope.get_by_role(
-        "button", name=re.compile("photo.video", re.IGNORECASE)
+        "button", name=re.compile("photo.video|Ảnh.video", re.IGNORECASE)
     )
     await human_click(page, photo_button, mouse)
     await pause_between_ui_steps(pacing)
@@ -297,8 +308,17 @@ async def post_to_own_profile(
         # The composer trigger button's accessible name is personalized per
         # account ("What's on your mind, <Name>?") — matched with a partial
         # regex so this works for any account.
+        #
+        # Vietnamese variant added 2026-09-18 (same lưới an toàn dự phòng as
+        # post_to_group's composer button and comment_on_group_post's
+        # textbox — real gap, not yet hit live for this specific button:
+        # nhtu00 hasn't attempted post_to_own_profile yet) — owner-reported
+        # live text: "Tú ơi, bạn đang nghĩ gì thế?". Unlike the English
+        # version, the personalized name comes FIRST in Vietnamese ("<Tên>
+        # ơi, ..."), so the name-agnostic partial match has to target the
+        # fixed TAIL ("bạn đang nghĩ gì thế") instead of a fixed head.
         await human_click(page, page.get_by_role(
-            "button", name=re.compile("what.?s on your mind", re.IGNORECASE)
+            "button", name=re.compile("what.?s on your mind|bạn đang nghĩ gì thế", re.IGNORECASE)
         ), mouse)
         await pause_after_composer_open(pacing)
 
@@ -360,9 +380,13 @@ async def post_to_own_profile(
         # instead of a flat pause, see human_bot/humanize.py's reading_pause().
         await reading_pause(content, pacing)
         # Confirmed live 2026-09-03. Scoped to composer_dialog (not
-        # page-wide) and exact=True since "Post" is a common word that
-        # could otherwise match unrelated buttons.
-        post_button = composer_dialog.get_by_role("button", name="Post", exact=True)
+        # page-wide) and anchored ("^...$") since "Post" is a common word
+        # that could otherwise match unrelated buttons. "Đăng" added
+        # 2026-09-17 (Vietnamese UI, reported live by account owner on
+        # nhtu00 — not yet Codegen-confirmed for this specific button).
+        post_button = composer_dialog.get_by_role(
+            "button", name=re.compile(r"^(Post|Đăng)$", re.IGNORECASE)
+        )
         await human_click(page, post_button, mouse)
 
         # Verify the post actually submitted instead of assuming success
@@ -541,13 +565,20 @@ async def _tier2_your_groups(page: Page, group_url: str, mouse, pacing) -> bool:
     Recorded 2026-09-04 against tu_iizuki. Needs no per-account setup —
     works for any group the account has already joined. (The live UI's
     actual label is "Your groups" — an earlier draft of docs/skills/
-    group-targeting.md guessed "Groups you've joined", which was wrong.)"""
+    group-targeting.md guessed "Groups you've joined", which was wrong.)
+
+    Vietnamese equivalents ("Lối tắt của bạn" / "Nhóm" / "Nhóm của bạn")
+    added 2026-09-17 — reported live by account owner on nhtu00, not yet
+    Codegen-confirmed for this specific tier."""
     await _go_home(page, mouse, pacing)
-    await human_click(page, page.get_by_label("Shortcuts").get_by_role(
-        "link", name="Groups"
+    shortcuts_label = re.compile(r"Shortcuts|Lối tắt của bạn", re.IGNORECASE)
+    await human_click(page, page.get_by_label(shortcuts_label).get_by_role(
+        "link", name=re.compile(r"^(Groups|Nhóm)$", re.IGNORECASE)
     ), mouse)
     await pause_between_ui_steps(pacing)
-    await human_click(page, page.get_by_role("link", name="Your groups"), mouse)
+    await human_click(page, page.get_by_role(
+        "link", name=re.compile(r"Your groups|Nhóm của bạn", re.IGNORECASE)
+    ), mouse)
     await pause_between_ui_steps(pacing)
     return await _click_group_by_id(page, group_url, mouse)
 
@@ -558,23 +589,34 @@ async def _tier3_search(page: Page, group_url: str, group_name: str | None, mous
     (from /admin/groups, see human_bot/runtime_config.py's
     get_joined_groups) as the search query — if the caller didn't supply
     one, this tier is skipped entirely (returns False immediately) rather
-    than searching with nothing."""
+    than searching with nothing.
+
+    Vietnamese equivalents ("Tìm kiếm trên Facebook" / "Nhóm" / "Nhóm của
+    tôi") added 2026-09-17 — reported live by account owner on nhtu00
+    (the "Groups results" filter's Vietnamese accessible name is simply
+    "Nhóm", not a literal translation of "results" — confirmed via a
+    real search screenshot, not guessed), not yet Codegen-confirmed for
+    this specific tier."""
     if not group_name:
         return False
     await _go_home(page, mouse, pacing)
-    search_box = page.get_by_role("combobox", name="Search Facebook")
+    search_box = page.get_by_role(
+        "combobox", name=re.compile(r"Search Facebook|Tìm kiếm trên Facebook", re.IGNORECASE)
+    )
     await human_click(page, search_box, mouse)
     await human_type(page, group_name, config=get_human_typing_config())
     await search_box.press("Enter")
     await pause_after_page_load(pacing)
     await human_click(page, page.get_by_role(
-        "link", name="Groups results", exact=True
+        "link", name=re.compile(r"^(Groups results|Nhóm)$", re.IGNORECASE)
     ), mouse)
     await pause_between_ui_steps(pacing)
     # Filter to groups this account has actually joined — narrows the
     # result set and matches what a real member searching for their own
     # group would naturally do next.
-    my_groups_switch = page.get_by_role("switch", name="My groups")
+    my_groups_switch = page.get_by_role(
+        "switch", name=re.compile(r"My groups|Nhóm của tôi", re.IGNORECASE)
+    )
     if await my_groups_switch.count() > 0:
         await human_click(page, my_groups_switch, mouse)
         await pause_after_page_load(pacing)
@@ -649,8 +691,16 @@ async def post_to_group(
             await pause_after_page_load(pacing)
 
         await _close_chat_popups(page, mouse, pacing)
+        # Vietnamese variant ("Bạn viết gì đi...") added 2026-09-18 after
+        # this exact button timed out live, 4 times, on account nhtu00
+        # (Vietnamese Facebook UI — same underlying gap as
+        # comment_on_group_post's textbox fix 2026-09-17, this composer-
+        # opener button was simply missed at the time since nhtu00 hadn't
+        # attempted a group POST yet, only a comment). Confirmed via the
+        # account's own fail screenshot, not guessed. Unanchored/partial
+        # match, matching "write something"'s own existing looseness.
         await human_click(page, page.get_by_role(
-            "button", name=re.compile("write something", re.IGNORECASE)
+            "button", name=re.compile("write something|Bạn viết gì", re.IGNORECASE)
         ), mouse)
         await pause_after_composer_open(pacing)
 
@@ -699,9 +749,12 @@ async def post_to_group(
         # DOM change.
         await reading_pause(content, pacing)
         # Scoped to composer_dialog (see the 2026-09-15 fix note above),
-        # and exact=True since "Post" is a common word that could
-        # otherwise match unrelated buttons elsewhere on the page.
-        post_button = composer_dialog.get_by_role("button", name="Post", exact=True)
+        # and anchored ("^...$") since "Post" is a common word that could
+        # otherwise match unrelated buttons elsewhere on the page. "Đăng"
+        # added 2026-09-17 — see post_to_own_profile's identical change.
+        post_button = composer_dialog.get_by_role(
+            "button", name=re.compile(r"^(Post|Đăng)$", re.IGNORECASE)
+        )
         await human_click(page, post_button, mouse)
 
         # Same verification as post_to_own_profile (see its comment) —
@@ -825,17 +878,31 @@ async def comment_on_group_post(
         # privacy ("Write a comment…") AND by post type — confirmed live
         # 2026-09-08 that a Q&A-style group post renders "Write an
         # answer…" instead, causing a 30s timeout here before this was
-        # widened. The "Post comment"-labeled submit button below is NOT
-        # widened the same way — a Q&A post's compact composer showed no
-        # such text button in that screenshot (icon-only send control),
-        # so a Q&A post will still fail at that step; this only fixes the
-        # textbox-not-found timeout, not full Q&A support.
-        comment_box = page.get_by_role("textbox", name=re.compile("comment|answer", re.IGNORECASE))
+        # widened. Vietnamese variants ("Viết câu trả lời" / "Viết bình
+        # luận công khai") added 2026-09-17 after this exact 30s textbox
+        # timeout recurred on account nhtu00, whose Facebook UI is
+        # Vietnamese — confirmed live via its own fail screenshot, not
+        # guessed. The "Post comment"-labeled submit button below is NOT
+        # widened the same way against Q&A posts — a Q&A post's compact
+        # composer showed no such text button in that screenshot
+        # (icon-only send control), so a Q&A post will still fail at that
+        # step; this only fixes the textbox-not-found timeout, not full
+        # Q&A support.
+        comment_box = page.get_by_role(
+            "textbox",
+            name=re.compile("comment|answer|Viết câu trả lời|Viết bình luận công khai", re.IGNORECASE),
+        )
         await human_click(page, comment_box, mouse)
         await human_type(page, content, config=get_human_typing_config())
 
         await reading_pause(content, pacing)
-        post_comment_button = page.get_by_role("button", name="Post comment", exact=True)
+        # "Đăng bình luận" added 2026-09-17 — reported live by account
+        # owner on nhtu00, not yet Codegen-confirmed for this button
+        # specifically (the account's one live attempt so far failed
+        # earlier, at the textbox step above).
+        post_comment_button = page.get_by_role(
+            "button", name=re.compile(r"^(Post comment|Đăng bình luận)$", re.IGNORECASE)
+        )
         await human_click(page, post_comment_button, mouse)
 
         # Verify the comment actually submitted instead of assuming
