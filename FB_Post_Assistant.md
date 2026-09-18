@@ -1,504 +1,312 @@
-**BÁO CÁO TIẾN ĐỘ DỰ ÁN**
-
-Hệ thống tự động hoá Facebook cho tuyển dụng lao động Việt Nam tại Nhật Bản (AIAgent\_w\_FB)
-
-*(Cập nhật lần này: 2026-09-10. Bản trước mô tả trạng thái ngày 2026-09-04 —
-từ đó tới nay dự án đã đi thêm một quãng đáng kể: đăng nhóm, comment nhóm,
-quản lý tài khoản/nhóm/lịch đăng qua web, đồng bộ dữ liệu tự động từ hệ
-thống tuyển dụng, một tầng "phòng vệ" nhiều lớp chống bị Facebook phát
-hiện là bot, và — mới nhất, 2026-09-10 — AI viết/viết lại nội dung được
-dời sang đúng lúc bài sắp đăng thật (thay vì lúc vừa nhận dữ liệu), áp
-dụng thêm cho cả tin nhắn ứng viên, có công tắc bật/tắt riêng, cùng một
-cách đăng nhập tài khoản mới qua web thay cho chạy lệnh tay trong
-terminal.)*
-
-# 1\. Tổng quan
-
-Dự án xây dựng một hệ thống tự động thực hiện các hành động trên Facebook (đăng bài lên tường cá nhân, đăng bài vào nhóm, bình luận vào bài nhóm) nhằm phục vụ mục tiêu tuyển dụng lao động Việt Nam tại Nhật Bản, đồng thời tự lấy dữ liệu tin tuyển dụng/ứng viên từ một hệ thống tuyển dụng khác (gọi tắt "bên B") để tự lên lịch đăng/trả lời mà không cần nhập tay từng bài. Hệ thống gồm bốn phần:
-
-* **human\_bot** — bộ thực thi dựa trên Playwright, mô phỏng hành vi người dùng thật (di chuột theo đường cong, gõ chữ có tốc độ và lỗi gõ tự nhiên, dừng đọc lại, cuộn trang, mỗi tài khoản một "dấu vân tay" trình duyệt hơi khác nhau...) để thao tác trên Facebook một cách an toàn nhất có thể trong phạm vi công cụ đang có, hạn chế bị hệ thống chống spam của Facebook phát hiện và hạn chế tài khoản.
-
-* **Bộ tự bảo vệ tài khoản** — tách riêng khỏi phần "thao tác": tự phát hiện khi Facebook cảnh báo/hạn chế một tài khoản và tự tạm dừng tài khoản đó ngay lập tức (không đợi con người nhận ra), cộng với giới hạn tốc độ hành động được phân theo "độ tuổi" tài khoản và một giai đoạn "hạ nhiệt" tự động mỗi khi một tài khoản vừa được kích hoạt lại.
-
-* **Cơ sở dữ liệu SQLite \+ hệ thống lịch đăng dựa trên file** — lưu lịch sử mọi hành động (kể cả thất bại), ảnh chụp màn hình bằng chứng, và toàn bộ bài đang chờ/đã đăng/thất bại/đã huỷ để phục vụ báo cáo, giám sát, và cho phép con người xem lại/sửa/huỷ trước khi bài thật sự lên Facebook.
-
-* **Trang quản trị (Admin UI) & API** — giao diện web đầy đủ để đăng ký/quản lý tài khoản, quản lý danh sách nhóm đã tham gia, soạn và lên lịch bài đăng, xem báo cáo; cùng REST API (`POST /tasks`, có xác thực bằng API key) để n8n hoặc hệ thống bên ngoài gửi yêu cầu, và một bộ đồng bộ nền tự động lấy tin tuyển dụng/ứng viên mới từ bên B để lên lịch đăng mà không cần thao tác tay.
-
-**Quyết định kiến trúc quan trọng nhất — không dùng AI để "lái" trình duyệt.** Ban đầu dự án cân nhắc dùng một AI agent kiểu "browser-use" (agent tự nhìn màn hình, tự suy luận, tự quyết định bước bấm tiếp theo mỗi lần chạy). Sau khi thử nghiệm thực tế, phát hiện `browser-use` dùng API nội bộ riêng (không phải Playwright chuẩn) và gói LLM Gateway miễn phí của họ không dùng được — hai lý do trực tiếp dẫn tới quyết định chuyển hẳn sang Playwright thuần: mỗi hành động (đăng bài, comment...) được ghi lại một lần bằng Playwright Codegen (tự tay làm thao tác thật, công cụ tự ghi lại thành code), sau đó chạy lại y hệt mỗi lần cần, không cần LLM và không tốn phí AI cho việc đăng bài/comment thật. Lý do sâu hơn: khi đã biết chính xác từng bước phải làm, để một AI "suy nghĩ lại" mỗi lần chỉ tốn thêm tiền, chậm hơn, và có rủi ro AI hiểu nhầm rồi bấm sai — AI chỉ thật sự cần thiết ở chỗ *không biết trước* phải làm gì (ví dụ: viết nội dung bài đăng), không phải ở việc bấm nút. `browser-use` được giữ lại làm phương án dự phòng cho tương lai (đã thiết kế, **chưa nối vào luồng chạy**) cho đúng một tình huống: khi Facebook đổi giao diện làm một selector đã ghi bị gãy và chưa kịp ghi lại — xem mục 6.
-
-# 2\. Bảng tổng hợp trạng thái
-
-| Hạng mục | Trạng thái |
-| :---- | :---- |
-| Điều hướng Facebook chuẩn (goto → click icon Home → từng bước, có lý do kỹ thuật cụ thể — mục 4.1) | Hoàn thành |
-| Đăng bài lên tường cá nhân (`post_to_own_profile`), chọn được đối tượng xem (Public/Friends/Only me) | Hoàn thành |
-| Đăng bài vào nhóm — đủ 4 lớp dự phòng, khớp theo ID/slug (`post_to_group`) | Hoàn thành |
-| Bình luận vào bài trong nhóm (`comment_on_group_post`) | Hoàn thành, xác nhận sống |
-| Bình luận bài bạn bè / thả cảm xúc / đọc comment gần đây | **Tạm ngưng theo quyết định chủ dự án** — không cần cho nhu cầu hiện tại |
-| Đính kèm ảnh/video khi đăng (ảnh riêng ưu tiên, ngẫu nhiên nếu không có) | Hoàn thành |
-| Mô phỏng hành vi người dùng (gõ phím, di chuột, cuộn trang, khoảng nghỉ theo ngữ cảnh) | Hoàn thành, có nghiên cứu nguồn ngoài — mục 4.4 |
-| Đa dạng hoá "dấu vân tay" trình duyệt theo từng tài khoản | Một phần đã làm, phần lớn cố tình chưa làm (có lý do kỹ thuật) — mục 4.5 |
-| Giới hạn tần suất hành động (rate limiting) — thật sự có hiệu lực, chia theo loại hành động, theo "tuổi" tài khoản | Hoàn thành |
-| "Hạ nhiệt" tự động sau khi kích hoạt lại một tài khoản bị tạm dừng | Hoàn thành |
-| Tự phát hiện tài khoản bị Facebook hạn chế và tự tạm dừng (persist qua cả restart) | Hoàn thành (hành vi #1); throttle sớm + báo động qua Slack/email — **chưa làm** |
-| Xác minh bài đăng thật sự thành công (không chỉ đoán) \+ chụp ảnh bằng chứng mọi lần chạy | Hoàn thành, đang chờ xác nhận sống thêm 1 lần |
-| Trang quản trị (Admin UI) — tài khoản, nhóm, cấu hình, đăng bài, lịch đăng, báo cáo | Hoàn thành |
-| Lên lịch đăng bài (không đăng "ngay lập tức" nữa, mọi bài đều qua bước duyệt lịch) | Hoàn thành |
-| Đồng bộ dữ liệu tự động từ bên B (tin tuyển dụng → đăng nhóm, ứng viên → comment) | Hoàn thành, cổng an toàn tắt mặc định |
-| Xác thực API cho `POST /tasks` (X-API-Key) và Admin UI (HTTP Basic Auth) | Hoàn thành |
-| Ghi log & báo cáo lịch sử hành động (SQLite) | Hoàn thành |
-| Content Strategist Agent (AI soạn/viết lại nội dung job đăng nhóm + reply ứng viên, gọi đúng lúc đến giờ đăng, có bật/tắt riêng, đa nhà cung cấp) | Hoàn thành, **đã xác nhận sống với Anthropic**; OpenAI/Gemini/custom chưa test end-to-end — xem mục 4.10 |
-| Đăng nhập tài khoản mới qua web `/admin/accounts` (thay cho chạy lệnh tay) | Hoàn thành — xem mục 4.11 |
-| Cơ chế dự phòng khi 1 selector bị Facebook đổi giao diện làm gãy | Đã thiết kế (dùng AI/LLM "nhìn" trang), **chưa nối vào luồng chạy thật** |
-| Thiết lập môi trường vận hành thật (proxy/IP riêng theo tài khoản, khoá API bên B thật) | Chưa làm — cần trước khi chạy ngoài phạm vi máy cá nhân |
-| Bộ test tự động (`pytest`) cho phần logic thuần (rate-limit, template AI, cấu hình admin, đa nhà cung cấp AI, cảnh báo thiếu xác thực) | Hoàn thành, 79 test — xem mục 4.16. Phần đụng Playwright/trình duyệt thật vẫn chưa có test tự động |
-
-# 3\. Nguyên tắc thiết kế cốt lõi — vì sao mọi hành động đều đi theo cùng một "kịch bản điều hướng"
-
-Đây là quy tắc nền cho toàn bộ hệ thống, áp dụng cho *mọi* hành động, không riêng gì đăng nhóm — nên tách thành mục riêng trước khi đi vào chi tiết từng hành động.
-
-Mọi tác vụ (trừ 2 ngoại lệ nêu dưới) đều bắt đầu đúng theo trình tự:
-
-1. `page.goto("https://www.facebook.com/")` — vào thẳng trang chủ Facebook. Đây là hành vi hoàn toàn bình thường của người dùng thật (gõ địa chỉ, mở bookmark), **không phải** điểm khiến hệ thống chống bot nghi ngờ.
-2. Ngay sau đó, dù trình duyệt trước đó đang đứng ở trang nào, hệ thống **luôn bấm vào icon Facebook (logo)** để quay về đúng home feed bằng một cú click UI thật — bước này mới là bước thật sự quan trọng về mặt kỹ thuật.
-3. Từ home feed, mới lần lượt bấm từng bước thật để đến đích (vào nhóm, mở khung đăng bài...).
-
-**Vì sao bước 2 (click icon Home) lại quan trọng, không chỉ là hình thức:** `page.goto(url)` gửi request **không kèm header `Referer`** — giống hệt việc gõ địa chỉ hoặc mở bookmark. Một người dùng thật bấm xuyên suốt giao diện Facebook thì mọi request đều mang `Referer` trỏ về trang trước đó. Nếu hệ thống *luôn luôn* đi thẳng bằng URL để tới mọi nơi cần đến, việc thiếu `Referer` một cách nhất quán tự nó là một tín hiệu rõ ràng hơn nhiều so với việc thỉnh thoảng thiếu ở một request đơn lẻ. Buộc mọi hành động phải "ghé qua" một cú click Home thật trước khi đi tiếp giúp các bước điều hướng sau đó luôn mang đúng `Referer` như người dùng thật.
-
-**Hai ngoại lệ được phép đi thẳng bằng URL (đều có lý do, không phải tuỳ tiện):**
-
-* Lớp 4 (phương án dự phòng cuối cùng) khi vào nhóm — chỉ dùng sau khi 3 lớp điều hướng thật đã thử và không xác nhận được đúng nhóm.
-* Bình luận/trả lời trực tiếp vào một bài viết cụ thể — người dùng thật cũng thường đến thẳng một bài cụ thể từ thông báo, link được chia sẻ, hoặc kết quả tìm kiếm, nên `goto` thẳng vào đây mới chính là hành vi bình thường, không phải đường tắt.
-
-Quy tắc này ban đầu từng bị hiểu quá đà (một bản nháp sớm hơn đề xuất luôn đi thẳng bằng URL cho mọi trường hợp để giảm rủi ro selector gãy) — chủ dự án đã trực tiếp yêu cầu chỉnh lại đúng như trên sau khi trao đổi, và tài liệu kỹ thuật đã được sửa lại cho khớp.
-
-# 4\. Chi tiết các hạng mục đã hoàn thành
-
-## 4.1. Đăng bài lên tường cá nhân (2026-09-02, thêm đối tượng xem 2026-09-10)
-
-Luồng đầy đủ: mở khung đăng bài, gõ nội dung theo tốc độ/nhịp gõ tự nhiên (mục 4.4), chọn đối tượng xem (Public/Friends/Only me — trước đây bị ép cứng "Only me" cho mọi bài, đã sửa để nhận tham số `audience` xuyên suốt từ API tới giao diện đăng bài), và **xác minh thật** bài đã đăng thành công thay vì đoán (mục 4.8).
-
-## 4.2. Đăng bài vào nhóm — 4 lớp dự phòng (2026-09-03 – 2026-09-04)
-
-Hạng mục phức tạp nhất của dự án. Một người dùng thật không phải lúc nào cũng vào một nhóm theo đúng một cách — hệ thống mô phỏng đúng điều đó bằng một **chuỗi 4 phương án**, thử lần lượt, dừng ngay khi một phương án xác nhận đúng nhóm:
-
-1. **Lối tắt đã ghim** (Shortcuts ở trang chủ) — nhanh và giống người nhất, nhưng chỉ có nếu tài khoản đó đã ghim sẵn nhóm.
-2. **Danh sách "Your groups"** — vào tab Groups → "Your groups" (nhãn thật của giao diện tiếng Anh — bản nháp đầu tiên đoán nhầm là "Groups you've joined", đã sửa lại sau khi đối chiếu giao diện thật), dò tìm đúng nhóm trong danh sách đã tham gia.
-3. **Tìm kiếm Facebook** — gõ tên nhóm vào ô tìm kiếm, lọc theo "My groups", chọn đúng kết quả. Đây là lớp dễ vỡ nhất (thứ hạng kết quả có thể đổi, nhiều nhóm trùng tên).
-4. **Vào thẳng bằng URL nhóm** — phương án bảo đảm luôn vào được, luôn kèm `referer` tường minh thay vì để trống.
-
-**Vì sao phải làm cả 4 lớp thay vì chỉ dùng URL trực tiếp (đơn giản hơn nhiều):** phiên bản thiết kế đầu tiên từng đề xuất chỉ dùng lớp 4 cho gọn. Chủ dự án đã chỉ ra một điểm quan trọng: làm *đúng một cách*, *y hệt nhau*, ở *mọi lần* đăng nhóm — chính bản thân sự lặp lại đó là một dấu hiệu bất thường, vì người dùng thật không bao giờ vào nhóm theo đúng một kiểu mỗi lần.
-
-**Cách chọn đúng nhóm không dựa vào tên hiển thị.** Tên nhóm hiển thị trên giao diện Facebook có thể bị cắt ngắn ("CHUYỂN VIỆC KỸ SƯ TẠI NH…") hoặc trùng giữa nhiều nhóm — nên việc khớp nhóm dựa vào **ID/slug** lấy thẳng từ đường dẫn (`href`) của link, theo đúng yêu cầu cụ thể của chủ dự án ("dò ID nhóm trùng với ID nhóm được yêu cầu đăng"). Sau mỗi lần bấm vào một nhóm ở lớp 1-3, hệ thống còn kiểm tra lại URL trang vừa vào để xác nhận lần nữa — nếu sai, tự động rơi xuống lớp kế tiếp thay vì lỡ đăng nhầm nhóm.
-
-**Hai lỗi thật phát hiện trong lúc test lớp 1 (Lối tắt):** có lúc bấm vào đúng nhóm rồi lại tự thoát ra ngoài, và có lúc thấy nhóm hiện ở lối tắt nhưng không bấm được. Cả hai đã được xác định nguyên nhân và khắc phục trong lúc ghi lại Codegen.
-
-**Bug xác nhận bằng bằng chứng thật (2026-09-10), fix xác nhận qua Codegen (chưa qua bot thật):** task `20260910T150503Z_80e521d1` (post_to_group, group "Việc làm Kỹ Sư Nhật Bản (Uy tín hàng đầu)", nhóm bật duyệt bài) chạy thật lúc 19:48 — owner chụp ảnh Facebook hiện toast "Thanks for your post! It's been submitted to group admins for approval.", nhưng `scheduled/posted/20260910T150503Z_80e521d1.result.txt` lúc đó ghi `posted_to_group` (không phải `posted_to_group_pending_approval`). Xác nhận danh sách `_PENDING_APPROVAL_TEXT_SIGNALS` cũ (`pending approval`, `awaiting approval`, `post is being reviewed`, `will be visible once`) chưa từng bắt được ca chờ duyệt thật nào — `success=True` vẫn đúng, chỉ sai message. Đã thêm `"submitted to group admins for approval"` làm signal đầu tiên.
-
-Sau đó ghi lại **Codegen thật** (`codegen_verify_pending_approval.py`, account `tu_iizuki`, cùng group) để kiểm chứng cả text lẫn timing: dòng
-`page.get_by_text("Thanks for your post! It's").click()` — Codegen tự ghi lại thao tác này vì owner bấm được ngay vào dòng toast, xác nhận text nằm trong DOM dưới dạng text thường (không phải canvas/ảnh), Playwright định vị được bằng `get_by_text`/`inner_text`. Owner quan sát toast tồn tại khoảng **3-5 giây** trước khi tự ẩn. Code hiện gọi `_looks_like_pending_approval()` (đọc `page.inner_text("body")`) ngay sau khi `post_button.wait_for(state="hidden")` hoàn tất — gần như tức thời sau submit, còn dư nhiều thời gian trong khung 3-5s. Kết luận: cả text lẫn timing của fix đều hợp lý.
-
-**Vẫn còn một bước cuối chưa làm:** chưa chạy lại một task `post_to_group` thật qua chính bot (không phải Codegen tay) vào nhóm chờ duyệt để xác nhận `result.txt` ra đúng `posted_to_group_pending_approval` — Codegen xác nhận text/timing đúng về nguyên lý, nhưng chưa chứng minh `_looks_like_pending_approval()` chạy đúng trong luồng thật end-to-end.
-
-## 4.3. Bình luận vào bài trong nhóm (`comment_on_group_post`) (2026-09-08)
-
-Ghi Codegen và xác nhận sống trên đúng nhóm tài khoản đã tham gia thật, comment hiện lên sau khi tải lại trang để xác nhận. Có thêm bước kiểm tra lại dấu hiệu bất thường khi bước xác minh gửi comment bị timeout — cùng nguyên tắc với đăng bài (mục 4.8). Selector khung nhập cũng đã mở rộng để khớp cả bài dạng Hỏi-Đáp (Q&A) của Facebook, hiển thị "Write an answer…" thay vì "Write a comment…" như bài thường — phát hiện qua một lần chạy thật bị timeout 30 giây trước khi sửa.
-
-**Phát hiện link chết (bài/nhóm không còn khả dụng) TRƯỚC KHI thử comment, không phải sau khi timeout (2026-09-08).** Trước đó, comment vào một bài đã bị xoá/ẩn/nhóm không còn xem được sẽ khiến hệ thống tìm mãi khung nhập comment không bao giờ xuất hiện, timeout ~30 giây rồi mới báo lỗi. Giờ nhận diện ngay trang "nội dung này không khả dụng" của Facebook trước khi cố thao tác, báo lỗi rõ ràng ngay lập tức — khác hẳn với việc phát hiện tài khoản bị Facebook hạn chế (mục 4.7): đây là nội dung mục tiêu biến mất, không phải dấu hiệu tài khoản mình có vấn đề, nên không kích hoạt tạm dừng tài khoản.
-
-**3 hành động còn lại** (`comment_on_friend_post`, `like_post`, `read_recent_comments`) **được chủ dự án chủ động yêu cầu tạm ngưng** — không phải vì vướng lỗi kỹ thuật, mà vì chưa cần cho nhu cầu hiện tại. Sẽ làm lại nếu sau này thật sự cần.
-
-**`page.goto(post_url)` timeout 30s tái diễn nhiều lần, đã áp dụng fix (2026-09-17).** Trang permalink bài trong nhóm giữ một kết nối nền gần như vô hạn (chat/thông báo long-polling), nên sự kiện `"load"` mặc định Playwright chờ có thể không bao giờ bắn dù nội dung đã hiện xong. Phát hiện lần đầu 2026-09-10 (`action_log` id 62), thử vá bằng `wait_until="domcontentloaded"` nhưng owner chủ động rewind trước khi kịp chạy thử live, muốn xem lỗi có tự lặp lại với code gốc không. Tra lại 1 tuần sau (2026-09-17): lỗi **đã tái diễn thêm 3 lần** (id 119, 121 — cùng ngày 11/09, khác nhóm nhau; id 162 — 16/09) trên 2 nhóm khác nhau — chiếm 4/13 lỗi thật của `comment_on_group_post` (không tính các lần bị `rate_limited` hợp lệ). Kết luận: không phải sự cố mạng 1 lần, đủ bằng chứng để áp dụng lại fix.
-
-Khi được hỏi lại "giá trị `domcontentloaded` lấy từ đâu, đã kiểm chứng chưa" — xác nhận trung thực: **chưa từng kiểm chứng sống**, `git log -p` xác nhận chuỗi này chưa từng xuất hiện trong bất kỳ commit nào của `actions.py` (khớp việc nó bị rewind trước khi commit). Về lý thuyết Playwright, đây đúng là lựa chọn được khuyến nghị cho loại trang có kết nối nền khiến `"load"` không bao giờ bắn — nhưng rủi ro chưa loại trừ: `domcontentloaded` bắn trước khi nội dung do JS render xong, nên 2 bước kiểm tra `_check_anomaly_or_raise()`/`_check_target_content_available()` (đọc `page.inner_text("body")` ngay sau đó) có thể đọc phải body gần rỗng — không gây false-positive (chỉ tìm chuỗi con, không thấy thì coi là bình thường) nhưng CÓ THỂ bỏ sót 1 trang checkpoint/anomaly thật nếu cảnh báo chưa kịp render. Đã dời `pause_after_page_load()` lên TRƯỚC 2 bước kiểm tra này để giảm (không loại bỏ hẳn) rủi ro đó.
-
-Vì lỗi gốc là xác suất thấp (~1 lần/2-3 ngày), không thể xác nhận bằng Codegen (ghi tay 1 lần khó rơi trúng lúc lỗi xảy ra) hay bằng 1 lần chạy thật. Đang theo dõi `action_log` qua nhiều ngày chạy thật tiếp theo (lọc `comment_on_group_post` + `Page.goto: Timeout`) để xác nhận tần suất giảm và không phát sinh lỗi mới — **chưa coi là đã xong**.
-
-## 4.4. Mô phỏng hành vi con người — vì sao phải làm kỹ đến vậy (2026-09-03)
-
-Đây là phần được đầu tư nghiên cứu nhiều nhất của dự án, dựa trên đọc các nguồn nghiên cứu/tài liệu thật về cách các hệ thống chống bot hiện đại phát hiện tự động hoá (cside.com — bài về phát hiện AI agent và phát hiện Playwright/browserless qua con trỏ chuột; browser-use.com — bài về bot detection; thư viện `ghost-cursor` cho Puppeteer/Playwright; một bài nghiên cứu học thuật về phát hiện bot qua nhịp gõ phím — xem đầy đủ nguồn ở mục 8), thay vì chỉ đoán mò.
-
-**Phát hiện cốt lõi từ nghiên cứu:** các hệ chống bot hiện đại không chỉ nhìn *một* tín hiệu — họ kết hợp nhiều tín hiệu hành vi cùng lúc: độ cong đường di chuột + các lần "sửa hướng" nhỏ gần đích, tốc độ cuộn trang (tăng-giữ-giảm tốc so với cuộn đều/nhảy cóc), độ dao động khoảng cách giữa các lần gõ phím + có/không có phím Backspace, và (riêng cho agent chạy bằng LLM) một kiểu "khoảng dừng vì đang suy luận AI" đặc trưng, khác hẳn khoảng dừng "đọc/nghĩ" của người thật. Vì pipeline của dự án không dùng LLM trong luồng chạy chính (mục 1), tín hiệu cuối này không áp dụng trực tiếp — nhưng kết luận rút ra vẫn quan trọng: **mọi khoảng nghỉ của hệ thống phải dao động ngẫu nhiên, không được cố định**.
-
-Cụ thể đã triển khai:
-
-* **Di chuột:** không nhảy thẳng tới điểm cần bấm, mà di chuyển theo đường cong Bézier (mô phỏng theo thư viện `ghost-cursor`) với 1 điểm điều khiển lệch về một phía (tránh đường zig-zag phi tự nhiên nếu lệch cả hai phía), tốc độ di chuyển theo định luật Fitts (khoảng cách xa/đích nhỏ → di chuyển chậm và cẩn thận hơn), có "rung tay" ngẫu nhiên ±1.5px ở các điểm giữa, và điểm bấm cuối cùng là một toạ độ **ngẫu nhiên bên trong** vùng phần tử, không phải luôn chính giữa.
-* **Thời gian giữ chuột khi click (dwell time):** thêm độ trễ 40-120ms giữa lúc nhấn và nhả chuột, thay vì gần như 0ms như một cú click do script tạo ra — nghiên cứu chỉ ra đây là một tín hiệu phân biệt người/bot khá rõ.
-* **Cuộn trang có giảm tốc:** dùng sự kiện wheel thật của Playwright (`page.mouse.wheel()`), chia nhiều bước co dần theo khoảng cách còn lại, thay vì nhảy thẳng tức thời tới vị trí cần cuộn.
-* **Gõ chữ:** tốc độ theo WPM có dao động ngẫu nhiên, thêm khoảng nghỉ sau mỗi từ/dấu câu, và hiệu ứng "mỏi tay" khiến tốc độ chậm dần theo độ dài nội dung.
-* **Gõ sai rồi tự sửa (ký tự ASCII):** thỉnh thoảng gõ nhầm phím kế bên trên bàn phím QWERTY rồi một lúc sau mới xoá sửa lại.
-* **Gõ sai rồi tự sửa (từ có dấu tiếng Việt) — xử lý khác hẳn, có lý do kỹ thuật cụ thể:** dấu tiếng Việt không phải một phím vật lý đơn — chúng được bộ gõ (Unikey, VNI...) ghép từ nhiều phím theo kiểu Telex/VNI. Playwright gửi thẳng ký tự Unicode đã ghép sẵn qua giao thức CDP, **không đi qua bộ gõ IME thật của hệ điều hành** — nên không thể mô phỏng "gõ sai kiểu Telex" ở tầng bàn phím. Giải pháp: mô phỏng đúng *hành vi* quan sát được ở người thật — thỉnh thoảng gõ đúng cả một từ, "nhận ra sai", xoá nguyên từ, gõ lại — luôn đảm bảo văn bản cuối cùng đúng tuyệt đối, không tạo ra chữ tiếng Việt lỗi vô nghĩa.
-* **Các khoảng đợi có ngữ cảnh, không phải một con số cố định:** đợi sau khi trang vừa tải xong, đợi sau khi mở khung soạn bài, đợi giữa các bước chọn (VD: chọn quyền riêng tư), và đặc biệt là khoảng "đọc lại trước khi đăng" — thời gian đợi trước khi bấm Post **tỉ lệ theo độ dài nội dung vừa gõ** (bài dài đợi lâu hơn), mô phỏng đúng việc một người thật đọc lại bài trước khi đăng.
-
-**Đã cân nhắc và CHỦ ĐỘNG QUYẾT ĐỊNH CHƯA LÀM: điều khiển chuột thật ở tầng hệ điều hành (2026-09-08).** Có tính tới phương án dùng `pyautogui`/`pynput` để điều khiển con trỏ chuột vật lý thật của máy, thay vì `page.mouse.*` của Playwright — về lý thuyết loại bỏ hẳn giới hạn "movementX/Y luôn bằng 0" và "không có mẫu toạ độ tần số cao" vốn có của CDP (giao thức Playwright dùng để điều khiển Chrome). Quyết định KHÔNG làm, vì 5 lý do vận hành cụ thể: (1) bắt buộc máy phải luôn có phiên desktop thật, mở khoá, còn màn hình — mất khả năng chạy nền 24/7 không người trông; (2) không dùng máy song song được vì chuột OS là tài nguyên vật lý dùng chung; (3) mất khả năng chạy nhiều tài khoản cùng lúc (mỗi tài khoản hiện có "chuột ảo" riêng qua CDP, chuột OS thì chỉ có đúng 1 con trỏ); (4) dễ vỡ nếu có cửa sổ/thông báo nào che khuất Chrome đúng lúc click; (5) khoá cứng vĩnh viễn vào "phải có màn hình thật", không bao giờ chuyển sang chạy headless được nữa. Sau khi nghiên cứu thêm, các hệ chống bot tinh vi ngoài đời thực tế vẫn xem cách làm hiện tại (CDP + làm mượt hành vi như 4 điểm trên) là đủ tốt cho production — lợi ích thêm từ chuột OS thật là biên rất nhỏ so với chi phí vận hành phải đánh đổi. Chủ dự án đồng ý ghi lại quyết định này, chưa triển khai.
-
-## 4.5. Đa dạng hoá "dấu vân tay" trình duyệt (fingerprint) theo từng tài khoản — đã làm gì, và cố tình CHƯA làm gì (2026-09-10)
-
-Mỗi tài khoản Facebook đã chạy trên một tiến trình Chromium riêng (không share trình duyệt giữa các tài khoản), nhưng ban đầu mọi tiến trình đều dùng chung **y hệt** một cấu hình màn hình mặc định — nghĩa là dưới góc nhìn của Facebook, mọi tài khoản vẫn "trông giống" cùng một loại thiết bị. Đã khắc phục bằng cách băm `account_id` (SHA256) để chọn ra một cấu hình cố định trong số 5 cấu hình màn hình phổ biến ngoài đời thật (kết hợp độ phân giải + tỉ lệ scale phù hợp thực tế, VD: MacBook 1440x900 thường đi kèm @2x, màn ngoài 1920x1080 thường @1x) — **ổn định qua mọi lần restart**, không đổi ngẫu nhiên mỗi lần mở, vì đổi liên tục còn là tín hiệu bot rõ ràng hơn cả việc dùng chung một cấu hình.
-
-**Ba việc liên quan cố tình CHƯA làm, mỗi việc đều có lý do kỹ thuật cụ thể, không phải bỏ sót:**
-
-1. **User-agent:** đổi riêng `navigator.userAgent` mà không đổi luôn "Client Hints" thật của Chromium (`Sec-CH-UA-*`, `navigator.userAgentData`) sẽ tạo ra sự sai lệch giữa 2 nguồn — bản thân sự sai lệch đó là tín hiệu bot còn rõ hơn cả dùng UA mặc định giống nhau ở mọi tài khoản. Muốn làm đúng cần tắt hẳn Client Hints hoặc có một lớp "stealth-patch" mà dự án hiện chưa có.
-2. **Múi giờ/vị trí địa lý:** cần khớp với địa chỉ IP thật (qua proxy) của từng tài khoản — nếu chưa có proxy riêng theo tài khoản mà đổi múi giờ thì múi giờ lệch với IP còn là tín hiệu tệ hơn dùng chung múi giờ.
-3. **Proxy/IP riêng theo tài khoản — chưa làm, và đây mới là hướng cải thiện có tác động thực tế lớn nhất nếu mở rộng quy mô nhiều tài khoản** (nhiều tài khoản cùng chạy chung 1 IP nhà/VPS là tín hiệu liên kết mạnh hơn nhiều so với sự khác biệt về trình duyệt) — nhưng tốn phí mua proxy nên chưa triển khai, chờ quyết định khi cần scale.
-
-Cũng chưa dùng thư viện `playwright-stealth` hay tương đương.
-
-## 4.6. Giới hạn tần suất hành động (rate limiting), phân theo "tuổi" tài khoản, và "hạ nhiệt" sau khi kích hoạt lại (2026-09-08, retune 2026-09-10)
-
-**Vì sao cần:** Điều khoản sử dụng của Facebook cấm hành vi tự động thay thế người dùng thật, và hệ thống chống lạm dụng của họ đặc biệt chú ý tới *khuôn mẫu lặp lại*: tốc độ đều đặn, hoạt động 24/24, khoảng cách giữa các lần thao tác đều tăm tắp — đây là tín hiệu bot rõ hơn bất kỳ một hành động đơn lẻ nào.
-
-**Sự cố thật đã xảy ra khiến việc này được siết lại:** khoảng nghỉ tối thiểu giữa 2 hành động (`min_delay_seconds`/`max_delay_seconds`) ban đầu chỉ được *khai báo* trong code nhưng **chưa từng được thực sự gọi tới ở đâu** — một lỗ hổng dead-code. Sau khi tham khảo thêm báo cáo bên ngoài cho rằng ngay cả 10-20 phút giữa các hành động Facebook cũng có thể bị coi là tự động hoá, khoảng nghỉ mặc định được nâng lên **1-2 giờ** và **thật sự được enforce**: nếu chưa đủ thời gian, hệ thống **từ chối thẳng tác vụ ngay lập tức** (không chờ/xếp hàng) thay vì cố chạy.
-
-Khoảng nghỉ này được tính **riêng theo từng loại hành động** (đăng bài / comment / thả cảm xúc) — trước đó dùng chung 1 đồng hồ cho cả tài khoản, nghĩa là 1 comment vừa chạy xong sẽ vô tình chặn luôn 1 bài đăng ngay sau đó dù chúng thuộc 2 hạn mức hoàn toàn khác nhau.
-
-**5 mức giới hạn theo "tuổi" tài khoản Facebook** (dưới 1 / 3 / 6 / 12 tháng, trên 12 tháng) — chọn được ngay khi đăng ký tài khoản, hoặc áp dụng sau bằng nút "quick-apply" khi tài khoản đã "lớn tuổi" hơn — thay vì phải gõ tay từng con số cho mỗi tài khoản mỗi lần cần nới/siết.
-
-**Phát hiện + sửa lỗi thật (2026-09-10):** trong lúc điều tra vì sao backlog job/candidate của một tài khoản thật không bao giờ giảm dù đồng bộ liên tục (56 job/14 candidate cứ lấy đi lấy lại, chỉ ~8 bài/lượt thật sự được lên lịch), phát hiện ra khoảng nghỉ tối thiểu giữa 2 hành động (`min_delay_seconds`/`max_delay_seconds`) tuy đã tách riêng theo LOẠI hành động (đăng bài không còn bị comment chặn nhầm — mục ngay trên) nhưng vẫn dùng **chung 1 cặp con số cho cả đăng bài lẫn comment**. Vì hạn mức comment/ngày ở mọi mức tuổi luôn được đặt CAO HƠN hạn mức bài đăng/ngày, dùng chung 1 khoảng nghỉ khiến việc nhét đủ số comment vào 1 ngày là bất khả thi về mặt toán học — dù bài đăng có khi vẫn nhét vừa.
-
-**Đã tách hẳn thành 2 cặp khoảng nghỉ độc lập — riêng cho bài đăng, riêng cho comment** — và người dùng tự tính toán lại cả 5 mức tuổi theo đúng nhu cầu thực tế, sau khi tôi kiểm tra tính khả thi (số lượng cần đăng × khoảng nghỉ tối đa có nhét vừa một ngày hoạt động ~18 tiếng hay không, sau khi trừ giờ ngủ 2h-6h sáng) và hạ bớt trần khoảng nghỉ ở 3 mức cao cho khớp:
-
-| Mức tuổi | Bài/ngày | Comment/ngày | Giãn cách bài đăng | Giãn cách comment |
-|---|---|---|---|---|
-| Dưới 1 tháng | 5 | 7 | 2–3.5 giờ | 1.5–3 giờ |
-| Dưới 3 tháng | 8 | 10 | 1.75–2.5 giờ | 1–2 giờ |
-| Dưới 6 tháng | 12 | 15 | 1.25–1.6 giờ | 0.6–1.25 giờ |
-| Dưới 12 tháng | 20 | 25 | 0.75–0.95 giờ | 0.35–0.75 giờ |
-| Trên 12 tháng | 30 | 35 | 0.5–0.62 giờ | 0.25–0.5 giờ |
-
-Đồng thời đổi giờ yên tĩnh mặc định từ 1h-6h sáng thành **2h-6h sáng**, theo yêu cầu chủ dự án.
-
-**Sự cố thật xảy ra trong lúc thao tác migrate cấu hình:** khi cập nhật giờ yên tĩnh cho cấu hình thật đang chạy, gọi nhầm hàm lưu cấu hình chỉ với 1 field duy nhất — hàm này **thay thế toàn bộ phần cấu hình đồng bộ dữ liệu thay vì merge**, xoá mất toàn bộ override khác đã lưu trước đó (chu kỳ đồng bộ, khoảng cách đăng bài/comment, 2 công tắc AI...). Phát hiện ngay lập tức khi đọc lại, khôi phục đủ nguyên trạng bằng giá trị đã ghi nhớ được trong hội thoại — không mất dữ liệu vĩnh viễn, nhưng là bài học: mọi hàm lưu cấu hình dạng này đều cần đọc giá trị hiện tại rồi merge tay trước khi ghi, không được gọi với chỉ một phần dữ liệu.
-
-**"Hạ nhiệt" tự động sau khi kích hoạt lại một tài khoản bị tạm dừng** — bổ sung sau khi tham khảo một báo cáo thực tế được chia sẻ trong một nhóm về vận hành Facebook: một người vận hành cố tình im lặng thêm 1 tuần sau khi hạn chế được gỡ, báo cáo 3 tháng sạch sẽ tiếp theo; một người khác đăng chéo bài ngay khi hạn chế vừa gỡ thì bị hạn chế lại ngay lập tức. Vì vậy, bấm "Kích hoạt lại" không đưa tài khoản về tốc độ đầy đủ ngay, mà chạy ở giới hạn thấp hơn trong một số ngày cấu hình được, rồi mới tự phục hồi về mức trước khi bị tạm dừng.
-
-**Phát hiện thật (2026-09-11) — "1 ngày" ở lớp lên lịch và "1 ngày" ở lớp enforcement là 2 khái niệm khác nhau, có thể vượt hạn mức dù lớp lên lịch chưa từng làm sai.** Owner thấy báo cáo `rate_limited:comments_per_day limit reached` xuất hiện, hỏi vì sao lên lịch đã kiểm tra slot rồi mà vẫn dư. Điều tra kỹ: `data_sync.py`'s `_count_scheduled_actions_by_day()` (lớp lên lịch) đếm đúng theo **ngày dương lịch UTC** và chưa từng xếp quá hạn mức cho tài khoản `tu_iizuki` (kiểm tra thật: 1/6/4 comment cho 3 ngày liên tiếp, đúng cả, không vượt 7/ngày). Nhưng `safety.py`'s `RateLimiter.can_proceed()` (lớp enforcement, quyết định có thật sự cho đăng hay không) đếm theo **cửa sổ trượt 24 giờ tính từ lúc kiểm tra**, không phải ngày dương lịch. Vì `auto_fire_enabled` tắt phần lớn thời gian nên task dồn thành pending qua nhiều ngày; khi cuối cùng bắn hàng loạt (bật auto-fire tạm hoặc bấm tay dồn dập), các comment lên lịch cho 2 ngày dương lịch KHÁC NHAU có thể rơi vào CÙNG 1 cửa sổ 24h thực tế lúc đăng, cộng dồn vượt hạn mức dù mỗi ngày dương lịch riêng lẻ đều hợp lệ — xác nhận bằng log thật: 7 comment tính vào cửa sổ trượt trải dài `2026-09-10T08:12` → `2026-09-11T00:18` (~16 tiếng thực tế). Cùng bản chất với vụ va chạm x₁/x_safety đã ghi nhận ở mục 4.13, nhưng lần này là cho GIỚI HẠN SỐ LƯỢNG chứ không phải khoảng nghỉ. **Chưa sửa lớp lệch pha này** — theo yêu cầu owner, chỉ ghi nhận nguyên nhân thật ở đây.
-
-**Bug thật ĐÃ sửa cùng lúc: dính hard cap (posts/comments per day/hour) nhưng hệ thống vẫn cứ thử đăng lại mỗi phút.** Cheap pre-check trong `fire_due_tasks()` (mục 4.13) vốn chỉ được thiết kế để tránh gọi `run_task()` lặp lại vô ích cho trường hợp SOFT gap (`min_delay_seconds`) — hoàn toàn không biết gì về hard cap. Hậu quả thật: 1 tài khoản dính `comments_per_day` vẫn bị thử lại mỗi 60 giây, mỗi lần tốn 1 lệnh gọi AI thật (soạn lại nội dung reply) TRƯỚC KHI mới bị chặn — 44 lần trong 24 phút, hoàn toàn lãng phí vì kết quả luôn giống hệt nhau và có thể kéo dài tới hết cả cửa sổ 24h nếu cứ để auto-fire bật. Thêm `safety.py`'s `rate_limit_hard_cap_message()` — phát hiện riêng biệt các hard cap này, trả về câu gợi ý dời lịch tiếng Việt (không tính giờ chính xác vì bản chất cửa sổ trượt không có 1 mốc "hết hạn" cố định, chỉ nói chung "dời sang thời điểm khác"). Wire vào pre-check của `fire_due_tasks()` để **skip hẳn** `run_task()` (và bước AI tốn tiền) ngay khi phát hiện hard cap, giống hệt cách đã làm cho soft gap. Áp dụng đồng bộ cho `schedule_fire_now()` ("Đăng ngay") và `reports_repost()` ("Đăng lại") ở `admin.py`. Kiểm tra riêng `posts_per_day` — cùng lỗi y hệt (2 dòng thật trong DB), sửa chung 1 chỗ cho mọi loại action.
-
-**Viết lại toàn bộ "hạ nhiệt" thành 2 tuần có nấc + sửa tận gốc 1 bug thật gây mất vĩnh viễn rate-limit gốc (2026-09-15).** Owner phát hiện tài khoản `tu_iizuki` bị kẹt ở mức rate-limit cực thấp (1 bài/ngày) dù nhớ rõ đã từng tạm dừng lâu rồi và UI từng báo cooldown hết hạn đúng ngày — tức KHÔNG PHẢI đang hạ nhiệt, mà đã "hết hạn" một cách sai lệch. Điều tra ra bug thật trong `_start_resume_cooldown()`: mỗi lần bấm "Kích hoạt lại" đều chụp lại rate-limit HIỆN TẠI làm "giá trị gốc" để khôi phục sau 7 ngày — nhưng nếu tài khoản bị tạm dừng/kích hoạt lại LẦN NỮA trong lúc cooldown trước đó CHƯA hết hạn, "giá trị hiện tại" lúc đó đã là số đã giảm (1/1/2/2), nên bị chụp nhầm làm "gốc", khiến giá trị thật ban đầu (VD 30 bài/ngày) mất vĩnh viễn — tái hiện thành công bằng kịch bản cô lập (chưa đụng file thật). Owner sau đó tự thiết kế lại toàn bộ cơ chế qua nhiều vòng trao đổi: hạ nhiệt kéo dài 14 ngày (gấp đôi), có 2 nấc — tuần 1 mọi tài khoản đều về mức sàn chung, tuần 2 các tài khoản "trưởng thành" hơn được nhích lên 1 bậc (Dưới 3/6 tháng → mức Dưới 1 tháng; Dưới 12 tháng/Trên 12 tháng → mức Dưới 3 tháng; riêng Dưới 1 tháng không có bậc thấp hơn nên giữ nguyên mức sàn cả 2 tuần) — và khi hết hạn, ưu tiên khôi phục đúng số ADMIN đã tự tay cài đặt trước đó nếu có, không phải lúc nào cũng ép cứng về tier. Sửa tận gốc bằng cách đổi hẳn triết lý: thêm 1 field mới, ổn định, độc lập với rate-limit (`account_age_tier` — lấy từ dropdown lúc đăng ký hoặc nút "Áp nhanh theo tuổi" sau này, KHÔNG BAO GIỜ suy ngược từ số hiện tại), và trong suốt 14 ngày hạ nhiệt, số rate-limit thật của tài khoản **không hề bị đụng tới trên đĩa** — chỉ được "lồng" tạm thời lên trên mỗi khi `get_all_accounts()` tính toán, tự động biến mất đúng lúc mà không cần bước "khôi phục" nào cả, nên pause/resume chồng lấn bao nhiêu lần cũng không còn cách nào làm mất dữ liệu gốc được nữa. Thêm 1 vòng lặp nền mới trong `service.py` (`_resume_cooldown_maintenance_loop`, theo đặc tả riêng của owner: kiểm tra 1h/lần khi không có tài khoản nào đang hạ nhiệt, 1 ngày/lần khi có, tự vào lại đúng tiến độ sau khi restart service) để cập nhật kịp thời cho người xem `/admin/accounts`, dù bản thân tính đúng-sai của rate-limit không phụ thuộc vòng lặp này (luôn tính tươi mỗi lần dùng). Khu vực này trước đây CHƯA từng có test — thêm 12 test cho `runtime_config.py` (gồm 1 test hồi quy tái hiện đúng kịch bản bug) và cả file test ĐẦU TIÊN cho `config.py` (3 test xác nhận lớp lồng cooldown ở `get_all_accounts()`). Xác nhận sống qua service chạy port riêng dùng `tu_iizuki` thật (tạm dừng/kích hoạt lại, bấm nút tier qua route thật) rồi dọn sạch lại. Phát hiện thêm và sửa luôn: `runtime_config.json` thật vẫn còn override `cooldown_days=7` cũ đè lên default code mới 14 — cập nhật qua đúng quy trình đọc-gộp-ghi. Vì giá trị gốc thật của `tu_iizuki` đã mất vĩnh viễn không thể tự khôi phục, owner đồng ý đặt lại thủ công về tier "Dưới 1 tháng" (5 bài/ngày) làm điểm khởi đầu mới. **Rà soát lại lần nữa theo yêu cầu owner (cùng ngày)** phát hiện thêm 1 bug thật do chính đợt viết lại này gây ra: `get_active_cooldown_rate_limits()` kiểm tra công tắc `enabled` của hạ nhiệt nhưng `get_resume_cooldown_info()` (hàm dựng banner "🧊 Đang hạ nhiệt" trên UI) thì không — tắt công tắc giữa lúc 1 tài khoản đang hạ nhiệt khiến tài khoản chạy full tốc độ thật nhưng UI vẫn báo sai là đang bị giảm. Sửa bằng cách gộp điều kiện `enabled` vào đúng 1 chỗ dùng chung, kèm quyết định tắt công tắc không xoá tiến độ đang có (bật lại tiếp tục đúng chỗ cũ). Nhân tiện sửa luôn nhãn hiển thị ở `/admin/config` (ghi "trong lúc hạ nhiệt" chung chung dễ hiểu nhầm áp dụng cả 2 tuần, thật ra chỉ tuần 1) và cập nhật `docs/skills/anomaly-detection.md` (còn trỏ tới hàm đã xoá hẳn từ bản thiết kế cũ).
-
-## 4.7. Tự phát hiện tài khoản bị Facebook hạn chế và tự tạm dừng (2026-09-06 – 2026-09-07)
-
-**Sự cố thật xác nhận hệ thống hoạt động đúng:** tài khoản `tu_iizuki` từng bị Facebook đưa ra màn hình "confirm your identity" thật (đang thao tác tay ghi Codegen, không phải lúc chạy tự động) — mức độ trung bình, chỉ chặn một số hành động, xác minh qua app Facebook trên điện thoại là xong. Đây là lần đầu tiên bộ dấu hiệu phát hiện bất thường trong code được đối chiếu với ảnh chụp màn hình thật thay vì chỉ dựa vào suy đoán — cả 2 cụm chữ đã có sẵn ("confirm your identity", "unusual activity") khớp đúng y hệt màn hình thật, và một cụm thứ 3 ("certain actions have been restricted") được thêm vào để chắc chắn hơn.
-
-**Cơ chế:** khi phát hiện bất kỳ dấu hiệu nào trong danh sách trên (cả dạng chữ lẫn dạng cấu trúc như captcha, bị đá về trang login dù phiên vẫn còn hợp lệ), hệ thống dừng ngay tác vụ đang chạy — **không thử lại, không cố tự giải captcha hay xác minh danh tính** — và chuyển tài khoản đó sang trạng thái Tạm dừng **bền vững qua cả việc restart service**, chặn mọi tác vụ tiếp theo ngay từ đầu cho tới khi một người vận hành thật vào `/admin/accounts` bấm "Kích hoạt lại".
-
-**Giới hạn đã biết, chủ đích không sửa:** cơ chế tự tạm dừng chỉ hoạt động khi chạy qua pipeline tự động — lúc thao tác tay bằng Playwright Codegen (như sự cố `tu_iizuki` trên), hệ thống không hề biết tài khoản vừa bị cảnh báo. Từng cân nhắc thêm cảnh báo vào tài liệu hướng dẫn ghi Codegen để nhắc tự tay tạm dừng tài khoản trước khi ghi, nhưng chủ dự án quyết định không cần thiết — được ghi lại như một rủi ro đã biết và chấp nhận, không phải lỗ hổng cần vá ngay.
-
-**Còn thiếu so với thiết kế đầy đủ của Safety Monitor:** hành vi #2 (chủ động giảm tốc khi sắp chạm giới hạn, không đợi tới lúc thất bại hẳn) và hành vi #3 (báo động ra ngoài qua Slack/email/Telegram khi có tài khoản bị tạm dừng — hiện tại chỉ biết được khi tự vào `/admin` xem banner cảnh báo).
-
-## 4.8. Xác minh bài đăng thật sự thành công \+ chụp ảnh bằng chứng mỗi lần chạy (2026-09-07)
-
-**Vì sao cần làm lại:** trước đây, sau khi bấm Post, hệ thống chỉ đợi cứng 2 giây rồi luôn báo thành công — không kiểm tra gì cả. Một sự cố thật đã xảy ra đúng kiểu lỗi này: ảnh bị gắn nhầm vào input ẩn khác, hệ thống vẫn báo thành công dù ảnh không hề xuất hiện trên bài đăng thật.
-
-**Đã sửa tận gốc:** sau khi bấm Post, hệ thống chủ động đợi cho tới khi nút "Post" **thật sự biến mất khỏi màn hình** (dấu hiệu Facebook đã nhận submit), tối đa 15 giây — hết giờ mà nút vẫn còn thì báo thất bại thật, không đoán mò. Bước đính kèm ảnh cũng đợi cho tới khi ảnh thumbnail thật sự hiện ra trong khung soạn trước khi tiếp tục, bắt lỗi ngay tại thời điểm xảy ra thay vì âm thầm đăng bài không kèm ảnh.
-
-**Chụp ảnh bằng chứng mọi lần chạy — cả thành công lẫn thất bại** — lưu theo từng tài khoản, tự dọn sau 30 ngày, xem trực tiếp được từ trang Báo cáo (`/admin/reports`).
-
-**Còn cần xác nhận sống:** 2 cơ chế xác minh trên (nút Post biến mất, ảnh thumbnail xuất hiện) được viết theo suy luận hợp lý từ cấu trúc trang đã biết, nhưng chưa chạy thử trực tiếp đủ nhiều lần trên Facebook thật để loại trừ khả năng báo "thất bại" giả cho một bài thực ra đã đăng thành công.
-
-## 4.9. Đính kèm ảnh/video khi đăng bài (2026-09-04)
-
-Tự động đính kèm 1 ảnh cho mỗi bài đăng (cả tường cá nhân lẫn nhóm), bật/tắt được qua trang quản trị (mặc định bật). Nếu bài đăng có ảnh riêng do bên B cung cấp thì luôn ưu tiên dùng ảnh đó; nếu không, hệ thống tự chọn ngẫu nhiên 1 ảnh từ kho ảnh mẫu có sẵn trong dự án. Playwright không thao tác hộp thoại chọn file của hệ điều hành (không làm được), mà chặn ngay cú click và gán file trực tiếp vào input ẩn — cách làm chuẩn của Playwright cho việc upload file.
-
-## 4.10. AI soạn/viết lại nội dung — job đăng nhóm và reply ứng viên (Content Strategist Agent) (2026-09-04, viết lại kiến trúc + đa nhà cung cấp 2026-09-10)
-
-**Vì sao cần AI ở đúng chỗ này:** nghiên cứu về cách các công cụ tự động hoá nhóm Facebook bị phát hiện chỉ ra rằng **nội dung giống hệt nhau đăng vào nhiều nhóm/nhiều người trong thời gian ngắn là dấu hiệu bị gắn cờ nhanh nhất**. Vì hệ thống thật sự phát tán một tin tuyển dụng vào mọi nhóm đã tham gia và trả lời hàng loạt ứng viên bằng cùng một bộ câu mẫu, việc có một lớp AI biến tấu nội dung là **yêu cầu bắt buộc**, không phải tính năng "cho đẹp".
-
-**Thay đổi kiến trúc quan trọng (2026-09-10): AI chuyển từ "lúc vừa nhận dữ liệu" sang "đúng lúc bài sắp đăng thật".** Bản đầu (2026-09-05) gọi AI ngay khi vừa lấy được 1 tin tuyển dụng mới từ bên B, soạn 1 lần cho toàn bộ nhóm sẽ đăng cùng lúc — ưu điểm là chắc chắn N nhóm khác chữ (AI thấy hết N nhóm trong 1 lần gọi), nhược điểm là tốn tiền gọi AI ngay cả khi bài đó sau này bị sửa/huỷ trước khi đăng. Bản mới: dữ liệu vừa nhận chỉ được soạn tạm bằng **mẫu cố định** (không AI, không tốn phí) để hiện ngay trên trang lịch đăng; AI chỉ thật sự được gọi **ngay trước khi bài thật sự đăng lên Facebook**, mỗi lần gọi ứng với đúng 1 bài cho đúng 1 nhóm. **Đánh đổi đã được chủ dự án chấp nhận:** không còn đảm bảo chắc chắn N nhóm khác chữ nhau (vì không còn gọi 1 lần cho cả nhóm cùng lúc) — dựa vào AI tự biến tấu độc lập mỗi lần gọi; live-test thực tế cho thấy vẫn đọc khác nhau một cách tự nhiên. Cách gọi cũ (1 lần cho cả batch nhóm) **được giữ lại trong code, không xoá**, chỉ đánh dấu "không còn được gọi ở đâu" — để dùng lại nếu sau này cần.
-
-**Mẫu (template) không-AI cũng được viết lại kỹ hơn nhiều** — trước chỉ có 3 câu mở đầu cố định và 1 lỗi thật (thuộc tính dạng danh sách của bên B bị in thẳng ra bài đăng dưới dạng `['Shizuoka']`, lộ cả dấu ngoặc vuông của Python): giờ có pool 8 câu mở đầu ngẫu nhiên, nhãn địa điểm/visa/lương đều có nhiều cách gọi khác nhau (random mỗi lần — nhãn "lương" gồm "Lương", "Mức lương", "Thu nhập", "Đãi ngộ", "Về tay"; **riêng lương tính THEO NĂM có thêm 2 lựa chọn "Nenshuu"/"年収"**, 2 từ mượn tiếng Nhật quen thuộc với cộng đồng đi làm ở Nhật — chỉ dùng cho lương năm vì đây là nghĩa gốc của từ, gắn cho lương tháng/giờ sẽ sai nghĩa chứ không chỉ khác văn phong), tên visa (mã thô bên B như `gijinkoku`) được map sang tên tiếng Việt/kanji thông dụng, lương tháng/năm bằng yên được đổi qua đơn vị dân gian "man"/tiếng lóng Việt "lá"/"tờ", và **không bao giờ chèn link vào bài** — link được thay bằng câu mời nhắn tin/inbox.
-
-3 ví dụ thật (chạy trực tiếp `content_strategist._draft_job_post_placeholder()` với dữ liệu mẫu khác nhau, để thấy rõ mức độ biến tấu):
-
-```
-TÌM NHÂN SỰ - Kỹ sư cơ khí
-Công ty: Công ty ABC Corp
-Địa chỉ: Shizuoka
-Visa Gijinkoku
-Yêu cầu JLPT: N3
-Lương: dao động 22-28 lá/tháng
-Inbox mình để được tư vấn kỹ hơn
-```
-
-```
-TUYỂN GẤP - Nhân viên chế biến thực phẩm
-Công ty: Nihon Food Co.
-Địa điểm làm việc: Aichi
-Visa Kỹ Năng Đặc Định
-Thông tin lương — ib để biết thêm
-Nhắn tin mình để mình gửi thêm thông tin
-```
-*(ví dụ trên: thiếu lương trong dữ liệu bên B → tự thêm câu mời nhắn tin hỏi thêm thay vì bỏ trống im lặng)*
-
-```
-CƠ HỘI VIỆC LÀM - Phụ bếp nhà hàng Nhật
-Công ty: Sushi Taro
-Vị trí: Osaka
-Yêu cầu JLPT: N4
-Đãi ngộ: 1300-1500 JPY/giờ
-Thông tin visa — nhắn mình để rõ hơn
-Ai quan tâm nhắn tin mình nhé
-```
-*(ví dụ trên: lương theo GIỜ nên giữ nguyên số yên gốc, không đổi qua man/lá/tờ — quy tắc đó chỉ áp dụng cho lương tháng/năm)*
-
-**Mở rộng sang cả nội dung trả lời ứng viên (trước đây chưa làm):** giờ có pipeline 3 tầng — mẫu cố định → gọi API `/reply` của bên B (bên B tự chạy AI riêng của họ) → AI (nhà cung cấp đang chọn ở `/admin/config`) của chính hệ thống viết lại từ mẫu, tối đa khoảng 200 ký tự. **Hai bước gọi AI (bên B và của mình) không bao giờ chạy cùng lúc cho 1 ứng viên** — nếu AI của mình đang bật và có API key thì bỏ hẳn bước gọi bên B, tránh trả tiền cho 2 lượt soạn AI cho cùng 1 câu trả lời.
-
-3 ví dụ thật (mỗi lần random chọn 1 trong 10 mẫu cố định ở `data_sync._CANDIDATE_REPLY_TEMPLATES`, `data_sync._draft_candidate_reply_placeholder()`):
-
-```
-Chào bạn, mình thấy bạn đang tìm kỹ sư cơ khí ở khu vực Shizuoka, bên mình đang có một số vị trí có thể phù hợp, bạn nhắn tin trao đổi thêm nhé.
-```
-
-```
-Alo bạn, bên mình có một số đơn hàng điều dưỡng ở khu vực Tokyo đang cần người, bạn qtam thì nhắn mình nhé.
-```
-
-```
-Hii, bên mình đang tuyển lắp ráp linh kiện điện tử, ib mình gửi chi tiết nhé.
-```
-*(ví dụ trên: ứng viên không có "khu vực mong muốn" trong dữ liệu → cụm "ở khu vực ..." tự động bỏ hẳn, không để trống/lỗi câu)*
-
-**Cả hai nhánh AI (job và reply ứng viên) đều có công tắc bật/tắt riêng ở `/admin/config`**, độc lập với việc có cấu hình API key hay không — tắt được ngay không cần sửa `.env`/khởi động lại service, phòng khi cần kiểm soát chi phí hoặc muốn quay lại dùng mẫu cố định tạm thời.
-
-**Đã xác nhận sống với AI thật (Anthropic, sau khi nạp lại credit) — 2 ví dụ thật, cùng 1 tin tuyển dụng (Kỹ sư đóng tàu/Cơ khí, Ehime, visa Gijinkoku, lương khởi điểm 22 man/tháng, không yêu cầu JLPT) nhưng đăng vào 2 nhóm khác nhau:**
-
-```
-Anh chị nào đang tìm hướng chuyển việc mới thì để ý nhé!
-Bên mình đang tuyển vị trí Kỹ sư đóng tàu/Cơ khí tại Ehime. Lương khởi điểm 22 man/tháng, visa Gijinkoku (技術・人文知識・国際業務). Không yêu cầu JLPT nên phù hợp với bạn nào tiếng chưa mạnh lắm nhưng có tay nghề vững.
-Ehime là tỉnh ven biển miền Tây Nhật, môi trường làm việc ngành tàu thuyền khá ổn định. Nếu quan tâm thì inbox mình trao đổi thêm chi tiết nhé!
-```
-
-```
-Chào cả nhóm! Có tin tuyển cho anh em làm cơ khí muốn sang Nhật ổn định nè.
-Vị trí: Kỹ sư đóng tàu/Cơ khí
-Địa điểm: Ehime (vùng Shikoku)
-Mức lương: từ 220,000 yên/tháng
-Visa: Kỹ sư (技人国) - không cần chứng chỉ tiếng
-Ngành đóng tàu ở Nhật khá thiếu người nên cơ hội thăng tiến tốt. Bạn nào đã có kinh nghiệm cơ khí/hàn xì/lắp ráp thì rất hợp. Muốn biết thêm về công ty và quy trình thì nhắn tin cho mình nha!
-```
-
-Đúng đủ các luật đã đặt ra trong `_SYSTEM_PROMPT`: hai bài đọc hoàn toàn khác nhau (mở đầu, giọng văn, thậm chí khác cả cách trình bày — bài 1 viết văn xuôi liền mạch, bài 2 tách gạch đầu dòng theo từng trường thông tin), lương đổi đúng qua "man" lẫn giữ nguyên số yên gốc tuỳ bài, tên visa gọi theo 2 cách khác nhau (kanji đầy đủ vs. viết tắt "技人国"), không bài nào chèn link, và không bài nào bịa thêm thông tin ngoài dữ liệu tin tuyển dụng gốc.
-
-**Đa nhà cung cấp AI, chọn được ngay trên Admin UI (2026-09-10, thêm sau khi phát hiện giới hạn trên):** ban đầu hệ thống gọi cứng Anthropic Messages API — dán API key của OpenAI hay bất kỳ hãng nào khác vào ô cấu hình cũ không có tác dụng gì, vì request vẫn được gửi thẳng tới `api.anthropic.com` với key sai định dạng (kết quả: lỗi xác thực 401, tự động rơi về mẫu cố định, không báo lỗi rõ cho người quản trị). Theo yêu cầu owner muốn "linh hoạt đổi qua lại nhiều model", đã tách phần **gọi API** (khác nhau giữa các hãng: URL, header xác thực, cấu trúc request/response) ra khỏi phần **soạn nội dung/kiểm tra kết quả** (giống nhau dù dùng hãng nào) — file mới `human_bot/ai_client.py` chỉ lo phần đầu, `content_strategist.py` giữ nguyên toàn bộ prompt tiếng Việt và luật kiểm tra (đếm ký tự, đúng số bài, không rỗng...) như cũ. 4 nhà cung cấp hỗ trợ sẵn: **Anthropic (Claude), OpenAI (GPT), Google Gemini, và một lựa chọn "Tuỳ chỉnh"** (endpoint bất kỳ nói được chuẩn OpenAI Chat Completions — dùng được cho DeepSeek/Groq/OpenRouter/LLM chạy nội bộ...). Mỗi nhà cung cấp có ô key + tên model riêng, không dùng chung 1 ô như trước — đổi qua lại không cần nhập lại key đã lưu cho hãng cũ. **Lưu ý quan trọng đã báo owner:** tên model là định danh kỹ thuật của API (ví dụ `gpt-4o-mini`, `gemini-2.5-flash`), phải gõ đúng chính xác từng ký tự kể cả chữ hoa/thường — gõ sai không làm sập hệ thống, chỉ khiến lệnh gọi AI thất bại và tự động rơi về mẫu cố định (có ghi log lỗi thật để dò). **Chưa test end-to-end với key thật của OpenAI/Gemini/custom** — mới kiểm tra logic lưu/đọc cấu hình bằng script nội bộ, chưa có key thật của các hãng này để xác nhận nội dung AI trả về đúng định dạng mong đợi.
-
-**2 lần tinh chỉnh giao diện theo phản hồi trực tiếp sau khi xem UI:** (1) ô nhập API key ban đầu không có viền, khó phân biệt với nền — do thiếu `input[type=password]` trong danh sách selector CSS chung của trang, chỉ là sót chứ không cố ý, đã bổ sung; (2) ô nhập tên model ban đầu có thêm 1 dropdown "chọn nhanh" riêng đặt cạnh ô nhập tự do — hiện 2 control cho cùng 1 giá trị bị nhận xét là rối mắt, nên đã gộp lại thành **1 ô input duy nhất dùng `<datalist>`** (tính năng chuẩn của HTML): bấm vào ô hiện gợi ý 3 model phổ biến để chọn nhanh, nhưng vẫn gõ/sửa tự do bình thường trong đúng 1 ô, không cần thêm JS để đồng bộ giữa 2 control.
-
-**Sửa lỗi thật: AI lỗi/thiếu key lúc đăng bài từng làm MẤT nội dung admin đã tự tay sửa ở Lịch đăng (2026-09-10).** Owner phát hiện qua thực tế: sửa nội dung 1 bài ở `/admin/schedule`, nhưng nếu công tắc "Dùng AI soạn bài" đang bật mà AI gọi lỗi hoặc hết key, `draft_single_post()` khi đó lại tự soạn một bản template HOÀN TOÀN MỚI (chọn ngẫu nhiên câu mở đầu khác) thay vì giữ nguyên bản đã hiển thị trên lịch — nội dung admin vừa sửa tay bị âm thầm ghi đè mất, mãi tới lúc đăng mới lộ ra. Đã sửa để hàm này luôn nhận thêm nội dung ĐANG có trên lịch (kể cả bản admin đã sửa tay) và trả về **nguyên xi** nội dung đó ở mọi trường hợp không dùng được AI (tắt công tắc / thiếu key / gọi AI lỗi) — chỉ thay bằng bài AI soạn khi AI thực sự gọi thành công. Cùng nguyên tắc "không bao giờ mất nội dung đã có" mà nhánh viết lại reply ứng viên vốn đã áp dụng từ trước, giờ áp dụng nhất quán cho cả nhánh job post.
-
-Cũng còn thiếu so với kế hoạch gốc: một bộ chuẩn hoá tín hiệu đầu vào (`normalize_signal()`), và các "guardrail" chống trùng lặp/từ cấm bằng code (hiện mới chỉ có trong system prompt gửi cho AI, chưa có lớp kiểm tra cứng bằng code) — riêng độ dài đầu ra thì đã có chặn cứng bằng code (không chỉ dặn trong prompt).
-
-## 4.11. Đăng nhập tài khoản mới qua web, thay cho chạy lệnh tay trong terminal (2026-09-10)
-
-Trước đây thêm tài khoản Facebook mới bắt buộc phải tự chạy `python3 human_bot/bootstrap_login.py <account_id>` trong terminal, một cửa sổ trình duyệt thật mở ra để tự tay đăng nhập, rồi quay lại terminal bấm Enter. Giờ có thêm lựa chọn qua `/admin/accounts`: tài khoản nào có badge đỏ "chưa có phiên đăng nhập" giờ có nút "Đăng nhập & lưu phiên" — mở đúng một cửa sổ trình duyệt thật như cách cũ, chỉ khác là xác nhận xong việc đăng nhập thì bấm nút trên web thay vì Enter trong terminal. **Giới hạn:** chỉ dùng được khi service đang chạy trên máy có màn hình thật — cửa sổ trình duyệt mở ra nằm trên máy đang chạy service, không phải máy đang xem trang quản trị; nếu chạy service trên server không màn hình thì vẫn phải dùng cách chạy lệnh tay như cũ.
-
-**Sự cố thật phát hiện trong lúc làm, đã sửa cùng lúc:** đăng ký một tài khoản ở `/admin/accounts` trước khi đăng nhập xong (tài khoản chưa có phiên đăng nhập) khiến **toàn bộ service sập ngay lúc khởi động**, không chỉ riêng tài khoản đó — đã sửa để một tài khoản thiếu phiên đăng nhập chỉ tự nó không hoạt động được, không kéo sập tài khoản khác hay cả service.
-
-## 4.12. Quản lý tài khoản, nhóm, lịch đăng, cấu hình và báo cáo qua Admin UI (2026-09-02, nhiều đợt hoàn thiện tới 2026-09-10)
-
-Đã viết lại hoàn toàn từ một trang "đăng trực tiếp" đơn giản (không khác gì tự vào Facebook đăng tay) thành một hệ thống quản trị đầy đủ:
-
-* **Quản lý tài khoản** (`/admin/accounts`): đăng ký/Tạm dừng/Kích hoạt lại/Xoá — áp dụng được cho mọi tài khoản kể cả loại khai báo sẵn trong code; chỉnh giới hạn tốc độ riêng từng tài khoản; cảnh báo ngay trên dashboard nếu có tài khoản đang Tạm dừng. Thêm cột **"Tuổi tài khoản"** hiện ngay trong danh sách (so khớp `posts_per_day`/`comments_per_day` hiện tại với 5 tier, hoặc "Tuỳ chỉnh" nếu không khớp — 2026-09-11, không cần mở modal mới biết). Nút "Áp nhanh theo tuổi tài khoản" trong modal "⏱️ Giới hạn" **không còn tự lưu ngay khi bấm** (2026-09-11, owner phát hiện qua chính 1 buổi làm việc — hạn mức đổi mà không nhớ đã bấm gì) — giờ chỉ điền số vào form, phải bấm "Lưu" mới ghi thật.
-* **Soạn & lên lịch đăng** (`/admin/post` → `/admin/schedule`): **mọi bài đều phải qua bước lịch đăng để duyệt trước khi thật sự chạy** — không còn nút "đăng ngay lập tức" nào bỏ qua bước này, kể cả muốn đăng ngay cũng chỉ là để trống giờ rồi bấm "Đăng ngay" ở trang lịch. Hỗ trợ nhiều khối nội dung khác nhau cho nhiều tập nhóm khác nhau trong cùng một lượt soạn. Trang lịch có bộ lọc, phân trang, hiển thị giờ theo múi giờ Nhật Bản, cảnh báo ngay trên từng dòng nếu bài đang bị chặn bởi rate-limit. **Phân trang bổ sung nút "Trang đầu"/"Trang cuối" + ô nhảy thẳng tới số trang bất kỳ + chọn số item/trang (2026-09-11, 2 đợt cùng ngày)** — trước đó chỉ có Trang trước/Trang sau, bất tiện khi danh sách dài (VD từ trang 1 muốn tới trang 10 hoặc trang cuối phải bấm nhiều lần), và không có cách nào biết/đổi mỗi trang hiển thị bao nhiêu item (cố định 20). Ô nhảy trang gộp thành 1 khối "Trang `[_]`/N `[Đi]`" duy nhất (đợt đầu làm 3 phần tử rời rạc, owner phản hồi chưa đẹp, gộp lại ở đợt 2); dropdown "Hiển thị" chọn 10/20/50/100 item/trang, đặt cạnh bộ lọc tài khoản, đổi là áp dụng ngay không cần bấm gì thêm.
-* **Quản lý nhóm** (`/admin/groups`): nhập/sửa/xoá danh sách nhóm đã tham gia theo từng tài khoản, không cần sửa code.
-* **Báo cáo** (`/admin/reports`): tổng quan nhanh (tổng số/thành công/thất bại/tỉ lệ/số tài khoản hoạt động) hiển thị dạng lưới 5 ô chia đều, lọc theo khoảng thời gian, xem ảnh chụp bằng chứng từng lần chạy. Bảng "Tỉ lệ thành công/thất bại theo hành động" hiển thị 1 dòng/hành động với 2 cột riêng Thành công/Thất bại (2026-09-11, trước đó lặp 2 dòng/hành động). Bảng "Hoạt động gần đây" có phân trang cùng kiểu với Lịch đăng (2026-09-11, 3 đợt chỉnh cùng ngày theo phản hồi owner) — nút Đầu/Cuối, ô nhảy trang gộp 1 khối, dropdown chọn 10/15/30/50/100 item/trang đặt cùng hàng với tiêu đề "🕒 Hoạt động gần đây" cùng số mục (không phải footer như bản đầu, không phải hàng lọc chung trên cùng như trước nữa — chỉ ảnh hưởng riêng khối này). Nút "Đăng lại" khi bị chính rate-limiter của hệ thống chặn hiển thị cảnh báo màu hổ phách (gợi ý giờ thử lại) thay vì bị tính chung là lỗi màu đỏ — cùng cách phân biệt "Đăng ngay" ở Lịch đăng đã làm từ trước. **Dữ liệu thống kê cũng đồng bộ theo quyết định này (2026-09-11)** — mọi task bị `rate_limited:` (từ auto-schedule, thủ công, hay "Đăng lại") trước đây ghi `success=0` giống hệt lỗi thật vào `action_log`, kéo lệch khối KPI và bảng "theo hành động". Giờ `db.py`'s `summary_stats()`/`action_type_counts()` loại các dòng này khỏi total/succeeded/failed (chưa từng thực sự thử làm gì — rate-limit chặn TRƯỚC khi mở trình duyệt), còn bảng "Hoạt động gần đây" vẫn hiện đủ (để còn "Đăng lại" được) nhưng đổi icon riêng (⏳ thay vì ⚠️ dùng chung với lỗi thật).
-* **Cấu hình hành vi** (`/admin/config`): chỉnh mọi tham số mô phỏng con người, rate-limit, đồng bộ dữ liệu bên B — có hiệu lực ngay, không cần sửa `.env`/khởi động lại service. Mọi công tắc bật/tắt (cả 3 tab: hành vi/đồng bộ/AI) hiển thị dạng switch (nút gạt) thay vì checkbox thường (2026-09-10) — chỉ đổi giao diện, không đổi cách lưu.
-* **Mọi chỗ hiển thị giờ trong toàn bộ Admin UI đồng bộ theo giờ trình duyệt đang mở (2026-09-11)** — trước đó vài nơi (trạng thái đồng bộ/tạm dừng/hạ nhiệt ở `/admin/accounts`, cột "Thời gian" ở bảng Hoạt động gần đây) còn gắn cứng JST hoặc UTC, không theo người xem thật. Đổi hết sang cơ chế đã có sẵn cho Lịch đăng (server render giờ JST làm dự phòng, JS ghi đè bằng giờ trình duyệt thật ngay khi trang tải xong). Việc sửa này trực tiếp giải quyết đúng vụ nhầm "chỉ thấy 2 nhóm/2 comment hôm nay" (thực ra 3/4) do đọc nhầm cột "Thời gian (UTC)" thay vì ngày nghiệp vụ thật.
-* **`/admin/reports` chia thành 4 tab (2026-09-12)** — trang phát triển dần lên tới nhiều card xếp chồng (KPI, theo tuần/nhóm/hành động, báo cáo job, báo cáo comment, hoạt động gần đây), nhiều tab có phân trang riêng phải mang state của nhau qua mọi link — owner nhận xét "quá nhiều nội dung". Tách thành "📊 Thống kê chi tiết" (mặc định, giữ nguyên hành vi cho link cũ không có `tab` trong URL), "📮 Bài đăng", "💬 Bình luận", "🕒 Hoạt động gần đây" — bộ lọc tài khoản/thời gian dùng chung mọi tab, chuyển tab qua htmx không cần JS riêng, và chỉ tab đang mở mới thực sự chạy query (các tab khác không tốn DB). Tách tab còn giải quyết gọn luôn vấn đề "nhiều khối phân trang phải cõng nhau" vì giờ mỗi tab độc lập hoàn toàn.
-* **"↻ Đăng lại" đổi từ 1 nút thành modal 3 lựa chọn (2026-09-12)** — trước đó bấm "↻" là đăng lại ngay lập tức, không có cách nào khác; owner muốn thêm lựa chọn "Đặt lịch" (tự chọn giờ) và "Lên lịch lại" (hệ thống tự tìm giờ trống). Modal mới ở cả 3 tab "Bài đăng"/"Bình luận"/"Hoạt động gần đây" (chỉ hiện cho dòng THẤT BẠI, giữ nguyên phạm vi cũ): **🚀 Đăng ngay** (không đổi hành vi cũ), **📅 Đặt lịch** (mở `/admin/post` điền sẵn nội dung/URL qua query param — phát hiện lúc làm là `/admin/post` chưa từng có form soạn COMMENT nào, nên thêm hẳn tab mới "💬 Bình luận" ở đó, với route `/admin/post/schedule-comment` mới, tự suy action group-hay-friend từ URL giống hệt `data_sync.py`), **🔄 Lên lịch lại** (tự tính giờ trống gần nhất — hàm mới `_suggest_reschedule_at()` tái dùng nguyên các mảnh đã có: `daily_limits.hard_cap_message()`/`business_day_start()`, `apply_quiet_hours()`, `RateLimiter.next_allowed_at()` — chứ không viết luật tính giờ mới, rồi admin bấm "Xác nhận" mới thật sự `schedule_store.add()`). Khác với "Đăng ngay" (cố tình bỏ nguồn gốc job/candidate theo thiết kế cũ từ 2026-09-09), 2 lựa chọn mới GIỮ LẠI `source_kind`/`source_id`/`job_data`-hoặc-`candidate_data` — task lên lịch lại sẽ hiện đúng vị trí trong báo cáo "Bài đăng"/"Bình luận" một khi nó chạy.
-* **"Đăng lại" nhớ trạng thái đã xử lý (2026-09-12)** — trước đó không có cách nào biết 1 dòng thất bại đã được bấm "Đăng ngay"/"Đặt lịch"/"Lên lịch lại" hay chưa, vào lại báo cáo lúc nào cũng thấy y hệt nút "↻". Thêm cột `retry_of_log_id` vào `action_log`, truyền xuyên suốt từ `TaskRequest`/`ScheduledTask` ở cả 3 nhánh xử lý, để mỗi report row biết mình có đang chờ 1 task pending nào đó retry chính nó không (schedule_store), hoặc đã có 1 lần retry THÀNH CÔNG chưa (`db.successful_retry_log_ids()`, 1 query gộp/trang) — nút "↻" thay bằng text "⏳ Đã lên lịch lại"/"✅ Đã đăng lại" tương ứng. **Lúc migrate phát hiện lỗi thứ tự**: đặt `CREATE INDEX` trên cột mới CHUNG với `CREATE TABLE` trong cùng 1 `executescript()` — trên database ĐÃ CÓ SẴN (chưa có cột mới), index chạy trước ALTER TABLE nên báo lỗi ngay khi import module; sửa bằng cách tách CREATE INDEX ra chạy SAU ALTER TABLE.
-* **Bug thật: "Lên lịch lại" gợi ý trùng giờ (2026-09-12)** — owner tự phát hiện: lên lịch lại dòng A được giờ X, xác nhận xong, lên lịch lại dòng B vẫn ra ĐÚNG giờ X. Nguyên nhân: hàm gợi ý giờ (`_suggest_reschedule_at()`) chỉ đọc dữ liệu THẬT ĐÃ XẢY RA (`daily_limits`/`RateLimiter` chỉ đọc `action_log`), còn task vừa "Lên lịch lại" chỉ nằm trong `schedule_store`'s hàng chờ (`pending/`), CHƯA hề chạy — nên không có cách nào "thấy" được gợi ý trước đó đã bị chiếm. Sửa bằng cách gộp thêm các task đang PENDING (cùng tài khoản, cùng loại post/comment) vào cả phép đếm hạn mức ngày lẫn phép tính khoảng cách tối thiểu, trước khi đưa ra gợi ý mới.
-* **"Dữ liệu gốc" ở "Bài đăng"/"Bình luận" hiện đầy đủ mọi field, không chỉ 1 danh sách cố định (2026-09-12)** — owner nhận xét 2 tab này giờ đầy đủ hơn "Hoạt động gần đây" (đúng — 2 tab mới chỉ phủ được đúng phần có nguồn job/candidate, "Hoạt động gần đây" vẫn là nơi duy nhất hiện `post_to_own_profile`/`like_post`/bài soạn tay không qua job-candidate, nên không dư), rồi yêu cầu riêng phần "nội dung gốc" nên đầy đủ hơn. Trước đó chỉ hiện đúng 1 danh sách field hard-code (job: company/location/visaType/jlpt/salary; candidate: desiredJobField/preferredRegion) dù `job_data`/`candidate_data` lưu trong DB đã là dict THÔ, KHÔNG lọc bớt, từ bên B — field nào bên B gửi mà không nằm trong danh sách cứng đó (`confidence`, `contact`...) bị ẩn hoàn toàn dù dữ liệu vẫn nằm sẵn trong DB. Đổi sang hàm dùng chung `_attrs_summary_html()` hiện ĐỘNG mọi field không rỗng có trong dict — field đã biết dùng nhãn tiếng Việt qua `_ATTR_LABELS`, field lạ (bên B thêm sau này) vẫn hiện bằng chính tên field thô thay vì biến mất, không cần sửa code mỗi khi bên B đổi schema.
-* **Lịch đăng thêm bộ lọc "Hành động" + "Ngày đăng" (2026-09-15)** — trước đó tab "📋 Task đã lên lịch" chỉ lọc được theo tài khoản, không tách được "Đăng vào nhóm" khỏi "Comment bài trong nhóm", cũng không xem riêng được 1 ngày cụ thể giữa hàng chục task tương lai. Thêm 2 ô lọc mới ở HÀNG RIÊNG ngay dưới hàng tài khoản/số-dòng-mỗi-trang đã có (owner phản hồi cùng ngày — bản đầu nhồi cả 4 ô vào 1 hàng `flex-wrap`, co giãn/xuống dòng không kiểm soát theo độ rộng màn hình), cùng nút "✕ Xoá bộ lọc" đặt cạnh 2 ô mới (chỉ hiện khi đang lọc theo hành động hoặc ngày; bấm vào chỉ xoá 2 ô đó, giữ nguyên tài khoản/số-dòng-mỗi-trang đang chọn) — cả 5 ô lọc (2 hàng) vẫn dùng chung 1 cơ chế `hx-include` chéo nhau như cũ. Điểm phải cẩn thận: trang này VỐN ĐÃ hiển thị giờ theo múi giờ trình duyệt người xem (không cố định JST, xem mục "Mọi chỗ hiển thị giờ..." ở trên) — nên lọc "Ngày đăng" phải khớp ĐÚNG ngày đang hiện trên màn hình đó, không phải ngày theo giờ server. Tái dùng chính cơ chế `_local_dt_html()`/`initLocalDateTime()` đã có: thêm 1 field ẩn `tz_offset`, JS mới `initTzOffsetField()` tự điền độ lệch múi giờ thật của trình duyệt (`Date.getTimezoneOffset()`, đảo dấu) mỗi lần trang tải/htmx swap, server dùng đúng số đó để quy đổi UTC → ngày local trước khi so khớp bộ lọc. Xác nhận đúng bằng service chạy thật (port riêng, không đụng port đang chạy production): tổng theo hành động và tổng theo ngày đều cộng khớp lại đúng tổng không lọc, đổi `tz_offset` (0 = UTC so với 540 = JST) ra kết quả khác nhau thật, và nút "Xoá bộ lọc" ẩn/hiện đúng lúc + giữ đúng `account_id` trong link khi bấm. Chỉ áp dụng cho tab "pending" — tab "⚠️ Task quá hạn" giữ nguyên, không có 2 ô lọc mới này.
-* **Bug thật: datetime picker hiện trống sau khi chuyển tab trình duyệt (2026-09-15)** — ô chọn giờ dùng ở cả "Sửa"/"📅 Đặt lịch" (Lịch đăng) và "Đăng lên tường cá nhân" (`/admin/post`) đang có giá trị, chuyển sang tab TRÌNH DUYỆT khác rồi quay lại thì hiện trống, F5 mới thấy lại đúng. Không mất dữ liệu thật — field ẩn UTC (field thật được submit) vẫn giữ đúng giá trị suốt, chỉ ô hiển thị `<input type="datetime-local">` bị trống về mặt hiển thị, quirk đã biết của Chromium với giá trị field datetime-local được SET BẰNG JS (bước tự điền ban đầu, hoặc nút chọn nhanh "+1h"/"+1d") thay vì người dùng tự gõ — khác với 2 tab CỦA CHÍNH trang Lịch đăng ("Task đã lên lịch"/"Task quá hạn"), vốn đã tự re-sync đúng qua cơ chế chạy lại init trên mọi htmx swap (mục ngay trên). Sửa bằng cách thêm 1 hàm quét mọi ô chọn giờ đã khởi tạo và ĐỌC LẠI hiển thị từ đúng field ẩn UTC (không set giá trị mới, không thể ghi đè mất 1 chỉnh sửa đang gõ), gọi khi tab lấy lại focus (`visibilitychange`) và khi trang phục hồi từ bộ nhớ đệm điều hướng (`pageshow`, một số trình duyệt không bắn `visibilitychange` khi bấm Back).
-* **Sửa lại đúng bug trên — owner báo "vẫn chưa ổn" (2026-09-15)** — hoá ra bug KHÔNG chỉ ở chuyển tab trình duyệt: chuyển qua lại giữa 2 tab NGAY TRONG trang Lịch đăng ("Task đã lên lịch"/"Task quá hạn") đã đủ tái hiện, và đợt sửa trên không giải quyết được vì đó không phải nguyên nhân thật. Dùng Playwright (Chromium thật) để tìm cho chắc thay vì đoán tiếp: bắt được `pageerror` thật ngay LÚC TẢI TRANG LẦN ĐẦU — `TypeError: Cannot read properties of null (reading 'addEventListener')` tại dòng `document.body.addEventListener("htmx:afterSwap", ...)`. Nguyên nhân gốc: toàn bộ `<script>` của trang nằm trong `<head>` (qua `_PAGE_STYLE`/`_layout()`), lúc đó `document.body` CHƯA TỒN TẠI, nên dòng này NÉM LỖI ngay từ lúc parse — nghĩa là listener `htmx:afterSwap` chưa từng đăng ký thành công, ở BẤT KỲ trang admin nào, từ lúc dòng này được viết (không phải lỗi mới, không phải do đợt sửa filter/picker gần đây) — mọi lần htmx swap (chuyển tab, đổi filter, sửa/đăng-ngay/huỷ...) đều chưa từng chạy lại `initDynamicScope()`, chỉ được che giấu vì `DOMContentLoaded`'s init chạy đúng 1 lần lúc tải trang thành công. Sửa triệt để: đổi `document.body.addEventListener(...)` thành `document.addEventListener(...)` — event htmx bắn ra vẫn nổi bọt lên `document` như cũ, mà `document` luôn tồn tại kể cả giữa `<head>`, khác `document.body`. Xác nhận lại bằng Playwright: hết `pageerror`, `dataset` sau swap có đủ `scheduleInit:"1"`, giá trị picker giữ đúng qua nhiều lần chuyển tab liên tiếp và qua đổi bộ lọc.
-
-## 4.13. Đồng bộ dữ liệu tự động từ hệ thống tuyển dụng (bên B) (2026-09-04, hardening 2026-09-08 – 2026-09-09)
-
-Một vòng lặp nền tự động gọi API của bên B để lấy tin tuyển dụng mới (→ lên lịch đăng nhóm) và ứng viên mới (→ lên lịch trả lời), tự chống trùng theo ngày, tự giãn cách thời gian đăng ngẫu nhiên (không đăng dồn cục), và **chia đều công bằng** dữ liệu mới cho mọi tài khoản đang hoạt động thay vì chỉ tài khoản xử lý đầu tiên mỗi vòng nhận được (một lỗi thật đã phát hiện và sửa — xem mục 5). Có "khung giờ yên tĩnh" để không đăng vào ban đêm theo giờ Nhật Bản. **Cổng an toàn tự đăng (`auto_fire_enabled`) mặc định tắt** — bộ đồng bộ vẫn lấy dữ liệu/lên lịch bình thường, nhưng sẽ không tự bấm đăng lên Facebook cho tới khi chủ động bật cổng này; trong lúc chờ, có thể đăng thủ công từng bài từ trang lịch.
-
-**Thực thi đúng giới hạn `posts_per_day` ngay khi tự động lên lịch (2026-09-08)** — bài tự động đăng nhóm do bộ đồng bộ tạo ra tôn trọng đúng hạn mức bài/ngày của từng tài khoản (mục 4.6): vượt quá thì tự tràn dồn sang ngày kế tiếp thay vì cố nhét hết vào 1 ngày hoặc bị bỏ luôn, cộng thêm khoảng cách tối thiểu giữa 2 bài đăng cùng vào 1 nhóm (tránh 2 bài liên tiếp rơi đúng vào 1 nhóm dù cách nhau đủ xa với các nhóm khác).
-
-**Giới hạn số nhóm/1 job + loại tài khoản 0 nhóm khỏi phân phối (2026-09-11), sau khi owner chỉ ra "1 job phát vào TOÀN BỘ nhóm đã tham gia" là dấu hiệu spam rõ dù đã viết lại nội dung.** Điều tra sâu (test thật, không đoán) ra 2 lỗi + 1 điểm xác nhận đã đúng:
-
-1. **Bug thật:** tài khoản 0 nhóm vẫn được `_water_fill_distribute()` chia job (chỉ tính `posts_per_day`, không kiểm tra có nhóm hay không) — job đó chạy 0 vòng lặp nhóm (không tạo task nào) nhưng vẫn bị `_mark_seen()` → **mất vĩnh viễn**, đồng thời cướp mất phần chia đáng lẽ dành cho tài khoản có nhóm thật. Sửa: loại thẳng tài khoản 0 nhóm khỏi `job_capacities`.
-2. **Gap thật:** chưa từng có giới hạn số nhóm/job — `template_variants()` luôn trả đúng `len(groups)` biến thể (mọi nhóm đã tham gia). Thêm `RateLimits.max_groups_per_post` (mặc định 3) — **riêng từng tài khoản** (không phải cấu hình toàn cục), chỉnh ở modal "⏱️ Giới hạn" tại `/admin/accounts`, cùng chỗ với `posts_per_day`/`comments_per_day` (bản đầu để nhầm ở `DataSyncConfig`/tab "Đồng bộ" — toàn hệ thống dùng chung 1 số, owner phản hồi ngay cần riêng theo tài khoản vì tài khoản nhiều nhóm lâu năm có thể chịu được giới hạn cao hơn tài khoản mới ít nhóm, đã chuyển lại đúng chỗ). Chọn nhóm theo **round-robin ưu tiên nhóm lâu chưa đăng nhất** (tái dùng `_last_scheduled_time_per_group()` có sẵn) — không random (có thể bỏ quên nhóm) hay cố định N nhóm đầu (không xoay vòng). Nút "Áp nhanh theo tuổi tài khoản" (quick-apply tier) được sửa để **giữ nguyên** giá trị này khi bấm — tier preset không khai báo field này (khác trục với tốc độ/số lượng theo tuổi), nếu không giữ sẽ âm thầm reset về mặc định 3 mỗi lần bấm, mất tuỳ chỉnh riêng của admin.
-3. **Đã kiểm tra, không phải bug:** lo ngại "1 job có thể bị phân phối cho >1 tài khoản" — test thật xác nhận KHÔNG xảy ra, `_water_fill_distribute()` + `_mark_seen()` (cache toàn cục theo id) đã đảm bảo đúng 1 job → đúng 1 tài khoản từ trước.
-
-**Bật/tắt đồng bộ dữ liệu riêng theo từng tài khoản, độc lập với Tạm dừng/Kích hoạt (2026-09-08).** Một tài khoản đang ACTIVE nhưng bị tắt đồng bộ ở đây vẫn đăng bài/comment bình thường qua `/admin/post` — chỉ riêng việc tự động lấy job/candidate mới từ bên B cho tài khoản đó bị bỏ qua. Có theo dõi trạng thái lần đồng bộ gần nhất riêng theo từng tài khoản, xem tại `/admin/accounts` tab Đồng bộ.
-
-**Lỗi thật phát hiện 2026-09-10 — comment lên lịch quá gần nhau giữa các lần poll khác nhau, và fix "kẹp sàn".** Owner phát hiện 3 comment cùng tài khoản, lên lịch chỉ cách nhau 5-20 phút dù `comment_min/max_delay_seconds` đang đặt 90-180 phút. Nguyên nhân: `next_comment_time` trong `sync_all()` chỉ được cộng dồn ngẫu nhiên (`+= random(gap)`) **trong phạm vi 1 lần gọi `sync_all()`** — sang lần poll kế tiếp (~15 phút sau), biến này khởi tạo lại từ `now` mới, không biết gì về comment đã lên lịch từ lần poll trước, nên 2 khoảng random độc lập có thể tình cờ rơi gần nhau.
-
-Sửa bằng cách thêm `_last_scheduled_comment_time(account_id)` (soi lại comment pending/posted từ các lần poll trước, cùng ý tưởng với `_last_scheduled_time_per_group()` vốn đã dùng cho bài đăng nhóm — mục ngay trên, chỉ khác là comment kẹp theo TÀI KHOẢN chứ không theo từng nhóm/mục tiêu riêng, vì `RateLimits.comment_min/max_delay_seconds` vốn enforce theo tài khoản) và kẹp thêm sàn thứ hai là `RateLimiter(account).next_allowed_at("comment")` — giờ sớm nhất `safety.py` THẬT SỰ cho phép, tính từ lần comment gần nhất đã **thực sự đăng xong** (đọc log hành động, không ghi gì, an toàn để gọi trước khi lên lịch).
-
-**Va chạm x₁/x_safety — ĐÃ SỬA (2026-09-11), đánh dấu TẠM THỜI theo quyết định chủ dự án.** Trước đó: mỗi khi 1 hành động đăng THẬT xong, `safety.py`'s `record()` tự random một khoảng gap MỚI (x_safety, trong `[gap_min, gap_max]`) làm mốc `next_allowed_at` cho hành động kế tiếp — độc lập hoàn toàn với con số random đã dùng để lên lịch (`x₁`, ở `data_sync.py`). Vì x_safety chỉ tồn tại SAU KHI hành động trước đó đăng xong (một sự kiện ở tương lai tại thời điểm lên lịch), không có cách nào biết trước để "kẹp sàn" tránh va chạm — nếu `x₁ < x_safety` (~50% xác suất), hành động kế tiếp tới giờ lên lịch vẫn bị `safety.py` chặn dù lịch tưởng đã ổn.
-
-**Hướng đã chọn (trong 3 hướng từng cân nhắc — chấp nhận tự dò lại / gộp 2 lớp random / cố định x_safety=min):** cố định `x_safety = gap_min` thay vì random. Vì `x₁` luôn nằm trong `[gap_min, gap_max]` theo đúng định nghĩa, `x₁ ≥ x_safety` giờ là **chắc chắn toán học** (verify bằng mô phỏng 100,000 lần: 0 va chạm), không còn ~50% may rủi như trước — loại bỏ hoàn toàn va chạm cho mọi hành động đi qua `data_sync.py`'s scheduler. `next_allowed_at` giờ chỉ còn ý nghĩa "mốc nghỉ tối thiểu tuyệt đối" để các đường KHÔNG qua lịch biết mà né, không phải nguồn ngẫu nhiên chính (độ ngẫu nhiên thật nằm ở lớp lên lịch).
-
-**Đánh đổi CHƯA giải quyết, ghi nhận rõ trong code:** mọi đường KHÔNG qua scheduler (vd nút "Đăng ngay"/"Đăng lại" ở `/admin/schedule`/`/admin/reports`) giờ có khoảng cách enforcement CỐ ĐỊNH mỗi lần — đúng kiểu "y hệt nhau mọi lần" mà [rate-limiting-pacing.md](docs/skills/rate-limiting-pacing.md) rule #3 khuyến cáo tránh. Rủi ro được đánh giá nhỏ (các đường đó do người thật bấm tay, không phải vòng lặp tự động lặp lại) nên chấp nhận đánh đổi TẠM THỜI — cần xem lại nếu sau này có thêm đường gọi tự động không qua lịch.
-
-**Kẹp sàn SỐ LƯỢNG (posts_per_day/comments_per_day) theo cửa sổ trượt 24h thật — ĐÃ TRIỂN KHAI (2026-09-11), sau nhiều lượt trao đổi thiết kế.** Cùng vấn đề gốc như phần rate-limit theo GAP ở trên nhưng cho SỐ LƯỢNG: `data_sync.py`'s `job_capacities`/`comment_capacities` trước đây chỉ đếm "đã lên lịch cho ngày dương lịch nào" — không khớp với cách `safety.py` thật sự đếm (cửa sổ trượt 24h, không quan tâm ngày dương lịch), nên lịch trông hợp lệ (VD "hôm nay mới 1 comment") nhưng vẫn bị chặn khi chạy thật (7 comment trong 24h qua, tính cả tối hôm trước) — xem sự cố thật `comments_per_day` đã điều tra chi tiết.
-
-**Đổi sang kẹp sàn** (`effective_used = max(theo ngày dương lịch, RateLimiter.recent_count() thật trong 24h)` — hàm `recent_count()` mới thêm vào `safety.py`, tách từ logic đếm sẵn có trong `can_proceed()`) — áp dụng cho cả `job_capacities` lẫn `comment_capacities`.
-
-**Điều kiện bắt buộc đi kèm, không thể tách rời (đã phân tích kỹ qua nhiều lượt trao đổi):** phải bỏ HẲN cơ chế "tràn sang ngày mai" cho bài đăng (`_next_available_post_slot()`'s nhánh nhảy ngày) cùng lúc. Lý do: cách đếm theo ngày dương lịch cũ chỉ TĂNG (ngày "đầy" là đầy vĩnh viễn, giữ đúng thứ tự công bằng tự nhiên); cách đếm theo cửa sổ trượt thật CÓ THỂ GIẢM (khi hoạt động cũ trôi khỏi 24h) — nếu vẫn giữ tràn-ngày, 1 job bị đẩy sang ngày mai sẽ kẹt vĩnh viễn ở đó trong khi job MỚI hơn đến sau có thể "nẫng" mất slot vừa mở ra giữa ngày, đảo thứ tự cũ-mới. Bỏ tràn-ngày rồi thì không còn gì bị "khoá cứng" để đảo thứ tự — mỗi poll tính lại từ đầu.
-
-**Hành vi mới khi hết slot giữa chừng (job phát nhiều nhóm) — theo ví dụ cụ thể owner đưa ra:** nếu `max_groups_per_post=3` nhưng chỉ còn 2 slot thật, đăng vào **2 nhóm** (không phải 0, không phải 3) — job coi như xử lý xong ngay (đánh dấu đã thấy), KHÔNG cố đăng nốt nhóm còn thiếu ở lần poll sau. Chỉ khi còn đúng **0 slot** mới hoãn cả job (không tạo task, không đánh dấu đã thấy, lấy lại nguyên vẹn ở poll sau — giống hệt cách xử lý tài khoản 0 nhóm đã sửa trước đó). Comment không cần logic "đăng vừa đủ" này vì 1 candidate luôn tạo đúng 1 task, không "nở" ra nhiều nhóm như job — chỉ cần sửa đúng con số capacity là `_water_fill_distribute()` đã tự defer đúng phần dư.
-
-**Bug tự phát hiện khi cài đặt (không phải owner hỏi):** job bị hoãn BÊN TRONG vòng lặp (hết slot giữa chừng, khác với bị water-fill loại ngay từ đầu) không nằm trong danh sách `deferred_jobs` mà cơ chế giữ cursor bên B đang dùng — nếu không gộp vào, job đó có thể KHÔNG BAO GIỜ được lấy lại từ bên B (khác "chưa đánh dấu đã thấy" — nếu cursor trôi qua mốc thời gian của nó, API bên B sẽ không trả về nó nữa). Đã thêm bước gộp `deferred_jobs_inner` (theo từng tài khoản) vào `deferred_jobs` (danh sách ngoài) trước khi tính cursor.
-
-Verify: mô phỏng lại chính xác công thức `available`/`groups_to_post` khớp đúng ví dụ owner đưa ra (2 slot, cap 3 → đăng 2; đầy hẳn → hoãn). 79 test vẫn pass. **Chưa chạy `sync_all()` thật qua service** — cần restart + có dữ liệu mới từ bên B mới quan sát được trực tiếp.
-
-**Thay hẳn cơ chế enforcement SỐ LƯỢNG (`posts_per_day`/`comments_per_day`) từ cửa sổ trượt 24h sang "ngày nghiệp vụ" — file mới `human_bot/daily_limits.py` (2026-09-11).** Trong lúc bàn cách xử lý "còn thiếu slot thì set lịch chính xác vào giờ mở slot tiếp theo", owner tự phát hiện lỗ hổng: đặt cứng job vào đúng 1 giờ tính được (VD 19h) sẽ tạo khuôn mẫu lặp lại mỗi ngày (19h hôm qua, 19h hôm nay) — mất hẳn tính ngẫu nhiên, dấu hiệu bất thường còn rõ hơn cả việc thiếu slot. Bàn tiếp hướng đơn giản hoá triệt để: đổi luôn cách ĐẾM sang "ngày nghiệp vụ" cố định (2h sáng JST → 2h sáng JST hôm sau) thay vì cửa sổ trượt liên tục — khi đó không cần tính "giờ mở slot" động nữa, chỉ cần biết ngày nghiệp vụ hiện tại còn slot hay không.
-
-**Vì sao chọn mốc 2h sáng, không phải nửa đêm:** 2h-6h sáng JST là khung giờ yên tĩnh có sẵn (`DataSyncConfig.quiet_hour_start_local`), không bao giờ có hoạt động nào diễn ra — reset đúng lúc đó nằm gọn trong "vùng chết", loại bỏ hẳn nguy cơ dồn cục 2 phía mốc reset (VD 7 bài trước 2h + 7 bài ngay sau 6h) mà nửa đêm (giữa giờ hoạt động) sẽ không tránh được — đây chính xác là kiểu khai thác mà cửa sổ trượt vốn sinh ra để ngăn. Cộng thêm khoảng nghỉ tối thiểu nhiều giờ giữa 2 hành động cùng loại (đã có sẵn) khiến việc dồn cục kiểu đó càng bất khả thi về mặt toán học — tài khoản không thể vừa đăng đủ 7 lần trong giờ trước 2h vừa đăng đủ 7 lần ngay sau 6h khi mỗi lần cách nhau hàng giờ.
-
-**Quyết định kiến trúc của owner: `safety.py` GIỮ NGUYÊN, KHÔNG XOÁ gì cả** (`RateLimiter.can_proceed()`, `rate_limit_hard_cap_message()` — cả 2 còn nguyên trong file, chỉ thêm docstring "NOT CALLED ANYWHERE" trỏ sang module mới) — để đọc lại hoặc quay về sau nếu cần, không phải vì còn dùng. Phần GAP (`min_delay_seconds`, đã sửa x_safety=gap_min ở trên) và giới hạn theo GIỜ (`comments_per_hour`/`likes_per_hour`) **giữ nguyên qua `safety.py`, không đổi gì** — chỉ phần đếm theo NGÀY chuyển sang module mới. Thêm `RateLimiter.gap_ok()` — wrapper public nhỏ lộ phần gap-check để module mới tái dùng mà không cần đi qua `can_proceed()`.
-
-Rà lại chính xác chỉ có **3 nơi thật sự gọi** cơ chế cũ (không phải 5 như ước lượng ban đầu, xác nhận bằng `grep`): `agent.py`'s `run_task()` (điểm chốt duy nhất mọi hành động thật đều đi qua), `admin.py`'s `schedule_fire_now()` + `reports_repost()`, `data_sync.py`'s `fire_due_tasks()` pre-check — cả 4 lượt gọi (2 trong `schedule_fire_now()`) đã đổi sang `daily_limits.can_proceed()`/`daily_limits.hard_cap_message()`.
-
-Verify bằng dữ liệu THẬT `tu_iizuki`: đếm kiểu cũ (cửa sổ trượt) ra 7, đếm kiểu mới (ngày nghiệp vụ) ra 4 — khác nhau đúng như dự kiến; hàm mới chạy đúng cho cả 3 loại action (post đang bị chặn bởi gap mềm, không lẫn với hard cap). `grep` xác nhận sạch — không còn nơi nào gọi thẳng cơ chế cũ ngoài định nghĩa gốc. 79 test vẫn pass.
-
-**Đồng bộ lớp LÊN LỊCH sang cùng "ngày nghiệp vụ", mang lại cơ chế tràn-ngày cho bài đăng (2026-09-11, cùng ngày).** Ngay sau khi đổi lớp enforcement, owner tự nhận ra hệ quả quan trọng: khi lớp lên lịch VÀ lớp enforcement cùng thống nhất 1 định nghĩa "ngày" duy nhất (ngày nghiệp vụ, cố định, không tự trôi như cửa sổ trượt), việc khoá 1 job vào "ngày nghiệp vụ mai" không còn rủi ro đảo thứ tự đã phân tích kỹ trước đó (lý do duy nhất khiến phải bỏ tràn-ngày hồi dùng cửa sổ trượt) — có thể bỏ hẳn cách "hoãn cả job, chờ poll sau tuỳ may rủi", biết chắc chắn và set lịch thẳng luôn.
-
-Triển khai: `daily_limits.py` thêm `business_day_start()`/`business_day_key()` (public); `data_sync.py`'s `_count_scheduled_actions_by_day()` đổi key sang ngày nghiệp vụ (không còn ngày dương lịch UTC thô); `job_capacities`/`comment_capacities`'s kẹp sàn đổi nguồn "thật" từ cửa sổ trượt 24h sang `daily_limits.count_since_business_day_start()` (khớp đúng định nghĩa "ngày" với enforcement, không còn so 2 khái niệm khác nhau); hàm mới `_next_available_business_day()` đẩy sang ĐẦU ngày nghiệp vụ kế tiếp (2h sáng JST, không phải nửa đêm UTC như bản gốc) khi hết slot, lặp tối đa 60 ngày. Logic "đăng vừa đủ" (còn 2 slot, cap 3 → đăng 2, không cố đăng nốt) **giữ nguyên không đổi** — chỉ áp dụng cho đúng ngày mà `_next_available_business_day()` tìm ra.
-
-Verify bằng test thật gọi trực tiếp hàm mới: "hôm nay đầy 3/3" → nhảy đúng sang ngày nghiệp vụ kế tiếp (full lại 3 slot), qua giờ yên tĩnh → ~6h24 sáng JST (không phải giờ cố định tuyệt đối, có biến thiên tự nhiên); "còn 2 slot, cap 3" → vẫn `available=2`, không tràn ngày, công thức "đăng vừa đủ" không bị ảnh hưởng. 79 test vẫn pass.
-
-**Bug thật: `posts_per_day` vẫn có thể bị vượt do 1 nhóm "trôi" sang ngày khác giữa job (2026-09-14).** Owner hỏi vì sao 1 lần sync lấy 132 job nhưng chỉ lên lịch được 1 bài — tra `_sync_status.json` xác nhận đúng con số, nguyên nhân là capacity ngày hôm đó gần hết (4/5 slot đã dùng từ trước) nên water-fill chỉ chia đúng 1 job, 131 job còn lại quay lại `deferred_jobs` để sync sau lấy lại — **hành vi này ĐÚNG, không phải bug**. Nhưng lúc tra sâu hơn để xác nhận cơ chế tràn-ngày còn sống, phát hiện ngày nghiệp vụ kế tiếp có **9 bài đã lên lịch** dù `posts_per_day = 5` — vượt hạn mức thật. Xác nhận bằng dữ liệu thật cả 9 dòng đều `reasoning: "auto: ..."`, loại trừ hẳn nghi ngờ ban đầu của owner rằng tính năng "Lên lịch lại" mới làm cho `/admin/reports` gây ra.
-
-**Nguyên nhân gốc**: `_next_available_business_day()` chỉ kiểm tra "còn chỗ không" ĐÚNG 1 LẦN cho cả job (ra `post_day_key` + `available`, dùng để giới hạn CHỌN bao nhiêu nhóm) — nhưng giờ đăng THẬT của từng nhóm lại tính SAU đó, riêng lẻ, qua `_next_available_post_slot()`, hàm này áp thêm khoảng cách tối thiểu RIÊNG cho từng nhóm (VD 120 phút nếu nhóm đó vừa đăng gần đây) — có thể đẩy nhóm cuối của job qua khỏi mốc 2h sáng JST, sang MỘT NGÀY NGHIỆP VỤ KHÁC với `post_day_key` đã chốt, mà không ai kiểm tra lại ngày đó còn chỗ hay không — cứ thế cộng dồn bất kể ngày đó đã đầy chưa. Tích luỹ qua nhiều lần sync (mỗi ~15-20 phút) → vượt hạn mức.
-
-Sửa bằng hàm mới `_has_room_for_drifted_group()` (tách riêng để test được, cùng kiểu các hàm logic thuần khác trong file này) — gọi khi phát hiện 1 nhóm có `scheduled_day_key` khác `post_day_key` đã chốt; nếu ngày đó cũng hết chỗ, dừng job tại đó (không đăng nhóm này và các nhóm còn lại), coi job xử lý xong với số nhóm đã đăng được — tái dùng đúng nguyên tắc "đăng vừa đủ" đã có. **Owner tự phát hiện thêm 1 lỗ hổng khi tôi trình bày hướng sửa ban đầu**: nếu NHÓM ĐẦU TIÊN của job đã dính (0 nhóm nào đăng được), code cũ vẫn gọi `_mark_seen()` vô điều kiện sau vòng lặp → job bị đánh dấu "đã xong" dù chưa đăng gì, mất vĩnh viễn — đúng loại lỗi đã từng sửa cho tài khoản 0 nhóm (mục 4.13 phía trên). Sửa lại: đếm số nhóm THẬT SỰ đăng được (`groups_posted_this_job`) — ≥1 nhóm mới đánh dấu xong, 0 nhóm thì hoãn cả job để thử lại lần sync sau.
-
-`sync_all()` bản thân vẫn chưa unit-test được (cần gọi HTTP thật tới bên B) — nhưng nhờ tách `_has_room_for_drifted_group()` thành hàm riêng, viết được 4 test cô lập đúng kịch bản owner quan sát (ngày đầy 5/5 → từ chối; còn chỗ → chấp nhận; `real_used_today` chỉ áp đúng ngày hôm nay, không áp nhầm ngày tương lai).
-
-**Bug thật thứ 2 cùng đợt điều tra: `_suggest_reschedule_at()` áp giờ yên tĩnh trước khi cộng sàn khoảng cách, không tái kiểm tra sau (2026-09-14).** Owner hỏi tiếp vì sao ngày nghiệp vụ 15/9 đang có nhiều hơn 5 comment và 5 post đã lên lịch — tra dữ liệu thật thì số comment vẫn đúng (4 < cap 7), nhưng phát hiện hàm gợi ý giờ cho "🔄 Lên lịch lại" có lỗi thứ tự: áp giờ yên tĩnh TRƯỚC khi cộng "sàn" khoảng cách tối thiểu (gap floor) từ lịch sử/task đang chờ — nếu sàn đẩy giờ gợi ý lùi lại rơi đúng vào khung giờ yên tĩnh, không có bước nào bắt lại; tương tự, phép kiểm tra "ngày có đầy không" chỉ chạy đúng 1 lần trước khi áp sàn, nên sàn có thể đẩy gợi ý sang đúng 1 ngày đã đầy mà không ai tái kiểm tra. Sửa bằng cách viết lại thành vòng lặp hội tụ: áp sàn → áp giờ yên tĩnh → kiểm tra lại hạn mức ngày, lặp tới khi không còn gì thay đổi (giới hạn 60 lần lặp). Thêm `tests/test_admin.py` — file test đầu tiên cho `admin.py` — 4 test: tái hiện đúng cả 2 kịch bản bug, hồi quy cho bug gợi ý trùng giờ gốc (2026-09-12, mục 4.12), và 1 test sanity không có lịch sử.
-
-**Owner phát biểu rõ luật đăng vào nhóm bằng văn bản, đối chiếu ra 1 điểm thiếu + 1 điểm thừa/sai trong code (2026-09-15).** Sau 2 bug trên, owner viết rõ 3 ràng buộc mong muốn cho việc đăng bài vào nhóm: (1) tổng bài đăng vào n nhóm ≤ `posts_per_day`; (2) khoảng cách giữa 2 lần đăng vào BẤT KỲ nhóm nào chỉ cần tuân `post_min/max_delay_seconds`, không có luật riêng cho từng nhóm; (3) cần cơ chế chia đều nhóm được chọn qua nhiều bài (không cố định cụm 1,2,3 rồi 4,5,6..., nhưng cũng không cần random thật sự — chỉ cần tránh nhóm được đăng quá nhiều trong khi nhóm khác không được đăng lần nào), rồi yêu cầu đối chiếu xem code có gì THIẾU hoặc KHÁC so với những gì owner vừa nêu.
-
-Đối chiếu ra: **THIẾU** — code chọn nhóm thuần sắp xếp cũ-nhất-trước, không có chút ngẫu nhiên nào, luôn ra đúng 1 tổ hợp cố định mỗi chu kỳ (đúng cụm 1,2,3 rồi 4,5,6 owner lo ngại). **KHÁC** — code đang có thêm hẳn 1 luật riêng cho từng nhóm (`_next_available_post_slot()`) mà owner chưa từng yêu cầu, và luật đó còn đang dùng NHẦM giá trị cấu hình: `cfg.post_gap_min_minutes` (khoảng cách chung 20 phút mặc định của cả chuỗi lên lịch) thay vì `post_min_delay_seconds` thật của tài khoản — một sai sót do chính tôi hiểu nhầm và từng giải thích sai cho owner ở lượt trao đổi trước đó, đã đính chính. Owner xác nhận: bỏ hẳn luật riêng từng nhóm (không hề có yêu cầu này), và làm cơ chế chọn nhóm không cố định cụm nhưng cũng không cần random thật sự.
-
-Sửa: **xoá hẳn `_next_available_post_slot()`** — chỗ gọi duy nhất đổi thành gọi thẳng `apply_quiet_hours()`. **Thêm `_pick_groups_for_job()`** — sắp xếp nhóm theo cũ-nhất-trước (đảm bảo nhóm lâu nhất chưa đăng không bao giờ bị bỏ đói), lấy 1 pool rộng hơn số cần chọn (`_GROUP_SELECTION_POOL_SLACK = 2` nhóm dư), rồi `random.sample()` trong pool đó — vừa giữ công bằng (nhóm overdue nhất luôn nằm trong pool) vừa tránh ra đúng y hệt 1 tổ hợp mỗi lần, đúng hướng "không cố định nhưng không cần random thật sự" owner mô tả. 5 test mới: không bao giờ bỏ đói nhóm overdue nhất (50 lần thử), trả về ít hơn khi không đủ nhóm, không trùng lặp trong 1 lần chọn, không bao giờ chọn ra ngoài pool, kết quả thay đổi qua nhiều lần gọi (30 lần thử) chứ không cố định.
-
-**Bug thật thứ 3: thiếu "sàn" cho `next_post_time` giữa các lần sync độc lập (2026-09-15).** Trong lúc chuẩn bị dọn lại dữ liệu thật bị xếp sai do 2 bug trên, phát hiện nguyên nhân riêng khiến bài đăng thật vẫn dồn cục dù 2 bug kia đã sửa xong: `next_comment_time` đã có "sàn" chống 2 lần sync độc lập xếp giờ quá gần nhau thuần do trùng hợp ngẫu nhiên (`_last_scheduled_comment_time()`, thêm 2026-09-10 cho đúng sự cố tương tự — xem mục sự cố ở phần 5) — nhưng `next_post_time` chưa từng có sàn tương đương, mỗi lần `sync_all()` chạy đều tính lại từ `now`, không biết lần sync trước đã xếp gì. Đúng khớp hiện tượng owner quan sát: các bài chỉ cách nhau ~30 phút dù cấu hình 120-210 phút. Sửa bằng hàm mới `_last_scheduled_post_time()` (rập khuôn y hệt bản comment) + hằng số `_POST_ACTIONS = {post_to_group, post_to_own_profile}` (cả 2 dùng chung 1 "sàn" account-wide vì cùng chia sẻ bucket rate-limit "post"), nối vào `sync_all()` làm sàn cho `next_post_time` — cả sàn "lần sync trước đã xếp gì" lẫn sàn `RateLimiter.next_allowed_at("post")`. 5 test mới xác nhận.
-
-**Dọn dữ liệu thật bị xếp sai do cả 3 bug trên (2026-09-15).** 13 task `post_to_group` đang `pending` của `tu_iizuki` còn mang dấu vết xếp lịch sai từ trước khi sửa. Tính lại kế hoạch cho đúng luật mới (cap 5/ngày, giãn cách 120-210 phút, né giờ yên tĩnh) bằng `random.seed(20260915)` cố định để trình bày trước cho owner xem đúng y hệt kết quả sẽ áp dụng — owner duyệt, áp dụng qua `schedule_store.update()` (chỉ đổi giờ, không đụng nội dung/URL/tài khoản). Kết quả cuối: 14/9 = 4 (giữ nguyên), 15/9 = 5, 16/9 = 5, 17/9 = 3 (tràn), mọi khoảng cách liên tiếp ≥ 120 phút.
-
-**Rà soát lần 2 theo yêu cầu owner ("kiểm tra kĩ lưỡng") — 5 phát hiện, sửa 3, ghi nhận 2 (2026-09-15).** Chạy 1 vòng review độc lập, tự tay verify lại từng phát hiện bằng script/đọc code trước khi báo owner (không tin thẳng kết quả agent review) — cùng nguyên tắc "trust but verify" đã áp dụng suốt dự án.
-
-1. **[Đã sửa]** `max_groups_per_post = 0` (giá trị hợp lệ, lưu được qua `/admin/accounts` vì form chỉ chặn số âm) khiến `_pick_groups_for_job(..., needed=0)` trả về `[]`, `groups_posted_this_job` không bao giờ > 0 → job bị hoãn mãi mãi thay vì đánh dấu xong — hệ quả trực tiếp của chính bản sửa "chỉ `_mark_seen()` khi ≥1 nhóm đăng được" ở bug thứ nhất phía trên. Kiểm chứng bằng cách gọi thẳng hàm với `needed=0`, xác nhận trả `[]`. Sửa bằng cách thêm chốt `max_groups_per_post <= 0` y hệt cách xử lý `available <= 0` đã có sẵn, hoãn job ngay từ đầu thay vì đi tiếp vào bước chọn nhóm vô ích. Lưu ý trung thực: hành vi CUỐI CÙNG không đổi so với code cũ (nhánh else có sẵn đã tự hoãn đúng job) — bản sửa chủ yếu tránh lãng phí tính toán và làm rõ ý định bằng comment cho người đọc sau.
-2. **[Chưa sửa — owner xác nhận chưa cần ngay]** Vòng lặp comment (candidate) chỉ mới có bước "phát hiện ngày đầy → hoãn", chưa có bước "tràn sang ngày kế tiếp" như vòng lặp job đã có (`_next_available_business_day()`) — 1 candidate rơi vào ngày đầy khiến mọi candidate còn lại trong cùng lượt sync cũng bị hoãn theo (vì `next_comment_time` không được đẩy sang ngày khác), dù ngày sau vẫn còn chỗ. Không mất dữ liệu, chỉ chậm không cần thiết.
-3. **[Đã sửa]** `_last_scheduled_post_time()`/`_last_scheduled_comment_time()`/`_last_scheduled_time_per_group()` không tự chuẩn hoá naive/aware datetime (khác `RateLimiter` floor cạnh đó có làm) — nếu 1 task có `scheduled_at` thiếu múi giờ sẽ crash `TypeError` khi so sánh. Đường lý thuyết duy nhất: `/admin/schedule/update`/`.../missed/reschedule` — 2 route duy nhất đưa thẳng chuỗi form vào `schedule_store` không qua parse. Tự kiểm chứng: ô nhập giờ trên UI thực chất luôn convert sang ISO có "Z" qua JS (`toISOString()`) trước khi submit, nên đường UI bình thường KHÔNG gặp — chỉ rủi ro nếu JS lỗi/tắt hoặc gọi thẳng API. Sửa bằng hàm dùng chung `_parse_scheduled_at()`, luôn trả về aware (tự gán UTC nếu thiếu offset), thay `datetime.fromisoformat()` trần ở 4 chỗ. 3 test mới.
-4. **[Đã sửa]** Sót 2 dòng comment/docstring trong `admin.py` (~dòng 3715, 3776) vẫn nhắc tên hàm `_next_available_post_slot()` đã xoá — chỉ dọn tài liệu, không ảnh hưởng chức năng.
-5. **[Đã sửa theo yêu cầu owner]** Vòng lặp hội tụ mới của `_suggest_reschedule_at()` (viết lại 2026-09-14 ở trên) vô tình co hẹp phạm vi tìm ngày trống từ 60 ngày xuống còn ~30 ngày thực — vì "ngày nghiệp vụ" luôn bắt đầu đúng 2h sáng JST, trùng đúng mốc bắt đầu giờ yên tĩnh mặc định, nên mỗi lần đẩy sang 1 ngày đã đầy đều tốn thêm 1 lần lặp riêng chỉ để né giờ yên tĩnh của ngày mới đó — ~2 lần lặp/1 ngày thay vì 1. Owner xác nhận 30 ngày là đủ — đặt tường minh bằng hằng số `_RESCHEDULE_SEARCH_DAYS = 30` (ngân sách `30 × 3` lần lặp) thay vì để co hẹp ngoài ý muốn.
-
-Toàn bộ suite sau khi sửa #1/#3/#4/#5: **155 passed**.
-
-**Không tự đăng bài quá hạn sau khi service tắt rồi mở lại — sửa gấp 2026-09-14.** Owner hỏi: service tắt lâu rồi chạy lại thì các bài lỡ giờ đăng có "dồn chạy 1 lần" không? Tra code xác nhận có 1 khoảng trống thật: `fire_due_tasks()`'s rate-limiter tự chặn KHÔNG cho 2 hành động cùng 1 tài khoản + cùng loại (post/comment) chạy liên tiếp, nhưng vòng lặp `for task in due:` không có khoảng nghỉ nhân tạo nào GIỮA các task khác tài khoản (hoặc post/comment cùng tài khoản, 2 loại không chia sẻ gap) — nếu service tắt lâu, mọi task quá hạn đều "due" cùng lúc lúc khởi động lại, các task thuộc nhiều tài khoản khác nhau có thể chạy gần như liên tiếp ngay khi service vừa dậy.
-
-**Yêu cầu + làm rõ ngưỡng của owner:** không tự đăng nữa những task đã quá giờ khi service tắt — đưa ra chỗ khác cho admin duyệt (đăng lại/lên lịch lại hoặc xoá, hỗ trợ chọn nhiều xoá 1 lúc). Về ngưỡng "quá hạn": **không dùng ngưỡng phút/giờ nào** — chỉ so sánh **ĐÚNG 1 LẦN** ngay lúc service khởi động lại (so với mốc giờ start), task nào lúc đó đã qua giờ mới bị coi "quá hạn"; trong lúc server đang chạy bình thường mà bị trễ/dồn việc (rate-limit, backlog...) thì KHÔNG coi là quá hạn — đây vốn là hành vi bình thường của cơ chế due-check, không đụng tới.
-
-Triển khai: `schedule_store.py` thêm trạng thái thứ 5 `MISSED_DIR` (cùng kiểu "thư mục là trạng thái" với pending/posted/failed/cancelled có sẵn), hàm `mark_missed()`/`list_missed()`/`restore_to_pending()`/`cancel_missed()`. `data_sync.py` thêm `sweep_overdue_on_startup()` — chạy đúng 1 lần, so 1 mốc `datetime.now()` chụp ngay lúc gọi, KHÔNG phải vòng lặp định kỳ, KHÔNG có ngưỡng thời gian. `service.py` gọi hàm này đúng 1 lần trong `lifespan()`, TRƯỚC KHI vòng lặp `fire_due_tasks()` định kỳ bắt đầu chạy. `/admin/schedule` ban đầu thêm mục "⚠️ Task quá hạn cần duyệt" dạng card chỉ hiện khi có — mỗi dòng: "📅 Đặt lịch" (sửa tay) hoặc "🔄 Lên lịch lại" (tái dùng nguyên `_suggest_reschedule_at()` đã viết cho `/admin/reports`, chỉ đổi input từ 1 dòng action_log sang 1 `ScheduledTask`), cộng checkbox chọn nhiều + "Chọn tất cả" + xoá theo lô. **Tách thành 2 tab ngay sau đó, cùng ngày** — "📋 Task đã lên lịch"/"⚠️ Task quá hạn" (tiêu đề tab tự kèm số lượng), thay vì card cảnh báo ẩn/hiện tuỳ tình trạng — cùng kiểu tab `/admin/reports` đã dùng, mỗi hành động trên tab "Task quá hạn" giữ nguyên đúng tab đó sau khi xử lý (không nhảy về tab mặc định).
-
-**2 sửa nhỏ tiếp theo, cùng ngày:** (1) chuỗi lý do quá hạn (do `sweep_overdue_on_startup()` build, có 2 mốc giờ ISO thô nhúng thẳng vào text) hiện đúng theo giờ trình duyệt thay vì ISO thô — file `.result.txt` gốc vẫn giữ nguyên ISO (chỉ là audit text, không phải HTML), chỗ đổi là lúc admin.py RENDER: hàm mới `_localize_iso_timestamps_html()` dò regex mọi chuỗi giống ISO 8601 trong 1 đoạn text tự do, thay riêng từng chuỗi khớp bằng `_local_dt_html()`, phần chữ còn lại vẫn escape bình thường. (2) tab "Task quá hạn" thêm phân trang — `missed_page` tách hẳn khỏi `page` của tab pending (2 tab đếm 2 thứ không liên quan, dùng chung biến sẽ lệch trạng thái y hệt lỗi `job_page`/`candidate_page` đã gặp ở `/admin/reports`), xuyên suốt qua cả 5 route `/schedule/missed/*`.
-
-**Phát hiện + sửa 1 bug thật lúc viết test cô lập**: `schedule_store._move_to()`'s tham số `source_dir` cũ có giá trị mặc định `= PENDING_DIR` — giá trị này gán CỐ ĐỊNH lúc Python nạp module (import time), không phải lúc hàm được GỌI, nên `monkeypatch`/`mock.patch` đổi `schedule_store.PENDING_DIR` sang thư mục tạm để cô lập test hoàn toàn KHÔNG có tác dụng với giá trị mặc định đó — hàm vẫn âm thầm đọc/ghi vào đúng thư mục THẬT dù test tưởng đã cô lập xong. Kinh điển lỗi Python "mutable/global default argument đóng băng lúc định nghĩa hàm". Sửa bằng cách đổi default thành `None`, resolve về giá trị THẬT SỰ hiện tại của `PENDING_DIR` bên trong thân hàm. Phát hiện được NGAY LẬP TỨC nhờ viết test cô lập trước khi tin là đúng — nếu không viết test, lỗi này sẽ âm thầm khiến mọi thao tác "duyệt task quá hạn" thao túng nhầm dữ liệu thật thay vì dữ liệu test.
-
-Verify: kịch bản đầy đủ với `monkeypatch` 5 hằng số thư mục sang `tmp_path` — tạo task quá hạn giả lập service tắt, xác nhận bị chuyển đúng sang `missed/` và không đăng gì; task tương lai không bị đụng; gọi sweep lần 2 (không downtime) ra `swept=0`; cả 3 đường xử lý (đặt lịch tay/lên lịch lại tự động/xoá theo lô) đưa đúng task ra khỏi `missed/`. 12 test mới (`tests/test_schedule_store.py` — file test đầu tiên cho module này — + 3 test trong `test_data_sync.py`), tổng suite 136 passed.
-
-## 4.14. Bảo mật (2026-09-08, cảnh báo/xác nhận khi thiếu khoá 2026-09-10)
-
-`POST /tasks` (API cho n8n/bên ngoài gọi vào) yêu cầu header `X-API-Key` khi đã đặt khoá trong cấu hình, so sánh bằng phương pháp an toàn chống timing attack (`secrets.compare_digest`). Trang quản trị hỗ trợ HTTP Basic Auth khi chạy ở nơi không phải máy cá nhân. **Chưa đặt khoá thật trong môi trường production** — cần làm trước khi mở các cổng này ra ngoài phạm vi máy/mạng nội bộ.
-
-**Cả 2 lớp bảo vệ trên đều "im lặng tắt" nếu chưa cấu hình** — để trống `ADMIN_USERNAME`/`ADMIN_PASSWORD`/`TASKS_API_KEY` trong `.env` thì `/admin` và `/tasks` chạy hoàn toàn không xác thực, không có lỗi/cảnh báo nào trước đây. Vì `.env` bị gitignore (không đi theo khi clone/deploy sang máy khác), rủi ro thực tế là quên đặt lại 3 biến này ở môi trường mới mà không hề hay biết.
-
-Thêm (2026-09-10) 2 lớp nhắc nhở lúc khởi động service (`human_bot/service.py`, chạy trong `lifespan()`, mỗi lần `uvicorn human_bot.service:app` start):
-1. Ghi cảnh báo vào `logs/human_bot.log` (`_warn_if_auth_unconfigured()`) — bản đầu tiên, nhưng owner phản hồi cảnh báo chỉ nằm trong file log thì dễ bỏ lỡ ngay lúc đang nhìn terminal khởi động.
-2. **Hỏi xác nhận y/n ngay trên terminal** (`_confirm_startup_or_abort()`) — nếu thiếu bất kỳ biến nào VÀ đang chạy trên một terminal thật có người ngồi gõ lệnh (`sys.stdin.isatty()`), in cảnh báo ra màn hình rồi hỏi "Vẫn tiếp tục khởi động? [y/N]:" — gõ gì khác "y" (kể cả Enter trống hay Ctrl-D) thì **service dừng hẳn, không khởi động, không phục vụ request nào**. Nếu service đang chạy nền không có ai trả lời được (systemd, Docker, `nohup ... &`, CI) thì tự động bỏ qua bước hỏi này — chỉ giữ cảnh báo ghi log, tránh treo service vô thời hạn chờ một câu trả lời sẽ không bao giờ tới.
-
-Việc tự đặt giá trị thật cho 3 biến này trong `.env` production vẫn là thao tác thủ công chủ dự án cần tự làm — 2 lớp nhắc nhở này chỉ đảm bảo không ai vô tình bỏ lỡ việc đó, không tự động hoá việc đặt khoá.
-
-## 4.15. Ghi log & lịch sử hành động (2026-09-04, ghi thêm ra file 2026-09-08, thêm báo cáo "theo từng lần đăng" + "theo từng lần bình luận" 2026-09-12)
-
-Mọi lần chạy một hành động — dù từ thao tác tay, từ lịch, hay tự động từ bên B, dù thành công hay thất bại — đều đi qua đúng một điểm ghi log duy nhất trong code, nên không sót trường hợp nào. Có cả log dạng file (`logs/human_bot.log`) lẫn lịch sử có cấu trúc trong SQLite phục vụ trang Báo cáo.
-
-**Báo cáo "theo từng lần đăng" (theo job, 2026-09-12)** — owner yêu cầu xem gộp theo 1 lần đăng job từ bên B thay vì từng dòng hành động rời rạc: đăng vào bao nhiêu nhóm, mỗi nhóm nội dung ĐÃ đăng là gì (có thể khác nhau giữa các nhóm — mỗi nhóm 1 biến thể riêng qua `content_strategist`), nhóm nào thành/bại, tài khoản nào thực hiện, và nội dung GỐC (title/attributes thô từ bên B) trước khi soạn lại. Trước đó phần lớn dữ liệu này đã có sẵn trong `action_log` (gom theo `source_id` là đủ ra đúng 1 job), riêng nội dung gốc thì chưa — đã thêm cột `job_data TEXT` vào `action_log` (`human_bot/db.py`, cùng mẫu migrate `ALTER TABLE` với `screenshot_path`), truyền xuống từ `TaskRequest.job_data` (`agent.py`) tại 2 nơi thực sự bắn job post (`data_sync.py`'s tự động + `admin.py`'s "Đăng ngay" thủ công) — cố ý KHÔNG truyền ở "Đăng lại" (`reports_repost()`) vì chức năng đó vốn đã bỏ nguồn gốc job theo thiết kế cũ. `/admin/reports` có thêm tab "📮 Theo từng lần đăng" — mỗi job 1 khối gập lại được (`<details>`), mở ra thấy dữ liệu gốc + bảng con từng nhóm, phân trang riêng. Đã chạy migration thật trên `human_bot.db` (xác nhận 96 dòng cũ còn nguyên).
-
-**Báo cáo "theo từng lần bình luận" (theo ứng viên, 2026-09-12)** — owner hỏi báo cáo job ở trên có gồm comment không; tra code xác nhận KHÔNG (comment chỉ gắn `source_kind="candidate"`, tách biệt hoàn toàn khỏi job đăng nhóm — `source_kind="job"` chỉ bao giờ đi kèm `action="post_to_group"`), rồi owner yêu cầu làm thêm bản tương tự cho comment. Lúc làm phát hiện thêm 1 lỗ hổng giống hệt tình trạng job_data trước khi sửa: `ScheduledTask.candidate_data` (thuộc tính gốc ứng viên — desiredJobField/preferredRegion, dùng để AI viết lại reply) **chưa từng được truyền xuống `action_log`** — cả `fire_due_tasks()` lẫn `schedule_fire_now()` chỉ truyền `job_data=task.job_data`, mà task loại candidate luôn có `task.job_data = None`. Sửa bằng `job_data=task.job_data or task.candidate_data` ở cả 2 nơi (đúng 1 trong 2 luôn có giá trị) — tái dùng đúng cột `job_data` sẵn có, không cần schema mới, chỉ đổi ý nghĩa cột thành "dữ liệu gốc chung cho job hoặc candidate". Dữ liệu gốc cho các dòng comment CŨ (trước lần sửa) hiện "—" — chỉ ứng viên xử lý SAU khi service chạy code mới mới có đủ. `/admin/reports` có thêm tab thứ 4 "💬 Theo từng lần bình luận" — ban đầu làm cùng cấu trúc `<details>` gập lại như tab job, nhưng owner chỉ ra ngay: job cần gom vì 1 job → nhiều nhóm, còn 1 ứng viên bình thường chỉ có ĐÚNG 1 lượt bình luận (không fan-out), nên gom nhóm ở đây chỉ tạo thêm 1 cú bấm thừa — đổi lại thành **bảng phẳng 1 dòng/1 lượt bình luận** (Thời gian | Bài/Nhóm dạng link bấm mở thẳng | Dữ liệu gốc | Nội dung đã đăng | KQ | Ảnh | Ghi chú), một retry qua "Đăng lại" chỉ đơn giản hiện thêm 1 dòng riêng chứ không gộp. Cả 2 tab job và candidate đều có thêm cột "Ảnh" (tái dùng `_screenshot_link_html()` có sẵn, không đổi schema).
-
-## 4.16. Bộ test tự động đầu tiên cho dự án (2026-09-10)
-
-**Trước đây dự án hoàn toàn không có test tự động nào** — chỉ có 4 script chạy tay (`human_bot/test_run_task.py`, `test_service_api.py`, `test_post_own_profile_media.py`, `test_post_to_group_manual.py`), tất cả đều cần một phiên Facebook thật đang đăng nhập và không có assertion nào — chạy xong phải tự mắt nhìn kết quả. Một đợt rà soát toàn dự án (dùng agent tự động đối chiếu code với `tasks.md`) xác nhận tài liệu tiến độ khớp đúng với code thật, nhưng phát hiện đây là lỗ hổng duy nhất chưa từng được ghi nhận ở đâu.
-
-Đã thêm bộ test bằng `pytest`, tập trung vào **phần logic thuần, không cần trình duyệt hay Facebook thật** — nơi một lỗi âm thầm (tính sai rate-limit, đổi lương sai đơn vị, cấu hình admin không thật sự có hiệu lực) trước đây chỉ phát hiện được khi tự nhìn thấy bài đăng sai trên Facebook:
-
-* `human_bot/safety.py` — toàn bộ toán rate-limit (chặn theo số lượng/ngày/giờ, khoảng cách tối thiểu giữa 2 hành động cùng loại, `ignore_gap` chỉ bỏ qua đúng phần pacing chứ không bao giờ bỏ qua giới hạn số lượng) và phát hiện dấu hiệu bất thường/nội dung đã mất.
-* `human_bot/runtime_config.py` — logic merge override từ `/admin/config` với giá trị mặc định trong code, và toàn bộ đường fallback key/model theo nhà cung cấp AI (mục 4.10) vừa thêm.
-* `human_bot/content_strategist.py` — mọi quy tắc soạn template (đổi lương qua man/lá/tờ đúng điều kiện, tên visa, gộp dòng "thiếu visa/lương", xử lý danh sách/chuỗi không còn lộ lỗi `['Shizuoka']` từng gặp — mục 4.10) và các nhánh an toàn "rơi về mẫu khi AI lỗi/tắt/thiếu key".
-* `human_bot/ai_client.py` — dùng `httpx.MockTransport` (không gọi mạng thật) xác nhận đúng định dạng request cho cả 4 nhà cung cấp AI, để chắc chắn tính năng đa nhà cung cấp mới thêm không âm thầm gửi sai header/URL cho một hãng nào đó.
-* `human_bot/daily_limits.py` (mới, 2026-09-11 — xem mục 4.13) — mốc "ngày nghiệp vụ" 2h sáng JST đúng ở 3 ca biên (đúng ranh giới/ngay trước ranh giới/giữa ngày), `can_proceed()` đếm theo ngày nghiệp vụ THẬT SỰ khác rolling window (verify cả 2 chiều: dòng ngay sau mốc 2h sáng có tính, dòng ngay trước mốc không tính), `comments_per_hour` vẫn giữ nguyên rolling window không đổi, `ignore_gap` chỉ bỏ gap chứ không bỏ daily cap.
-* `human_bot/data_sync.py` (mới, 2026-09-11 — trước đây chưa có test nào) — `_next_available_business_day()` (tràn-ngày đúng khi đầy, không tràn khi còn slot — khớp đúng ví dụ owner đưa ra: 5 slot dùng 3 còn 2, cap 3 → đăng 2; ngày tương lai không tính hoạt động thật của hôm nay; điểm rơi sau tràn đúng 2h sáng JST không phải nửa đêm UTC), `_count_scheduled_actions_by_day()` (dùng `monkeypatch` trên `schedule_store` — test quan trọng nhất: 1 task lúc 16:30 UTC, tức 01:30 JST hôm sau TRƯỚC mốc 2h sáng, phải tính đúng vào ngày nghiệp vụ hôm trước chứ không phải ngày UTC thô, đúng ca cách tính cũ từng đếm sai). **2026-09-15 (mục 4.13)** — sau khi xoá `_next_available_post_slot()`, 4 test cũ của riêng hàm đó đổi thành 2 test trực tiếp cho `apply_quiet_hours()` (hàm công khai vẫn còn); thêm 5 test cho `_pick_groups_for_job()`, 5 test cho `_last_scheduled_post_time()`, và 3 test cho `_parse_scheduled_at()`/chuẩn hoá naive-aware. **2026-09-16 — ưu tiên job `sponsored_by`** (mục 6 bên dưới): thêm `_is_expired()` (4 test), `_next_available_business_day()`'s tham số `max_search_days` mới (1 test — bound tuỳ chỉnh thay vì 60 cứng), và `_distribute_jobs_with_sponsored_priority()` (5 test — tách riêng khỏi `sync_all()` để test được không cần mock HTTP; gồm đúng ví dụ tính tay owner đưa ra: 4 sponsored + 6 normal, capacity {A:3, B:5} → A=[S,S,N], B=[S,S,N,N,N], dư 2 job hoãn).
-* `human_bot/admin.py` (mới, 2026-09-14 — trước đây chưa có test nào, xem mục 4.13) — `tests/test_admin.py`, 4 test cho `_suggest_reschedule_at()`: 2 tái hiện đúng bug thứ tự áp giờ yên tĩnh/tái kiểm tra hạn mức ngày, 1 hồi quy bug gợi ý trùng giờ gốc (2026-09-12), 1 sanity không có lịch sử.
-* `human_bot/db.py` (mới, 2026-09-12 — báo cáo "theo từng lần đăng"/"theo từng lần bình luận" ở mục 4.15) — `job_post_groups()`/`job_post_groups_count()`/`job_post_group_detail()` và `candidate_comments()`/`candidate_comments_count()`/`candidate_comment_detail()`: gom đúng theo `(source_id, account_id)`, tách đúng khi 2 job/candidate khác `source_id` hoặc cùng nguồn nhưng khác tài khoản, lọc đúng theo `account_id`, chỉ gom đúng `source_kind` tương ứng (không lẫn job/candidate/manual với nhau), phân trang, `job_data` JSON giữ nguyên đúng nội dung đã ghi, và riêng phần candidate có thêm test cho ca retry (1 candidate bị "Đăng lại" tạo 2 dòng vẫn phải gộp đúng thành 1). Cô lập bằng `monkeypatch.setattr(db, "DB_PATH", tmp_path/...)` — không đụng `human_bot.db` thật.
-
-**201 test (191 + 11 mới cho `_atomic_write_json()`/`_cursor()`/`_seen_key()`, mục 5 bên dưới — bug cursor đồng bộ kẹt gây comment trùng, và bug thứ 2 phát hiện khi owner yêu cầu soát lại: job/candidate trùng ID đè seen lên nhau), chạy trong dưới 5 giây, không có test nào đụng vào Facebook thật hay file cấu hình thật** (`runtime_config.json`, `accounts/`, `data_sync_cache/`, `scheduled/`, `human_bot.db`) — mọi test cần đọc/ghi cấu hình/DB/lịch đều được chuyển hướng sang file/thư mục tạm qua `monkeypatch`/`mock.patch`, xác nhận lại bằng cách so `md5sum runtime_config.json` trước/sau khi chạy toàn bộ suite (giống hệt nhau). Chạy bằng `pip install -r requirements.txt -r requirements-dev.txt && pytest -q`. (10 trong số đó là `tests/test_service_auth_warning.py`, thêm cùng lúc với tính năng cảnh báo/xác nhận khởi động ở mục 4.14; 1 test khác thêm cùng lúc với việc tách giãn cách post/comment ở mục 4.6; 3 test thêm cùng lúc với nhãn "Nenshuu" và fix giữ nguyên nội dung lịch khi AI lỗi, cùng ở mục 4.10; 17 `test_daily_limits.py` thêm cùng lúc với đợt đổi "ngày nghiệp vụ" ở mục 4.13, phát hiện và sửa 1 lỗi TRONG chính bộ test lúc viết — datetime giả lập ban đầu có timezone trong khi log thật của `safety.py` luôn ghi naive datetime — không phải bug production; `test_data_sync.py` nay 21 test — 12 gốc (tràn-ngày + 2 hồi quy cho bug `sync_all()` crash mỗi poll ở mục 5) + 3 cho `sweep_overdue_on_startup()` + 4 mới nhất cho `_has_room_for_drifted_group()` (bug vượt `posts_per_day` do nhóm trôi ngày, mục 4.13); 14 test trong `tests/test_db.py` — 8 cho báo cáo "theo từng lần đăng", 6 cho báo cáo "theo từng lần bình luận" (bản phẳng, sau khi owner yêu cầu bỏ gom nhóm), cả 2 ở mục 4.15; `tests/test_schedule_store.py` nay 13 test — 9 gốc (thêm cùng lúc với tính năng "⚠️ Task quá hạn" ở mục 4.13, gồm 1 hồi quy khoá chặt bug default-argument-đóng-băng-lúc-import) + 4 mới nhất (mục 5 bên dưới) cho bug thứ tự hiển thị `/admin/schedule` khi dời lịch bài quá hạn.)
-
-**Vẫn còn thiếu:** chưa test phần đụng tới Playwright/trình duyệt thật (đúng bản chất — cần trình duyệt + tài khoản Facebook thật, không unit-test được theo nghĩa thông thường), và `data_sync.py`'s `sync_all()`/`_water_fill_distribute()` end-to-end (logic chia đều dữ liệu cho nhiều tài khoản) vẫn chưa có test — mới test được các hàm con thuần logic tách riêng.
-
-# 5\. Một số sự cố thực tế đã phát hiện và xử lý trong quá trình test
-
-Phần này liệt kê để cho thấy mức độ test thực tế của dự án — không chỉ chạy thử một lần rồi coi là xong, mà có một quy trình phát hiện lỗi → xác định nguyên nhân gốc → sửa → xác nhận lại bằng chạy thật, lặp lại nhiều lần trong suốt quá trình phát triển:
-
-* **Checkpoint Facebook thật** trên tài khoản `tu_iizuki` ("confirm your identity") — xác nhận đúng bộ dấu hiệu phát hiện bất thường trong code khớp với màn hình thật (mục 4.7).
-* **Ảnh gắn nhầm input, báo đăng thành công nhưng ảnh không lên bài** — dẫn tới việc xây lại toàn bộ cơ chế xác minh + chụp ảnh bằng chứng (mục 4.8).
-* **"Đói job" nhiều tài khoản:** khi có nhiều tài khoản cùng đồng bộ dữ liệu từ bên B, chỉ tài khoản xử lý đầu tiên mỗi vòng thực sự nhận được job mới — các tài khoản còn lại âm thầm không nhận được gì vì thấy dữ liệu đã bị đánh dấu "đã thấy". Sửa bằng cách gộp lấy dữ liệu 1 lần/vòng rồi chia công bằng cho mọi tài khoản.
-* **Lệch múi giờ trong "khung giờ yên tĩnh":** so sánh giờ Nhật Bản người dùng chọn trực tiếp với giờ UTC mà không quy đổi, khiến giờ yên tĩnh bị lệch — chọn 10:00 sáng giờ Nhật có thể vô tình rơi vào khung bị coi là "yên tĩnh".
-* **Service sập toàn bộ khi khởi động** nếu một tài khoản active chưa từng đăng nhập (thiếu file phiên đăng nhập) — một tài khoản lỗi kéo sập cả service thay vì chỉ tài khoản đó không khởi động được.
-* **Session trình duyệt "chết" không được phát hiện lại** (VD: người dùng tự tay đóng cửa sổ Chrome đang hiển thị) khiến mọi tác vụ sau đó cứ fail liên tục cho tới khi phải khởi động lại cả service.
-* **Lỗi cắt cụt nội dung khi sửa bài trong lịch đăng** — ô sửa vô tình dùng lại giá trị đã bị cắt ngắn để hiển thị gọn, làm mất nội dung thật khi lưu.
-* **Cấu hình sai chỗ khiến bài lên lịch thủ công không tự đăng** — cổng bật/tắt tự đăng bị đặt nhầm trong mục cấu hình "đồng bộ bên B", khiến người vận hành tìm mãi không thấy trong mục "lịch đăng".
-* **Timeout phía client quá ngắn khi test `human_bot/service.py` qua HTTP thật** — lúc xác nhận `GET /health`/`POST /tasks` hoạt động đúng qua HTTP thật (không chỉ gọi hàm trực tiếp), phát hiện thời gian chờ mặc định của client ngắn hơn thời gian đăng bài thật cần (pacing giống người cố tình chậm, có bài mất hơn 60 giây tuỳ độ dài nội dung) — client bị timeout trước khi server kịp trả kết quả dù việc đăng vẫn thành công bình thường ở phía server.
-* **`post_to_group` crash "strict mode violation" vì cửa sổ chat Messenger mở nền (2026-09-15, action_log id 146)** — task đăng vào nhóm "Việc làm Kỹ Sư Nhật Bản (Uy tín hàng đầu)" fail thật với lỗi `get_by_role("paragraph") resolved to 2 elements`. Ảnh chụp lỗi cho thấy nguyên nhân: locator mở ô soạn bài trong `post_to_group` không giới hạn phạm vi trong hộp thoại "Create post", nên khi một cửa sổ chat Messenger ("Write to Thanh Loan") tình cờ đang mở ở góc màn hình lúc đó, bong bóng tin nhắn trong cửa sổ chat cũng có role "paragraph" — locator khớp 2 phần tử, Playwright ném lỗi thay vì đoán liều click sai chỗ. Ảnh cũng phơi bày một giả định sai trong comment cũ: nhóm được cho là dùng composer "mở inline, không có dialog wrapper" — thực tế nhóm CŨNG dùng modal "Create post" giống hệt `post_to_own_profile`. Sửa bằng cách bó toàn bộ bước của `post_to_group` (paragraph click, textbox, đính kèm ảnh, nút Post) vào `composer_dialog = page.get_by_role("dialog")`, và bó phòng ngừa luôn bước paragraph-click tương tự trong nhánh audience khác "public" của `post_to_own_profile` (cùng dạng locator không giới hạn phạm vi, chưa từng lỗi thật nhưng cùng rủi ro). Khác với bug strict-mode đã sửa trước đó ở cùng hàm (nội dung nhiều dòng tự sinh nhiều `<p>`, task bc6a2a13/7272343b) — lần này phần tử thứ 2 đến từ nội dung KHÔNG liên quan gì tới bài đăng (cửa sổ chat), nên trước đây không thể lường trước bằng cách nhìn riêng nội dung `content`. Chưa chạy thật lại để xác nhận — cần theo dõi lần `post_to_group` kế tiếp.
-* **Cửa sổ chat Messenger đè lên nút "Post comment", khiến click chuột thật rơi trúng chat thay vì Facebook (2026-09-16, action_log id 151)** — task `comment_on_group_post` fail với `comment_box_still_has_content_after_click`: text được nhập đúng vào ô comment, nhưng sau khi bấm nút đăng, nội dung vẫn còn nguyên. Nguyên nhân: `human_click()` (`humanize.py`) mô phỏng người dùng bằng cách tự tính toạ độ tâm phần tử rồi gọi `page.mouse.click(x, y)` ở toạ độ thật trên trang — cách này KHÔNG kiểm tra phần tử tại toạ độ đó có đang bị vật khác che hay không, khác với `Locator.click()` gốc của Playwright vốn tự làm bước kiểm tra này. Cửa sổ chat Messenger (cùng thủ phạm gây lỗi task 146 hôm trước, mục 5 phía trên) đang nổi đúng vị trí nút "Post comment" thật của Facebook, nên click chuột thật rơi trúng cửa sổ chat — không có exception nào xảy ra ngay lúc đó, chỉ lộ ra 15 giây sau nhờ bước xác minh "ô comment có rỗng lại không". Owner được hỏi và chọn hướng sửa: chủ động đóng mọi cửa sổ chat Messenger đang mở TRƯỚC khi thao tác (thay vì sửa `human_click()` để tự kiểm tra che khuất — phương án tổng quát hơn nhưng chưa chọn). Thêm `_close_chat_popups()` gọi ở đầu `post_to_own_profile`/`post_to_group`/`comment_on_group_post`. **Xác nhận sống cùng ngày**: owner tự ghi Codegen thật (`codegen_close_chat_popup.py`) cho cả 2 thao tác thu nhỏ và đóng chat, xác nhận tên accessible chính xác "Minimize chat" và "Close chat" (generic, không cá nhân hoá theo tên người). Theo đề nghị của owner, hàm ưu tiên bấm "Minimize chat" trước (hành vi tự nhiên hơn — người dùng thật bận việc khác thường thu nhỏ chứ ít khi đóng hẳn cuộc trò chuyện), chỉ rơi xuống "Close chat" cho khung nào không có nút minimize. **Owner tự quan sát và chỉ ra thêm một điểm quan trọng cùng ngày**: 2 lỗi (task 146 và 151) thực chất là 2 CƠ CHẾ khác nhau dù cùng một thủ phạm — modal "Create post" (đăng bài) luôn nổi đè lên trên khung chat nên task 146 là do trùng accessibility-tree, không phải che khuất pixel; còn ô comment (inline trong trang, không có z-index riêng) thì thực sự bị khung chat che đè lên trên, gây ra kiểu lỗi click-rơi-trúng-chat của task 151. Đã ghi rõ phân biệt này vào docstring của `_close_chat_popups()`.
-* **`/admin/schedule` hiện bài quá hạn vừa dời lịch lên ĐẦU danh sách, trước cả bài đến hạn sớm hơn (2026-09-16)** — owner báo trực tiếp: dời 1 bài quá hạn sang 17/9 bằng "Đặt lịch", nó lại hiện trước cả các bài của ngày 16/9. Nguyên nhân: `task_id` (cũng là tên file lưu trên đĩa) chỉ được sinh đúng 1 LẦN lúc tạo task, với tiền tố là `scheduled_at` tại thời điểm đó (`new_task_id()`); `list_pending()`/`list_missed()` từ trước tới giờ sort theo TÊN FILE, ngầm giả định tên file luôn khớp nội dung. Khi dời lịch (`restore_to_pending()` cho bài quá hạn, hoặc `update()` khi sửa giờ bài đang chờ bình thường), cả 2 hàm chỉ ghi đè field `scheduled_at` bên trong JSON — không đổi tên file/sinh `task_id` mới — nên file vẫn mang mốc giờ CŨ (đã quá hạn), tiếp tục thắng khi sort theo tên dù nội dung thật đã dời sang tương lai xa hơn. Sửa bằng cách thêm `_scheduled_at_sort_key()` trong `schedule_store.py`, sort cả `list_pending()` lẫn `list_missed()` theo `scheduled_at` ĐỌC LẠI TỪ NỘI DUNG file thay vì dựa vào tên file — đúng bất kể sau này filename có lệch nội dung vì lý do gì khác. Nhân tiện xử lý luôn ca `scheduled_at` bị ghi "naive" (không timezone — tình trạng thật đã biết từ trước, xem `test_last_scheduled_post_time_does_not_crash_on_a_naive_scheduled_at` trong `test_data_sync.py`): coi là UTC, cùng quy ước hàm `_last_scheduled_post_time()` của `data_sync.py` đã dùng, tránh crash khi so sánh naive với aware. Thêm 4 test hồi quy trong `test_schedule_store.py` (mục 4 phía trên).
-* **Cursor đồng bộ bên B bị kẹt tại 08/09 suốt 2 ngày, gây comment trùng ít nhất 3 candidate (2026-09-16)** — owner phát hiện 1 candidate bị comment 2 lần cách nhau 4 ngày, nội dung khác nhau nhưng đúng cùng 1 người/1 bài viết. Điều tra qua `human_bot.db` + `data_sync_cache/` + `logs/human_bot.log` lộ ra chuỗi nguyên nhân đầy đủ: (1) `_save_sync_state()`/`_mark_seen()`/`_mark_contacted()`/`_record_sync_status()` đều ghi file bằng `path.write_text()` trực tiếp, không an toàn nếu service bị restart giữa lúc ghi (rất hay xảy ra — dự án restart liên tục mỗi lần đổi code); (2) `_load_sync_state()` bắt lỗi đọc file hỏng và trả về `{}` — hợp lý để tránh crash, nhưng `{}` trông giống hệt "chưa từng đồng bộ"; (3) log thật xác nhận đúng chuỗi này xảy ra lúc 18:49 ngày 14/09: 1 lần gọi API đột ngột KHÔNG có `since` (lấy lại toàn bộ lịch sử), cursor bị tính lại thành `2026-09-08` và kẹt nguyên tại đó 2 ngày liền; (4) `_cursor()` (giữ cursor lùi về job/candidate bị hoãn sớm nhất để thử lại — cơ chế ĐÚNG cho trường hợp bình thường) không có giới hạn, nên hễ luôn có ít nhất 1 item bị hoãn mãi trong batch khổng lồ lấy lại mỗi vòng, cursor bị ghim vĩnh viễn — vòng lặp tự duy trì không lối thoát; (5) trong hàng trăm candidate bị đánh giá lại mỗi 15 phút, cache `seen` (đúng ra phải chặn) thỉnh thoảng để lọt — candidate 62/103/107 bị comment lại lần 2, riêng 103 và 107 trùng ngay trong cùng 1 ngày. Sửa tận gốc: thêm `_atomic_write_json()` (ghi file tạm + `os.replace()`, nguyên tử ở cấp OS) áp dụng cho cả 4 chỗ ghi cache; thêm `DataSyncConfig.max_cursor_holdback_days` (mặc định 7 ngày) — `_cursor()` (tách thành hàm module-level để test được) giờ chỉ giữ lùi cho item còn trong hạn, item bị hoãn quá lâu bị đánh dấu seen (chấp nhận bỏ qua) thay vì ghim cứng vĩnh viễn. Khắc phục ngay dữ liệu đang kẹt (owner chọn đẩy cursor lên hiện tại, chấp nhận đánh đổi bỏ qua item cũ nếu có): sao lưu `_state.json` cũ thành `_state.json.bak-20260916` rồi ghi lại bằng chính hàm đã sửa.
-
-**Cập nhật cùng ngày — owner yêu cầu soát lại `_cursor()` thật kỹ, phát hiện thêm 1 bug khác cùng họ**: `_cursor()` tự nó đúng, nhưng cơ chế `seen` nó gọi tới dùng CHUNG 1 namespace ID cho job và candidate — xác nhận bằng dữ liệu thật: id `"1042"` tồn tại đồng thời ở cả job VÀ candidate trong `human_bot.db`. Đánh dấu 1 loại seen khiến loại kia bị coi là đã xử lý và bị bỏ qua vĩnh viễn, không lỗi/log gì — đây là chiều NGƯỢC của bug chính (mất hẳn thay vì đăng trùng). May mắn vụ 1042 chưa gây hại vì cả 2 xuất hiện cùng 1 vòng poll. Sửa bằng `_seen_key(kind, item_id)` — key ghép "job:1042"/"candidate:1042" thay cho bare id, áp dụng cho cả đọc (`_load_seen_ids()`, có tương thích ngược đọc được file cache cũ định dạng bare-id) lẫn ghi (`_mark_seen()` — phát hiện thêm: nếu chỉ sửa phần đọc, job/candidate trùng ID vẫn đè nhau ngay trên đĩa, bắt được bằng chính test hồi quy mới viết fail ngay lần đầu). Thêm 3 test, 201 test passed.
-* **`sync_all()` crash âm thầm mỗi chu kỳ poll (2026-09-11)** — owner restart service, đặt chu kỳ đồng bộ 5 phút để test, "không thấy gì xảy ra". Tra log thật thấy `TypeError: can't compare offset-naive and offset-aware datetimes` — `RateLimiter.next_allowed_at()` (`safety.py`) luôn trả naive datetime (mọi timestamp trong log ghi bằng `datetime.utcnow()`, không timezone), trong khi `next_comment_time` ở `data_sync.py` lại aware (`datetime.now(timezone.utc)`) — so sánh bằng `max()` ném lỗi ngay lập tức. Lỗi này thêm vào từ SỚM HƠN trong ngày (đợt "kẹp sàn" comment gap), nhưng "ngủ yên" vì chỉ kích hoạt khi tài khoản đã có ít nhất 1 comment từng đăng thật — `tu_iizuki` hội đủ điều kiện từ lâu trong buổi nên crash ngay khi restart. `service.py`'s vòng lặp poll chỉ log lỗi rồi tiếp tục, không hiển thị gì trên `/admin` — trông y hệt "chạy nhưng không có gì mới" thay vì "đang crash liên tục". Sửa bằng cách chuẩn hoá sang aware UTC trước khi so sánh, thêm 2 test hồi quy khoá chặt hợp đồng "`next_allowed_at()` luôn naive".
-
-# 6\. Đang triển khai / chưa hoàn thiện
-
-* **Content Strategist Agent — đã mở rộng sang cả job đăng nhóm và trả lời ứng viên, đa nhà cung cấp AI (2026-09-10), đã xác nhận sống với Anthropic** (2 ví dụ thật ở mục 4.10) — OpenAI/Gemini/custom vẫn chưa test end-to-end với key thật; vẫn thiếu guardrail chống trùng lặp/từ cấm bằng code (chỉ mới trong prompt gửi AI, riêng độ dài đầu ra thì đã chặn cứng bằng code).
-* **Safety Monitor — hành vi #2/#3:** chưa có throttle sớm khi sắp chạm giới hạn, chưa có báo động tự động ra kênh ngoài (Slack/email/Telegram) khi một tài khoản bị tạm dừng.
-* **Cơ chế dự phòng khi selector bị Facebook đổi giao diện làm gãy:** mỗi bước hiện chỉ dùng đúng 1 selector đã ghi sẵn — nếu Facebook đổi UI, hành động đó sẽ fail hoàn toàn cho tới khi ghi lại. Phương án dùng AI/LLM "nhìn" trang khi selector gãy đã thiết kế (`human_bot/llm.py`) nhưng **chưa được nối vào luồng chạy thật** ở bất kỳ đâu — cần quyết định có làm hay không, và áp dụng cho hành động nào trước.
-* **Chống fingerprint đầy đủ hơn:** user-agent/Client Hints đồng bộ, múi giờ khớp IP thật, và quan trọng nhất — proxy/IP riêng theo từng tài khoản (mục 4.5) — đều chưa làm, chờ quyết định khi cần mở rộng quy mô.
-* **Thiết lập môi trường vận hành thật:** khoá API bên B thật, `TASKS_API_KEY` thật, proxy — chưa điền vào cấu hình production.
-* **Chọn nhóm theo chủ đề** (bài IT → nhóm IT, bài Tokutei → nhóm Tokutei...) thay vì luôn phát tán vào mọi nhóm đã tham gia — đang cân nhắc thêm.
-* **Job trùng nội dung nhưng khác ID từ bên B (2026-09-17, không phải bug human_bot)** — owner phát hiện 2 bài đăng nhóm (16/09 16:35 và 17/09 13:28 giờ Nhật) đọc như trùng nội dung. Tra `job_data.attributes` xác nhận đây đúng là cùng 1 tin tuyển dụng thật (cùng công ty, lương, JLPT, visa, ngành, `confidence: 0.99` giống hệt) nhưng bên B gán 2 `source_id` khác nhau (444 và 447) — cơ chế dedup của `human_bot` chỉ chống trùng theo ID, không so sánh nội dung, nên cả 2 hợp lệ được coi là job mới theo đúng thiết kế hiện tại, không có bug trong `sync_all()`/`_mark_seen()`/`_cursor()`. Owner quyết định: đây là lỗi ở nguồn dữ liệu (pipeline crawl bên B), sẽ báo lại cho bên B thay vì thêm dedup theo nội dung ở phía `human_bot` (tránh rủi ro false-positive giữa 2 job thật khác nhau nhưng vô tình giống thuộc tính). Không có thay đổi code.
-* **Ưu tiên job `sponsored_by` (2026-09-16)** — logic đã viết xong + 16 test pass (xem mục 4), nhưng **chưa chạy thử với dữ liệu thật** vì side B chưa deploy 2 field mới (`sponsored_by`/`expires_at`) tại thời điểm code. `expires_at` đã qua thì dừng đăng hẳn kể cả job sponsored — owner đã xác nhận (2026-09-16), không còn để ngỏ. Vẫn cần quan sát thực tế xem tài khoản `sponsored_only` có thực sự cần thiết không, hay chỉ 2 lần water-fill là đủ. **UI (2026-09-16, phản hồi owner ngay sau khi thêm switch)**: bảng `/admin/accounts` tab "Đồng bộ" ban đầu có 2 cột "Hành động" trùng tên (1 cho Trạng thái, 1 cho Sponsored) gây rối mắt — gộp mỗi cặp badge+nút thành 1 switch duy nhất, đổi tên cột thành "Đồng bộ dữ liệu bên B"/"Chỉ đăng sponsored" để tự giải thích, không cần đoán qua cột hành động chung chung.
-
-# 7\. Kế hoạch tiếp theo
-
-* Xác nhận sống các điểm còn "chưa xác nhận thật" đã liệt kê ở trên (xác minh đăng bài thành công, selector "Friends" khi chọn đối tượng xem) — riêng dấu hiệu chờ duyệt bài nhóm: bug đã xác nhận bằng bằng chứng thật 2026-09-10, **fix vẫn cần chạy lại thật một lần nữa để xác nhận hoạt động** (mục 4.2).
-* Quyết định và triển khai proxy/IP riêng theo tài khoản khi cần mở rộng số lượng tài khoản chạy song song.
-* Xem xét kiến trúc đa tiến trình nếu cần chạy nhiều tài khoản trên nhiều máy khác nhau (hiện tại chỉ an toàn với đúng 1 tiến trình).
-* Cân nhắc mức giới hạn tần suất đăng bài phù hợp trước khi vận hành thật (hiện đang nới lỏng để thuận tiện test).
-
-# 8\. Nguồn nghiên cứu đã tham khảo
-
-Một phần lý do dự án đưa ra được các quyết định thiết kế cụ thể (mục 4.4-4.6) thay vì đoán mò là nhờ tham khảo trực tiếp các nguồn sau trong quá trình phát triển:
-
-* cside.com — "Catching AI agents' behavioral signals" và "Catching Playwright and browserless bots by the cursor".
-* browser-use.com — bài viết về cách hệ thống chống bot phát hiện AI browser agent.
-* `ghost-cursor` (thư viện mô phỏng chuột cho Puppeteer/Playwright) và các bản port liên quan.
-* Một nghiên cứu học thuật về phát hiện bot qua nhịp gõ phím (keystroke dynamics).
-* Các bài viết/kho mã nguồn mở về tự động hoá đăng bài nhóm Facebook và lý do các công cụ đó bị Facebook gắn cờ trong thực tế (rimiti/facebook-automation, ByamB4/fb-group-auto-post, multiplegroupposter.com, roihacks.com).
-* Báo cáo thực tế được chia sẻ trong nội bộ dự án về việc tài khoản bị hạn chế lại sau khi resume hoạt động quá sớm — dẫn tới thiết kế cơ chế "hạ nhiệt" ở mục 4.6.
-
-# 9\. Thông tin thêm / lưu ý vận hành
-
-* Tài khoản Facebook dùng cho bot cần đặt giao diện tiếng Anh (English US) trước khi chạy — mọi selector trong code được ghi lại theo giao diện tiếng Anh, tài khoản hiển thị ngôn ngữ khác sẽ khiến hành động timeout ngay bước đầu. Nội dung bài đăng vẫn viết tiếng Việt bình thường, chỉ giao diện Facebook cần là tiếng Anh.
-* Tài khoản cần đã tham gia sẵn các nhóm mục tiêu trước khi dùng tính năng đăng nhóm/comment nhóm.
-* Dự án dùng Playwright với script cố định — chọn phần tử theo selector, theo đúng thứ tự bước đã ghi lại — chứ không dùng một AI agent kiểu "browser-use" để tự nhìn màn hình và tự quyết định bước tiếp theo mỗi lần chạy (lý do đầy đủ ở mục 1). Hệ quả thực tế: nếu Facebook đổi giao diện, cần ghi lại (Codegen) và cập nhật code cho hành động bị ảnh hưởng — đây chính là lý do cơ chế dự phòng bằng AI ở mục 6 được đặt ra cho tương lai.
+**BÁO CÁO DỰ ÁN — DÀNH CHO NGƯỜI CHƯA BIẾT GÌ VỀ DỰ ÁN**
+
+Trợ lý tự động đăng tin tuyển dụng lên Facebook (AIAgent_w_FB)
+
+*(Cập nhật lần này: 2026-09-17. File này viết lại hoàn toàn theo hướng dễ đọc, không
+dùng từ chuyên ngành, có dòng thời gian theo tuần. Nếu cần xem chi tiết kỹ thuật
+từng dòng code/số liệu test cho đội kỹ thuật, xem file `tasks.md` — nơi đó ghi đầy
+đủ hơn nhiều)*
+
+---
+
+# 1. Dự án này làm gì?
+
+Công ty tuyển lao động Việt Nam sang Nhật Bản. Hằng ngày có rất nhiều tin tuyển
+dụng mới và rất nhiều ứng viên cần được liên hệ. Trước đây việc đăng tin lên các
+hội nhóm Facebook và trả lời bình luận của ứng viên phải làm bằng tay — tốn thời
+gian và dễ bỏ sót.
+
+Dự án này xây dựng một **"nhân viên ảo"** tự động làm 3 việc trên Facebook:
+
+1. **Đăng tin tuyển dụng vào các hội nhóm Facebook** — tự lấy tin mới từ hệ thống
+   tuyển dụng nội bộ (gọi tắt là "bên B"), tự soạn nội dung và tự đăng.
+2. **Bình luận trả lời bài đăng của ứng viên** trong các hội nhóm.
+3. **Đăng bài lên tường Facebook cá nhân** khi cần.
+
+Mọi việc đều có con người (chủ dự án, gọi tắt "owner") có thể xem lại lịch đăng trước —
+hệ thống có thể bật/tắt tự động đăng, xem bài viết đã lên lịch tại phần "Lịch đăng".
+
+**Vì sao khó hơn tưởng tượng?** Facebook có hệ thống tự động phát hiện và khoá
+tài khoản có hành vi giống "bot" (tự động hoá). Nên phần lớn công sức của dự án
+không chỉ là "bấm nút đăng bài", mà là làm sao để hành vi của "nhân viên ảo" này
+giống một người thật đang gõ bàn phím và di chuột — từ đó tránh bị Facebook khoá
+tài khoản của công ty.
+
+---
+
+# 2. Hệ thống hoạt động như thế nào? (nói đơn giản)
+
+Hãy hình dung một dây chuyền 4 bước:
+
+1. **Lấy dữ liệu**: cứ khoảng 15-20 phút (tuỳ cài đặt), hệ thống gọi đến bên B "có tin tuyển
+   dụng mới hay ứng viên mới nào không?".
+2. **Soạn nội dung**: một trợ lý AI viết lại nội dung tin tuyển dụng cho phù hợp
+   để đăng lên từng nhóm (không đăng y hệt một câu ở mọi nhóm — trông sẽ giống
+   máy đăng).
+3. **Xếp lịch đăng**: hệ thống tự tính giờ đăng hợp lý (không đăng dồn dập, có
+   nghỉ giữa các lần đăng, tôn trọng giờ giấc, không vượt quá số lượng cho phép
+   mỗi ngày) rồi đưa vào "hàng chờ" để owner xem qua.
+4. **Thực thi**: đến đúng giờ, hệ thống tự mở trình duyệt, giả lập một người
+   dùng thật (gõ chữ có tốc độ tự nhiên, di chuột theo đường cong, dừng lại "đọc
+   bài" trước khi đăng...) rồi đăng bài / bình luận thật lên Facebook, chụp lại
+   ảnh màn hình làm bằng chứng và ghi log.
+
+Song song đó có một bộ phận riêng chuyên **"canh chừng an toàn tài khoản"**: nếu
+phát hiện Facebook đang cảnh báo hay hạn chế một tài khoản, hệ thống tự tạm dừng
+ngay tài khoản đó, và khi tài khoản được kích hoạt lại thì tự động cho chạy "chậm
+lại" một thời gian trước khi trở lại tốc độ bình thường.
+
+Toàn bộ được quản lý qua một **trang web quản trị nội bộ** — nơi có thể xem/sửa
+lịch đăng, quản lý tài khoản, xem báo cáo thành công/thất bại, bật tắt các tính
+năng.
+
+---
+
+# 3. Đã làm được đến đâu? (tóm tắt bằng lời)
+
+✅ **Đã hoàn thành và đang chạy thật:**
+- Tự đăng bài vào hội nhóm Facebook, tự bình luận trả lời ứng viên.
+- Tự lấy tin tuyển dụng/ứng viên mới từ bên B, không cần nhập tay.
+- AI tự soạn/viết lại nội dung bài đăng và câu trả lời, viết vào đúng lúc sắp đăng
+  (không viết trước rồi để lâu, tránh nội dung "cũ" khi bài lên).
+- Giả lập hành vi người dùng thật (gõ chữ, di chuột, cuộn trang, nghỉ giữa các lần
+  thao tác) để giảm rủi ro bị Facebook phát hiện.
+- Giới hạn tốc độ đăng bài theo "độ tuổi" của tài khoản (tài khoản mới tạo được
+  đăng ít hơn, giới hạn nới dần theo thời gian).
+- Tự phát hiện tài khoản bị Facebook cảnh báo/hạn chế và tự tạm dừng ngay.
+- Trang quản trị web đầy đủ: quản lý tài khoản, nhóm, lịch đăng, báo cáo.
+- Có gần 200 bài kiểm tra tự động để đảm bảo các quy tắc trên luôn đúng, không bị
+  hỏng ngầm khi sửa code sau này.
+
+🔜 **Chưa làm / đang cân nhắc:**
+- Chưa có kênh báo động tự động (VD nhắn Slack/email) khi một tài khoản bị Facebook
+  khoá — hiện phải tự vào trang quản trị để thấy.
+- Chưa thuê IP/proxy riêng cho từng tài khoản Facebook (khi mở rộng quy mô nhiều
+  tài khoản, đây sẽ là việc quan trọng để tránh bị Facebook liên kết các tài khoản
+  với nhau).
+- Có một phương án dự phòng dùng AI để "nhìn" và tự thao tác khi giao diện Facebook
+  đổi khác — đã thiết kế nhưng chưa lắp vào để chạy thật.
+- Chưa nối vào quy trình chạy tự động hoàn chỉnh (n8n) theo lịch/hoặc theo tín hiệu
+  từ bên B.
+
+---
+
+# 4. Nhật ký tiến độ theo tuần
+
+## Tuần 1 (02/09 – 04/09): Xây nền móng
+
+Đây là tuần khởi đầu — dựng bộ khung cho toàn bộ hệ thống.
+
+- Xây dựng được khả năng đăng bài lên tường cá nhân và đăng bài vào hội nhóm
+  Facebook một cách tự động, có mô phỏng thao tác người dùng thật (gõ chữ, di
+  chuột, dừng đọc lại trước khi đăng).
+- Vì vào một hội nhóm không phải lúc nào cũng theo đúng 1 cách (người dùng thật có
+  lúc bấm lối tắt, có lúc tìm kiếm, có lúc vào thẳng link) — hệ thống được thiết kế
+  thử nhiều cách vào nhóm khác nhau, giống hành vi thật, thay vì luôn đi đúng 1 con
+  đường (dễ bị nghi ngờ là máy).
+- Dựng trang quản trị web đầu tiên: đăng bài, xếp lịch, xem báo cáo.
+- Bắt đầu có cơ chế phát hiện khi tài khoản bị Facebook cảnh báo và tự tạm dừng.
+- Thêm bước "xác minh bài đã đăng thành công thật hay chưa" (chứ không đoán), kèm
+  chụp ảnh làm bằng chứng cho mỗi lần đăng.
+
+## Tuần 2 (07/09 – 12/09): An toàn tài khoản, tự lấy dữ liệu, AI viết bài
+
+- Bắt đầu tự động lấy tin tuyển dụng và ứng viên mới từ hệ thống bên B, không cần
+  ai nhập tay.
+- Hoàn thiện tính năng tự động bình luận trả lời ứng viên trong nhóm.
+- Xây cơ chế "giới hạn tốc độ đăng bài" thật sự có hiệu lực — trước đó giới hạn
+  này có khai báo nhưng **chưa từng được áp dụng thật** (một lỗ hổng được phát
+  hiện và vá ngay). Từ đây, khoảng nghỉ tối thiểu giữa 2 lần đăng được nâng lên
+  1-2 tiếng và luôn được tôn trọng.
+- Thêm cơ chế "hạ nhiệt" đầu tiên: tài khoản vừa được kích hoạt lại sau khi tạm
+  dừng sẽ tự chạy chậm hơn bình thường một thời gian.
+- Phát hiện và sửa một số lỗi khiến việc chia tin cho nhiều tài khoản bị "đói"
+  (một số tài khoản không bao giờ nhận được việc), và lỗi tính giờ lệch múi giờ
+  Nhật Bản.
+- Thêm khả năng đăng nhập tài khoản Facebook mới ngay trên trang web (trước đó
+  phải chạy lệnh dòng lệnh thủ công).
+- Cho mỗi tài khoản Facebook một cấu hình trình duyệt hơi khác nhau (kích thước
+  màn hình, độ phân giải) để không "trông giống hệt nhau" dưới góc nhìn của
+  Facebook.
+- AI được giao viết/viết lại nội dung tin tuyển dụng và câu trả lời ứng viên,
+  đúng vào lúc sắp đăng thật (không soạn trước rồi để cũ). Hỗ trợ nhiều nhà cung
+  cấp AI khác nhau, có nút bật/tắt riêng. Đã thử thành công với AI thật của
+  Anthropic.
+- Viết bộ kiểm tra tự động đầu tiên cho dự án (gần 80 bài kiểm tra) để đảm bảo
+  các quy tắc quan trọng (giới hạn tốc độ, nội dung AI...) luôn đúng.
+- Phát hiện và sửa một loạt lỗi thật quan trọng, ví dụ:
+  - Giới hạn tốc độ đăng bài và bình luận trước đó dùng chung một "đồng hồ" — dẫn
+    tới việc không thể nào nhét đủ số lượng bình luận cho phép trong 1 ngày vì bị
+    đếm gộp nhầm với bài đăng.
+  - Một hội nhóm Facebook bật chế độ "cần admin nhóm duyệt bài" nhưng hệ thống lại
+    không đọc đúng thông báo đó, coi bài là "đã đăng xong" trong khi thực ra mới ở
+    trạng thái chờ duyệt.
+  - Hệ thống tự dừng chạy (crash) mỗi lần lấy dữ liệu mới, do một phép so sánh giờ
+    bị lỗi kỹ thuật — sửa xong hệ thống chạy ổn định trở lại 24/7.
+- Cải thiện trang quản trị: phân trang gọn hơn, báo cáo tách theo từng tin tuyển
+  dụng / từng ứng viên, thêm nút "Đăng lại" khi có bài lỡ bị lỗi.
+
+## Tuần 3 (14/09 – nay): Ưu tiên tin trả tiền + dọn hàng loạt lỗi thật
+
+Đây là tuần tập trung rất nhiều vào việc rà soát kỹ và sửa các lỗi thật phát sinh
+khi hệ thống đã chạy được một thời gian — chủ dự án trực tiếp phát hiện phần lớn
+qua việc quan sát dữ liệu thật hằng ngày.
+
+- **Không tự đăng bài "quá hạn" nếu hệ thống từng bị tắt một thời gian.** Trước
+  đây nếu server tắt rồi bật lại, các bài lỡ giờ đăng có thể bị đăng dồn dập ngay
+  lúc bật lại. Giờ những bài đó được đưa vào một danh sách riêng để owner tự xem
+  và quyết định (đăng lại giờ mới, để hệ thống tự tìm giờ trống, hoặc xoá), thay
+  vì tự động đăng.
+- **Sửa lỗi đăng vượt quá số lượng cho phép mỗi ngày**, xảy ra khi một bài đăng
+  vào nhiều nhóm bị "trôi" sang ngày khác giữa chừng mà không ai kiểm tra lại hạn
+  mức của ngày đó.
+- **Thêm yếu tố ngẫu nhiên khi chọn nhóm để đăng** — theo đúng yêu cầu rõ ràng của
+  chủ dự án — để tránh việc lúc nào cũng đăng vào đúng một tổ hợp nhóm giống hệt
+  nhau (dễ bị nghi ngờ là máy), đồng thời vẫn đảm bảo nhóm nào lâu chưa được đăng
+  sẽ được ưu tiên trước.
+- **Ưu tiên các tin tuyển dụng "trả tiền" (sponsored)**: bên B thêm tính năng đánh
+  dấu một số tin là tin trả tiền cần đăng gấp và có hạn dùng. Hệ thống được dạy để
+  luôn ưu tiên đăng các tin này trước (nhưng vẫn không vượt quá giới hạn an toàn
+  mỗi ngày), tự bỏ qua tin đã hết hạn, và chia đều việc cho nhiều tài khoản thay vì
+  dồn hết vào một tài khoản. Có thể chọn một số tài khoản chỉ chuyên đăng loại tin
+  này. (Tính năng đã làm xong và kiểm tra kỹ, nhưng chưa chạy được với dữ liệu
+  thật vì bên B chưa cập nhật xong phần của họ.)
+- **Sửa lỗi hiển thị lịch đăng bị đảo thứ tự** — khi dời một bài quá hạn sang
+  ngày khác, bài đó lại hiện lên đầu danh sách thay vì đúng vị trí theo ngày mới.
+- **Sửa 2 lỗi khiến việc trả lời bình luận bị nhầm lẫn:**
+  - Do một lỗi kỹ thuật, hệ thống bị "kẹt" và cứ lấy đi lấy lại đúng một khoảng dữ
+    liệu cũ suốt 2 ngày liền — hậu quả là ít nhất 3 ứng viên bị nhận bình luận
+    trùng lặp. Đã tìm ra nguyên nhân, sửa tận gốc, và dọn lại dữ liệu bị ảnh hưởng.
+  - Một lỗi khác (may mắn chưa gây hậu quả) khiến tin tuyển dụng và ứng viên có
+    cùng một mã số bị nhầm lẫn với nhau trong bộ nhớ "đã xử lý" của hệ thống — đã
+    sửa để 2 loại luôn được phân biệt rõ ràng.
+  - Nếu có cửa sổ chat Messenger đang mở trên màn hình đúng lúc hệ thống đang thao
+    tác, có 2 trường hợp bị lỗi/click nhầm — hệ thống giờ tự đóng các cửa sổ chat
+    trước khi đăng bài/bình luận.
+- **Sửa lỗi giao diện web**: ô chọn giờ đăng bị hiện trống khi chuyển qua lại giữa
+  các tab trên trang lịch đăng — nguyên nhân hoá ra là một dòng code đã bị lỗi từ
+  rất lâu (một dòng chạy sai lúc trang web tải, khiến một cơ chế "làm mới hiển
+  thị" không bao giờ hoạt động) — đã tìm ra và sửa tận gốc bằng cách quan sát trực
+  tiếp qua trình duyệt thật.
+- **Thêm bộ lọc theo loại hành động và theo ngày** cho trang lịch đăng, giúp dễ
+  tìm bài cần xem hơn.
+- **Thiết kế lại toàn bộ cơ chế "hạ nhiệt"** sau khi phát hiện một lỗi khiến mức
+  giới hạn tốc độ gốc của một tài khoản bị mất vĩnh viễn nếu tài khoản đó bị tạm
+  dừng/kích hoạt lại nhiều lần liên tiếp. Cơ chế mới kéo dài 2 tuần, tăng dần theo
+  từng nấc, và đảm bảo không bao giờ còn có thể làm mất số liệu gốc nữa.
+- **Ghi nhận (không phải lỗi của hệ thống này)**: phát hiện 2 tin tuyển dụng có nội
+  dung giống hệt nhau nhưng mang 2 mã số khác nhau từ bên B — xác nhận đây là lỗi ở
+  phía cung cấp dữ liệu (bên B), không phải lỗi ở hệ thống đăng bài. Đã báo lại cho
+  bên B.
+- **Sửa lỗi bình luận bị treo (timeout) trên tài khoản mới `nhtu00`**: tài khoản
+  này bị lỗi ngay lần bình luận đầu tiên vì giao diện Facebook của nó đang để
+  tiếng Việt, trong khi hệ thống chỉ nhận diện được ô nhập bình luận khi giao diện
+  là tiếng Anh (quy định bắt buộc từ đầu dự án, xem mục 5). Đã thêm một **lớp an
+  toàn dự phòng**: nhận diện được cả 2 ngôn ngữ (Anh/Việt) ở tất cả các nút/ô bấm
+  liên quan đến bình luận và đăng bài vào nhóm, để hệ thống không bị "đứng hình"
+  nếu một tài khoản nào đó lỡ chưa để đúng tiếng Anh. Quy định chính vẫn không đổi:
+  mọi tài khoản bot phải để giao diện tiếng Anh — đây chỉ là lưới an toàn phụ. **Đã
+  xác nhận chạy thật thành công** ngay lần bình luận kế tiếp của `nhtu00`.
+- **Phát hiện thêm cùng nguyên nhân (UI tiếng Việt) ở chỗ khác: nút mở khung soạn
+  bài khi đăng vào nhóm.** Sau khi sửa lỗi bình luận, `nhtu00` chuyển sang thử đăng
+  bài vào nhóm và bị lỗi tương tự 4 lần liên tiếp — nút "viết gì đó..." trên trang
+  nhóm cũng hiện tiếng Việt, chưa nằm trong lần sửa trước (lúc đó tài khoản này
+  chưa từng thử đăng bài, chỉ mới thử bình luận). Đã bổ sung thêm vào đúng lưới an
+  toàn dự phòng ở trên. Còn 1 nút cùng loại (mở khung soạn bài khi đăng lên tường
+  cá nhân) nhiều khả năng cũng sẽ gặp lỗi y hệt nếu `nhtu00` thử đăng lên tường —
+  chủ dự án đã cho trước chữ tiếng Việt thật của nút này ("Tú ơi, bạn đang nghĩ gì
+  thế?") nên đã vá luôn trước khi lỗi thật xảy ra, dù chưa chạy thử để xác nhận.
+- **Sửa tiếp lỗi thứ 4 cùng nguyên nhân: nút đính kèm ảnh/video.** Sau khi 2 lỗi
+  trên được sửa, hệ thống mở đúng khung soạn bài nhưng lại kẹt ở bước đính kèm
+  ảnh — hoá ra hệ thống có tính năng tự động gắn 1 ảnh vui ngẫu nhiên vào mỗi bài
+  đăng nếu bài đó chưa có sẵn ảnh riêng, nên bước "bấm nút thêm ảnh" vẫn luôn chạy
+  dù người dùng không yêu cầu đính kèm gì. Nút này trên UI tiếng Việt chỉ có icon,
+  không có chữ, nên không đọc được từ ảnh chụp lỗi — chủ dự án đã tự kiểm tra trên
+  trang thật và cho đúng chữ ("Ảnh/video"). Đã vá tương tự 3 lần trước.
+- **Sửa lỗi thật: hệ thống lấy quá nhiều tin về đăng cho 1 tài khoản trong 1 lần
+  đồng bộ**, khiến lịch đăng bị đẩy xa hơn nhiều so với quy định. Chủ dự án phát
+  hiện tài khoản `nhtu00` vừa đồng bộ xong đã có lịch đăng tới tận 3 ngày sau.
+  Kiểm tra lại đúng công thức đã thống nhất từ trước (cộng số chỗ trống của hôm
+  nay + 2 ngày tới, chia cho số nhóm tối đa mỗi bài được đăng) thì phát hiện phần
+  này **chưa từng được lập trình đúng** — hệ thống trước giờ chỉ tính chỗ trống
+  của MỘT MÌNH hôm nay rồi lấy tin về ngay bằng đúng số đó, không tính thêm 2 ngày
+  tới và không chia cho số nhóm/bài — dẫn tới lấy dư rất nhiều tin (35 tin thay vì
+  đúng ra chỉ nên 9 tin theo công thức) và đẩy lịch đăng dồn ra xa. Đã sửa đúng
+  công thức, có tính cả phần chỗ trống của ngày mai/ngày mốt đã bị lần đồng bộ
+  trước đó chiếm mất (không tính hớ). Đã viết thêm bài test khớp đúng ví dụ chủ
+  dự án đưa ra để đảm bảo không tái diễn. Theo yêu cầu chủ dự án, đã dọn sạch luôn
+  35 tin bị lấy dư của `nhtu00` (đã sao lưu lại đầy đủ trước khi xoá, đề phòng cần
+  xem lại) — riêng 12 tin gốc phía sau 35 bài đăng đó cũng được "mở khoá" lại để
+  lần đồng bộ tới có thể lấy về đúng theo công thức mới, thay vì bị coi là "đã xử
+  lý" và mất luôn.
+
+---
+
+# 5. Những quyết định quan trọng đã bàn kỹ với chủ dự án
+
+Một vài lựa chọn thiết kế đáng chú ý, được cân nhắc kỹ chứ không phải ngẫu nhiên:
+
+- **Không dùng AI để "lái" trình duyệt cho mọi thao tác.** Mỗi hành động (đăng
+  bài, bình luận...) được ghi lại sẵn một lần bằng cách làm thao tác thật, rồi máy
+  lặp lại đúng y hệt mỗi lần cần — nhanh hơn, rẻ hơn, và ít rủi ro "AI hiểu nhầm
+  rồi bấm sai" so với việc để AI tự suy nghĩ lại mỗi lần. AI chỉ được dùng ở chỗ
+  thật sự cần "sáng tạo" — như viết nội dung bài đăng.
+- **Không điều khiển chuột thật của máy tính** (dù về lý thuyết sẽ khó bị phát
+  hiện hơn) — vì sẽ mất khả năng chạy nhiều tài khoản cùng lúc, chạy không cần
+  người trông máy 24/7, và không chạy được nếu có cửa sổ khác che màn hình. Xét
+  thấy cách làm hiện tại (mô phỏng hành vi qua trình duyệt) đã đủ tốt cho nhu cầu
+  thực tế.
+- **Chưa mua proxy/IP riêng cho từng tài khoản** — đây là việc có lợi ích lớn nhất
+  nếu mở rộng quy mô, nhưng tốn chi phí nên tạm để sau, chờ quyết định khi cần scale
+  lên nhiều tài khoản hơn.
+- **Không thêm bước tự nhận diện "2 tin trùng nội dung"** ở hệ thống này khi bên B
+  gửi trùng — vì rủi ro nhận nhầm 2 tin thật khác nhau là trùng cao hơn lợi ích, nên
+  chọn cách báo lại cho bên B sửa từ gốc.
+
+---
+
+# 6. Việc cần làm tiếp theo
+
+- Theo dõi thêm để chắc chắn các lỗi mới sửa (đặc biệt: tin trùng dữ liệu, đăng
+  đúng giờ, cơ chế hạ nhiệt) chạy ổn định lâu dài với dữ liệu thật.
+- Chạy thử ưu tiên "tin trả tiền" với dữ liệu thật ngay khi bên B triển khai xong
+  phần của họ.
+- Thêm kênh báo động (Slack/email) khi có tài khoản bị Facebook khoá, thay vì phải
+  tự vào xem trang quản trị.
+- Cân nhắc mua proxy/IP riêng cho từng tài khoản nếu mở rộng quy mô.
+- Chuyển giao diện Facebook của tài khoản `nhtu00` sang tiếng Anh theo đúng quy
+  định (mục 5) — đây vẫn là hướng xử lý chính; phần "hiểu cả tiếng Việt" vừa thêm
+  chỉ là lưới an toàn dự phòng, không thay thế việc này.
+- Theo dõi lần đăng bài vào nhóm kế tiếp của `nhtu00` để xác nhận nút mở khung
+  soạn bài (vừa sửa) hoạt động đúng trên trình duyệt thật.
+- Theo dõi lần đăng lên tường cá nhân đầu tiên của `nhtu00` để xác nhận nút mở
+  khung soạn bài (vừa vá trước bằng chữ owner cho) hoạt động đúng trên thực tế.
+- Theo dõi lần đăng vào nhóm kế tiếp của `nhtu00` để xác nhận nút đính kèm
+  ảnh/video (vừa sửa) hoạt động đúng — đã fail 4 lỗi khác nhau liên tiếp trên
+  cùng 1 account do UI tiếng Việt, nên cần xem có phát sinh lỗi thứ 5 hay không.
+- Theo dõi lần đồng bộ dữ liệu kế tiếp để xác nhận sửa lỗi "lấy quá nhiều tin"
+  hoạt động đúng trên hệ thống thật (mới test bằng dữ liệu giả lập, chưa chạy
+  sống) — lần này `nhtu00` nên chỉ lấy về đúng khoảng 9 tin thay vì 35.
+- Nối toàn bộ hệ thống vào quy trình tự động hoàn chỉnh (chạy theo lịch/tín hiệu
+  từ bên B), thay vì cần thao tác tay ở một số bước.
+- Cân nhắc thêm tính năng chọn nhóm đăng theo đúng chủ đề (VD tin ngành IT → nhóm
+  về IT) thay vì đăng vào mọi nhóm đã tham gia.
+
+---
+
+# 7. Một vài từ hay gặp trong báo cáo, giải thích ngắn gọn
+
+- **Bot / tự động hoá**: chương trình máy tính tự làm thay việc của con người.
+  Facebook không thích và tìm cách phát hiện + khoá các tài khoản hoạt động kiểu
+  này.
+- **Rate limit (giới hạn tốc độ)**: quy định "tối đa được đăng/bình luận bao nhiêu
+  lần trong 1 khoảng thời gian", để không đăng quá nhanh/quá nhiều trông giống máy.
+  Ví dụ đăng tối đa 5 bài/ngày, cách nhau tối thiểu 2 tiếng.
+- **Cooldown / hạ nhiệt**: giai đoạn "chạy chậm lại" bắt buộc sau khi một tài khoản
+  vừa được kích hoạt lại sau khi bị tạm dừng.
+- **Bên B**: hệ thống tuyển dụng nội bộ, nơi cung cấp danh sách tin tuyển dụng và
+  ứng viên mới cho hệ thống này lấy về xử lý.
+- **Admin UI / trang quản trị**: trang web nội bộ để xem và điều khiển toàn bộ hệ
+  thống (không dành cho khách ngoài xem).
+- **Sponsored (tin trả tiền)**: tin tuyển dụng được đánh dấu ưu tiên vì có trả phí,
+  cần đăng sớm hơn các tin thường.

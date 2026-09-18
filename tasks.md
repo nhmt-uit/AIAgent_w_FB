@@ -5,6 +5,70 @@
 > công việc theo ngày** và làm báo cáo. Xem `README.md` để hiểu
 > tổng quan hệ thống, kiến trúc, và bản đồ file `.py`.
 
+## Mục lục
+
+**Giai đoạn đầu (02/09 – 04/09)**
+- [Giai đoạn khởi tạo](#giai-đoạn-khởi-tạo-0209-0409)
+- [Đang tập trung tiếp theo — tham khảo](#đang-tập-trung-tiếp-theo-theo-thứ-tự)
+
+**05/09 – 12/09**
+- [05→07/09: quản lý tài khoản + viết lại /admin/post](#đợt-làm-việc-2026-09-05-2026-09-07-quản-lý-tài-khoản-viết-lại-adminpost)
+- [08→09/09: rate-limit theo hành động, đồng bộ đa tài khoản](#đợt-làm-việc-2026-09-08-2026-09-09-rate-limit-theo-loại-hành-động-đồng-bộ-bên-b-nhiều-tài-khoản-bỏ-hàng-đợi-txt)
+- [09/09: audience đăng tường, login web, fingerprint, fix crash](#đợt-làm-việc-2026-09-09-chọn-audience-khi-đăng-tường-cá-nhân-đăng-nhập-qua-web-fingerprint-fix-crash-khởi-động)
+- [10/09: AI soạn bài job/reply ứng viên](#đợt-làm-việc-2026-09-10-ai-soạn-bài-jobreply-ứng-viên-chuyển-sang-lúc-đến-giờ-đăng-có-bậttắt-riêng)
+- [10/09 (tiếp): Switch thay checkbox, đa nhà cung cấp AI](#đợt-làm-việc-2026-09-10-tiếp-switch-thay-checkbox-đa-nhà-cung-cấp-ai)
+- [Còn lại (chưa tới lượt) — tham khảo](#còn-lại-chưa-tới-lượt-ngay-nhưng-đã-ghi-nhận-xem-đánh-giá-2026-09-03)
+- [Điểm yếu đã ghi nhận (07/09) — tham khảo](#điểm-yếu-đã-ghi-nhận-2026-09-07-cần-cân-nhắc-chưa-xếp-lịch-làm)
+- [10/09 (tiếp): Bộ test tự động đầu tiên](#đợt-làm-việc-2026-09-10-tiếp-bộ-test-tự-động-đầu-tiên-cho-dự-án)
+- [10/09 (tiếp): Tách giãn cách post/comment, 5 mức tuổi tài khoản](#đợt-làm-việc-2026-09-10-tiếp-tách-riêng-giãn-cách-postcomment-cấu-hình-lại-5-mức-tuổi-tài-khoản)
+- [10/09 (tiếp): Nhãn "Nenshuu"](#đợt-làm-việc-2026-09-10-tiếp-thêm-nhãn-nenshuu-giữ-nguyên-nội-dung-lịch-khi-ai-đăng-bài-lỗi)
+- [11/09: Phân trang Lịch đăng](#đợt-làm-việc-2026-09-11-phân-trang-lịch-đăng)
+- [11/09 (tiếp): Chặn spam nhiều nhóm](#đợt-làm-việc-2026-09-11-tiếp-chặn-spam-nhiều-nhóm-bỏ-tài-khoản-0-nhóm-giới-hạn-3-nhómjob)
+- [11/09 (tiếp): Kẹp sàn theo cửa sổ trượt 24h](#đợt-làm-việc-2026-09-11-tiếp-kẹp-sàn-số-lượng-theo-cửa-sổ-trượt-24h-thật-bỏ-tràn-ngày)
+- [11/09 (tiếp): Reset dữ liệu test](#đợt-làm-việc-2026-09-11-tiếp-reset-dữ-liệu-test-xoá-lịch-đang-chờ-cache-đồng-bộ-bên-b)
+- [11/09 (tiếp): Sửa `sync_all()` crash](#đợt-làm-việc-2026-09-11-tiếp-sửa-bug-thật-sync_all-crash-mỗi-lần-poll)
+- [11/09 (tiếp): 3 cải thiện Admin UI](#đợt-làm-việc-2026-09-11-tiếp-3-cải-thiện-admin-ui-theo-phản-hồi-trực-tiếp)
+- [12/09: Báo cáo "Theo từng lần đăng"](#báo-cáo-theo-từng-lần-đăng-2026-09-12-hoàn-thành)
+- [12/09: /admin/reports chỉnh nhỏ + chia tab](#adminreports-chỉnh-nhỏ-chia-tab-2026-09-12)
+- [12/09: Báo cáo "Theo từng lần bình luận"](#báo-cáo-theo-từng-lần-bình-luận-2026-09-12-hoàn-thành)
+- [12/09: Chỉnh tiếp báo cáo job/comment](#chỉnh-tiếp-báo-cáo-jobcomment-2026-09-12)
+- [12/09: Đổi tên tab + 3 lựa chọn "Đăng lại"](#đổi-tên-tab-3-lựa-chọn-đăng-lại-2026-09-12)
+- [12/09: 3 sửa nhỏ + 1 bug ở "Đăng lại"](#3-sửa-nhỏ-1-bug-thật-ở-đăng-lại-2026-09-12)
+- [12/09: "Dữ liệu gốc" đầy đủ hơn](#dữ-liệu-gốc-đầy-đủ-hơn-2026-09-12)
+
+**14/09 – 15/09**
+- [14/09: Sửa GẤP không tự đăng bài quá hạn](#sửa-gấp-không-tự-đăng-bài-quá-hạn-sau-khi-server-tắtmở-lại-2026-09-14)
+- [14/09: Chia LỊCH ĐĂNG thành 2 tab](#chia-lịch-đăng-thành-2-tab-2026-09-14)
+- [14/09: 2 sửa nhỏ tab "Task quá hạn"](#2-sửa-nhỏ-cho-tab-task-quá-hạn-2026-09-14)
+- [14/09: Bug vượt `posts_per_day` do nhóm "trôi" ngày](#bug-thật-vượt-posts_per_day-do-nhóm-bị-trôi-sang-ngày-khác-giữa-job-2026-09-14)
+- [14/09: Bug `_suggest_reschedule_at()`](#bug-thật-_suggest_reschedule_at-áp-giờ-yên-tĩnh-trước-không-tái-kiểm-tra-sau-2026-09-14)
+- [15/09: Owner làm rõ luật đăng nhóm + rà soát code](#owner-làm-rõ-luật-đăng-vào-nhóm-bằng-văn-bản-rà-soát-code-khớplệch-2026-09-15)
+- [15/09: Bug thiếu "sàn" cho `next_post_time`](#bug-thật-thiếu-sàn-cho-next_post_time-giữa-các-lần-sync-2026-09-15)
+- [15/09: Dọn dữ liệu bị xếp sai](#dọn-dữ-liệu-thật-bị-xếp-sai-do-3-bug-trên-2026-09-15)
+- [15/09: Rà soát lần 2 — sửa 3 lỗi](#rà-soát-lần-2-yêu-cầu-owner-kiểm-tra-kĩ-lưỡng-sửa-3-lỗi-phát-hiện-được-2026-09-15)
+- [15/09: Filter "Hành động" + "Ngày đăng" cho /admin/schedule](#thêm-filter-hành-động-ngày-đăng-cho-adminschedule-2026-09-15)
+- [15/09: Bug datetime picker hiện trống](#bug-thật-datetime-picker-hiện-trống-sau-khi-chuyển-tab-trình-duyệt-2026-09-15)
+- [15/09: Sửa lại đúng bug datetime picker](#sửa-lại-đúng-bug-datetime-picker-owner-báo-vẫn-chưa-ổn-2026-09-15)
+- [15/09: Viết lại cơ chế "hạ nhiệt" — 2 tuần có nấc](#viết-lại-toàn-bộ-cơ-chế-hạ-nhiệt-sau-khi-kích-hoạt-lại-2-tuần-có-nấc-sửa-tận-gốc-bug-mất-rate-limit-gốc-2026-09-15)
+- [15/09: Rà soát lại hạ nhiệt — 3 sai sót nhỏ](#rà-soát-lại-toàn-bộ-đợt-viết-lại-hạ-nhiệt-phát-hiện-3-sai-sót-nhỏ-2026-09-15)
+- [15/09: Sửa `post_to_group` crash strict mode](#sửa-post_to_group-crash-strict-mode-violation-trên-get_by_roleparagraph-2026-09-15)
+
+**16/09 – 18/09 (đang diễn ra)**
+- [16/09: Chat che nút "Post comment" (lỗi cùng gốc #2)](#phát-hiện-sửa-lỗi-thứ-2-cùng-nguyên-nhân-gốc-cửa-sổ-chat-messenger-còn-mở-đè-lên-nút-post-comment-2026-09-16)
+- [16/09: Sửa thứ tự hiển thị /admin/schedule](#sửa-bug-thứ-tự-hiển-thị-adminschedule-bài-quá-hạn-dời-lịch-sang-ngày-sau-lại-hiện-lên-đầu-danh-sách-2026-09-16)
+- [16/09: Ưu tiên job `sponsored_by`](#ưu-tiên-job-sponsored_by-trong-luồng-get-apijobs-lên-lịch-đăng-2026-09-16)
+- [16/09: Gọn UI /admin/accounts tab Đồng bộ](#gọn-lại-ui-adminaccounts-tab-đồng-bộ-gộp-cột-trạng-tháihành-động-và-sponsoredhành-động-thành-switch-đổi-tên-cột-cho-rõ-nghĩa-2026-09-16)
+- [16/09: Bug nghiêm trọng — cursor đồng bộ kẹt, comment trùng](#phát-hiện-sửa-bug-nghiêm-trọng-cursor-đồng-bộ-bên-b-bị-kẹt-tại-0809-suốt-2-ngày-gây-comment-trùng-ít-nhất-3-candidate-2026-09-16)
+- [17/09: [Chưa xong] 2 job ID trùng nội dung từ bên B](#phát-hiện-không-phải-bug-human_bot-2-job-id-khác-nhau-từ-bên-b-444-447-mang-nội-dung-thật-sự-giống-hệt-nhau-2026-09-17-chưa-xong)
+- [17/09: Bug `comment_on_group_post` timeout — UI tiếng Việt](#bug-thật-comment_on_group_post-timeout-30s-chờ-ô-textbox-2026-09-17)
+- [17/09: Bug `job_capacities` lấy dư job + dọn dữ liệu `nhtu00`](#bug-thật-job_capacities-cổng-lấy-job-về-của-sync_all-chưa-bao-giờ-hiện-thực-đúng-công-thức-owner-đã-chốt-từ-trước-2026-09-17)
+- [18/09: Bug `post_to_group` timeout nút mở composer — cùng gốc UI tiếng Việt](#bug-thật-post_to_group-timeout-30s-chờ-nút-mở-composer-cùng-gốc-ui-tiếng-việt-trên-nhtu00-2026-09-18)
+- [18/09: Bug thứ 4 cùng gốc — nút "Photo/video" (icon, không chữ)](#bug-thật-thứ-4-cùng-gốc-nút-photovideo-icon-không-chữ-_attach_media-2026-09-18)
+
+---
+
+## Giai đoạn khởi tạo (02/09 – 04/09)
+
 - [x] Cài Playwright, xác nhận mở được trình duyệt thật vào facebook.com.
 - [x] Tạo `docs/brand-voice.md` — **còn cần bạn tự điền nội dung thật**.
 - [x] Bootstrap đăng nhập, lưu phiên cho tài khoản `troy`.
@@ -2769,315 +2833,528 @@ là comment giải thích lịch sử bug, không phải code thật).
 **171 test passed** (170 trước đó + 1 test hồi quy mới cho vụ
 `enabled`).
 
-- [x] **2026-09-15 — Sửa `post_to_group` crash "strict mode violation"
-      trên `get_by_role("paragraph")`** (action_log id 146, task thật
-      lúc 08:41:44 UTC, nhóm "Việc làm Kỹ Sư Nhật Bản (Uy tín hàng
-      đầu)"). Nguyên nhân: locator mở ô soạn bài ở `actions.py` không
-      giới hạn phạm vi trong hộp thoại "Create post" — đúng lúc đó có
-      cửa sổ chat Messenger ("Write to Thanh Loan") đang mở ở góc màn
-      hình, bong bóng tin nhắn trong đó cũng có role "paragraph", nên
-      locator khớp 2 phần tử và Playwright ném lỗi thay vì click liều.
-      Ảnh chụp lỗi (`screenshots/tu_iizuki/20260915T084144039Z_post_to_group_fail.png`)
-      xác nhận nhóm cũng dùng modal "Create post" giống hệt
-      `post_to_own_profile`, chứ không phải composer mở "inline" như
-      comment cũ trong code từng giả định. Sửa: bó toàn bộ các bước của
-      `post_to_group` (paragraph click, textbox, `_attach_media`, nút
-      Post) vào `composer_dialog = page.get_by_role("dialog")`, cùng
-      cách `post_to_own_profile` đã dùng; đồng thời bó luôn bước
-      paragraph-click trong nhánh audience khác "public" của
-      `post_to_own_profile` (chưa từng lỗi thật nhưng cùng dạng locator
-      không giới hạn phạm vi). Chưa có test tự động (các hàm trong
-      `actions.py` cần trình duyệt thật, không unit-test được) — cần
-      xác nhận lại khi `post_to_group` chạy thật lần tới.
+## Sửa `post_to_group` crash "strict mode violation" trên `get_by_role("paragraph")` (2026-09-15)
 
-- [x] **2026-09-16 — Phát hiện & sửa lỗi thứ 2 cùng nguyên nhân gốc: cửa
-      sổ chat Messenger còn mở đè lên nút "Post comment"** (action_log id
-      151, task thật lúc 10:59 JST / 01:59:12 UTC, comment nhóm
-      "vieclamtimnguoi"). Lỗi trả về `comment_box_still_has_content_after_click`
-      — đúng như owner quan sát: focus/nhập text vào đúng ô, nhưng bấm nút
-      đăng không có tác dụng. Khác với lỗi hôm qua (id 146, trùng role
-      selector gây crash strict-mode), lần này không có exception nào cả:
-      `human_click()` (`humanize.py`) tự tính toạ độ tâm nút "Post
-      comment" rồi bấm chuột thật vào đúng toạ độ đó, KHÔNG kiểm tra phần
-      tử tại toạ độ đó có đang bị thứ khác che hay không (bỏ qua hẳn bước
-      "actionability check" mà `Locator.click()` chuẩn của Playwright vẫn
-      làm). Cửa sổ chat Messenger đang nổi đúng ngay vị trí nút "Post
-      comment" thật, nên click chuột thật rơi trúng cửa sổ chat thay vì
-      nút Facebook — không báo lỗi ngay, chỉ lộ ra 15 giây sau khi bước
-      xác minh "ô comment có rỗng lại không" phát hiện nội dung vẫn còn.
-      Đã hỏi owner chọn hướng sửa: **chủ động đóng mọi cửa sổ chat
-      Messenger đang mở trước khi thao tác** (thay vì sửa `human_click()`
-      để tự kiểm tra che khuất — hướng đó có thể làm sau nếu cần, áp dụng
-      chung cho mọi hành động). Thêm hàm `_close_chat_popups()` trong
-      `actions.py`, gọi ở đầu `post_to_own_profile`, `post_to_group`, và
-      `comment_on_group_post` (trước bước tương tác composer/comment
-      box).
+(action_log id 146, task thật
+lúc 08:41:44 UTC, nhóm "Việc làm Kỹ Sư Nhật Bản (Uy tín hàng
+đầu)"). Nguyên nhân: locator mở ô soạn bài ở `actions.py` không
+giới hạn phạm vi trong hộp thoại "Create post" — đúng lúc đó có
+cửa sổ chat Messenger ("Write to Thanh Loan") đang mở ở góc màn
+hình, bong bóng tin nhắn trong đó cũng có role "paragraph", nên
+locator khớp 2 phần tử và Playwright ném lỗi thay vì click liều.
+Ảnh chụp lỗi (`screenshots/tu_iizuki/20260915T084144039Z_post_to_group_fail.png`)
+xác nhận nhóm cũng dùng modal "Create post" giống hệt
+`post_to_own_profile`, chứ không phải composer mở "inline" như
+comment cũ trong code từng giả định. Sửa: bó toàn bộ các bước của
+`post_to_group` (paragraph click, textbox, `_attach_media`, nút
+Post) vào `composer_dialog = page.get_by_role("dialog")`, cùng
+cách `post_to_own_profile` đã dùng; đồng thời bó luôn bước
+paragraph-click trong nhánh audience khác "public" của
+`post_to_own_profile` (chưa từng lỗi thật nhưng cùng dạng locator
+không giới hạn phạm vi). Chưa có test tự động (các hàm trong
+`actions.py` cần trình duyệt thật, không unit-test được) — cần
+xác nhận lại khi `post_to_group` chạy thật lần tới.
 
-      **Cập nhật cùng ngày — đã xác nhận sống bằng Codegen**: owner tự
-      ghi lại (`codegen_close_chat_popup.py`, tài khoản `tu_iizuki`) cả 2
-      thao tác thu nhỏ và đóng chat thật, xác nhận tên accessible chính
-      xác là **"Minimize chat"** và **"Close chat"** (không cần regex,
-      match `exact=True`; cả 2 đều generic, không kèm tên người — chỉ nút
-      mở lại "Open chat with <tên>" mới cá nhân hoá). Theo yêu cầu owner
-      ("ưu tiên minimize, không được thì close"), sửa `_close_chat_popups()`
-      thử "Minimize chat" trước, phần chat nào không có nút đó (nếu có)
-      mới rơi xuống thử "Close chat". Vẫn best-effort/bọc try-except —
-      chỉ còn CHƯA XÁC NHẬN nhánh fallback "Close chat" có thật sự bao giờ
-      cần dùng tới không (Codegen ghi lại luôn thấy có nút minimize).
+## Phát hiện & sửa lỗi thứ 2 cùng nguyên nhân gốc: cửa sổ chat Messenger còn mở đè lên nút "Post comment" (2026-09-16)
 
-      **Cập nhật cùng ngày — owner tự quan sát và chỉ ra 1 điểm quan
-      trọng:** 2 lỗi trên thực chất KHÁC cơ chế, dù cùng một thủ phạm là
-      khung chat. Modal "Create post" (đăng nhóm/cá nhân) luôn nổi ĐÈ LÊN
-      TRÊN khung chat — nên task 146 không phải do che khuất pixel, mà do
-      `get_by_role("paragraph")` quét toàn bộ accessibility tree, không
-      quan tâm thứ gì đang nổi trên/dưới về mặt hình ảnh. Ô comment (bài
-      viết trong nhóm) thì ngược lại — nằm inline trong luồng trang, KHÔNG
-      có z-index riêng để nổi lên, nên thực sự bị khung chat che đè lên
-      trên về mặt hiển thị, dẫn tới task 151 (click rơi trúng khung chat).
-      Kết luận: gọi `_close_chat_popups()` trước đăng bài vẫn cần thiết
-      (phòng lỗi kiểu 146), trước khi comment thì càng quan trọng hơn
-      (phòng cả 2 kiểu lỗi). Đã ghi lại phân biệt này vào docstring
-      `_close_chat_popups()` trong `actions.py` để tránh nhầm lẫn 2 lỗi
-      là một khi debug sau này.
+(action_log id
+151, task thật lúc 10:59 JST / 01:59:12 UTC, comment nhóm
+"vieclamtimnguoi"). Lỗi trả về `comment_box_still_has_content_after_click`
+— đúng như owner quan sát: focus/nhập text vào đúng ô, nhưng bấm nút
+đăng không có tác dụng. Khác với lỗi hôm qua (id 146, trùng role
+selector gây crash strict-mode), lần này không có exception nào cả:
+`human_click()` (`humanize.py`) tự tính toạ độ tâm nút "Post
+comment" rồi bấm chuột thật vào đúng toạ độ đó, KHÔNG kiểm tra phần
+tử tại toạ độ đó có đang bị thứ khác che hay không (bỏ qua hẳn bước
+"actionability check" mà `Locator.click()` chuẩn của Playwright vẫn
+làm). Cửa sổ chat Messenger đang nổi đúng ngay vị trí nút "Post
+comment" thật, nên click chuột thật rơi trúng cửa sổ chat thay vì
+nút Facebook — không báo lỗi ngay, chỉ lộ ra 15 giây sau khi bước
+xác minh "ô comment có rỗng lại không" phát hiện nội dung vẫn còn.
+Đã hỏi owner chọn hướng sửa: **chủ động đóng mọi cửa sổ chat
+Messenger đang mở trước khi thao tác** (thay vì sửa `human_click()`
+để tự kiểm tra che khuất — hướng đó có thể làm sau nếu cần, áp dụng
+chung cho mọi hành động). Thêm hàm `_close_chat_popups()` trong
+`actions.py`, gọi ở đầu `post_to_own_profile`, `post_to_group`, và
+`comment_on_group_post` (trước bước tương tác composer/comment
+box).
 
-- [x] **2026-09-16 — Sửa bug thứ tự hiển thị `/admin/schedule`: bài quá
-      hạn dời lịch sang ngày sau lại hiện lên ĐẦU danh sách** (owner báo
-      trực tiếp: dời 1 bài quá hạn sang 17/9, nó hiện trước cả bài 16/9).
-      Nguyên nhân: `task_id` (cũng là tên file) được sinh 1 LẦN DUY NHẤT
-      lúc tạo task, với tiền tố là `scheduled_at` LÚC ĐÓ
-      (`new_task_id()`); `list_pending()`/`list_missed()` sort theo TÊN
-      FILE (giả định filename luôn khớp nội dung). Khi "Đặt lịch"/"Lên
-      lịch lại" (`restore_to_pending()`) hoặc sửa giờ 1 task đang chờ
-      (`update()`) đổi `scheduled_at`, cả 2 hàm chỉ ghi đè field bên
-      trong JSON, KHÔNG đổi tên file/sinh `task_id` mới — filename vẫn
-      mang mốc giờ CŨ (đã quá hạn), nên vẫn thắng khi sort theo tên file,
-      dù nội dung thật đã dời sang tận 17/9. Sửa tận gốc: thêm
-      `_scheduled_at_sort_key()` trong `schedule_store.py`, sort
-      `list_pending()`/`list_missed()` theo `scheduled_at` ĐỌC LẠI TỪ NỘI
-      DUNG file, không dựa vào tên file/task_id nữa — đúng luôn cho mọi
-      trường hợp sau này kể cả nếu filename lệch nội dung vì lý do khác.
-      Xử lý thêm ca `scheduled_at` bị ghi dạng "naive" (không timezone) —
-      vốn là tình trạng thật đã biết (form `/admin/schedule/update` và
-      reschedule bài quá hạn ghi thẳng giá trị form, không chuẩn hoá) —
-      coi là UTC, cùng quy ước `data_sync.py`'s `_last_scheduled_post_time()`
-      đã dùng, để tránh crash khi so sánh naive với aware. Thêm 4 test hồi
-      quy trong `test_schedule_store.py`: dời bài quá hạn sang sau vẫn
-      xếp đúng vị trí, sửa giờ 1 bài pending vẫn xếp lại đúng, `list_missed()`
-      cũng sort đúng, và ca `scheduled_at` naive không bị crash.
-      **175 test passed** (171 trước đó + 4 mới), không đụng
-      `runtime_config.json`/DB thật (đã xác nhận bằng `md5sum` không đổi
-      và `git status` sạch ngoài các file code/test/docs vừa sửa).
+**Cập nhật cùng ngày — đã xác nhận sống bằng Codegen**: owner tự
+ghi lại (`codegen_close_chat_popup.py`, tài khoản `tu_iizuki`) cả 2
+thao tác thu nhỏ và đóng chat thật, xác nhận tên accessible chính
+xác là **"Minimize chat"** và **"Close chat"** (không cần regex,
+match `exact=True`; cả 2 đều generic, không kèm tên người — chỉ nút
+mở lại "Open chat with <tên>" mới cá nhân hoá). Theo yêu cầu owner
+("ưu tiên minimize, không được thì close"), sửa `_close_chat_popups()`
+thử "Minimize chat" trước, phần chat nào không có nút đó (nếu có)
+mới rơi xuống thử "Close chat". Vẫn best-effort/bọc try-except —
+chỉ còn CHƯA XÁC NHẬN nhánh fallback "Close chat" có thật sự bao giờ
+cần dùng tới không (Codegen ghi lại luôn thấy có nút minimize).
 
-- [x] **2026-09-16 — Ưu tiên job `sponsored_by` trong luồng `GET
-      /api/jobs` + lên lịch đăng** (side B thêm 2 field mới:
-      `sponsored_by` — khác `null` là tin trả tiền cần ưu tiên nhất,
-      `expires_at` — khác `null` là tin có hạn). Thiết kế chốt qua nhiều
-      vòng trao đổi với owner (xem `docs/plans` — plan file
-      `luminous-stirring-floyd.md` — cho lý luận đầy đủ từng bước), tóm
-      tắt:
-      1. **Lọc hết hạn**: `_is_expired()` (hàm mới, `data_sync.py`) so
-         `expires_at` với thời điểm mỗi vòng poll (`now_iso`), so string
-         ISO trực tiếp cùng kiểu `latest_job_ts` đang dùng. Job hết hạn
-         bị đánh dấu `seen` và bỏ hẳn (không chờ thử lại — càng để lâu
-         càng hết hạn thêm), áp dụng như nhau cho sponsored lẫn thường.
-      2. **Ưu tiên không vượt `posts_per_day`**: sponsored chỉ được chen
-         lên đầu hàng đợi TRONG hạn mức ngày hiện có, không bao giờ vượt
-         qua — giữ nguyên toàn bộ cơ chế an toàn chống Facebook flag.
-      3. **Dàn đều qua tài khoản**: hàm mới
-         `_distribute_jobs_with_sponsored_priority()` (`data_sync.py`,
-         tách riêng để test được, gọi thay cho
-         `_water_fill_distribute()` cũ trong `sync_all()`) — chạy
-         water-fill **2 lần**: lần 1 chia sponsored trên full capacity
-         mọi tài khoản, lần 2 chia normal trên capacity còn lại (loại
-         tài khoản `sponsored_only`). Lý do không gộp 1 list sort sẵn:
-         `_water_fill_distribute()` chia theo khối liên tục trong list,
-         dồn hết sponsored lên đầu 1 list sẽ có nguy cơ rơi hết vào 1
-         tài khoản duy nhất.
-      4. **Setting mới `AccountConfig.sponsored_only`** (mặc định
-         `False`) — tài khoản bật switch chỉ nhận sponsored, không bao
-         giờ nhận normal job (ở BẤT KỲ ngày nào), để luôn chừa hạn mức
-         phản ứng kịp job sponsored đến gấp. Lưu qua
-         `runtime_config.py`'s `get_sponsored_only_account_ids()`/
-         `set_account_sponsored_only()` (y hệt pattern
-         `sync_disabled_accounts` có sẵn), layer vào
-         `config.py`'s `get_all_accounts()`. UI: cột + nút bật/tắt mới
-         trong `/admin/accounts` tab "Đồng bộ" (route
-         `/accounts/sponsored-only-enable`/`-disable`), dọn dẹp luôn khi
-         xoá tài khoản (`accounts_delete()`).
-      5. **Giới hạn tràn ngày**: `_next_available_business_day()` nhận
-         thêm tham số `max_search_days` (mặc định 60 để không phá test
-         cũ, nhưng `sync_all()` luôn truyền
-         `DataSyncConfig.max_overflow_business_days`, setting mới, mặc
-         định **2**) — trước đây backlog job thường có thể tự đặt trước
-         hạn mức tới 60 ngày tương lai, khiến sponsored job mới tới
-         không còn chỗ gần để chen vào. Chỉnh được qua `/admin/config`
-         (tab "Đồng bộ dữ liệu") — thêm vào `EDITABLE_DATA_SYNC_FIELDS`
-         + `_DATA_SYNC_LABELS`, cơ chế form generic có sẵn tự lo phần
-         render/lưu/ép kiểu `int` đúng, không cần route riêng.
-      6. Traceability nhỏ: `job_data`/`reasoning` của `ScheduledTask`
-         giờ ghi thêm `sponsored_by`, để `/admin/schedule` và báo cáo
-         nhìn thấy bài nào từng được ưu tiên.
+**Cập nhật cùng ngày — owner tự quan sát và chỉ ra 1 điểm quan
+trọng:** 2 lỗi trên thực chất KHÁC cơ chế, dù cùng một thủ phạm là
+khung chat. Modal "Create post" (đăng nhóm/cá nhân) luôn nổi ĐÈ LÊN
+TRÊN khung chat — nên task 146 không phải do che khuất pixel, mà do
+`get_by_role("paragraph")` quét toàn bộ accessibility tree, không
+quan tâm thứ gì đang nổi trên/dưới về mặt hình ảnh. Ô comment (bài
+viết trong nhóm) thì ngược lại — nằm inline trong luồng trang, KHÔNG
+có z-index riêng để nổi lên, nên thực sự bị khung chat che đè lên
+trên về mặt hiển thị, dẫn tới task 151 (click rơi trúng khung chat).
+Kết luận: gọi `_close_chat_popups()` trước đăng bài vẫn cần thiết
+(phòng lỗi kiểu 146), trước khi comment thì càng quan trọng hơn
+(phòng cả 2 kiểu lỗi). Đã ghi lại phân biệt này vào docstring
+`_close_chat_popups()` trong `actions.py` để tránh nhầm lẫn 2 lỗi
+là một khi debug sau này.
 
-      **Đã xác nhận với owner (2026-09-16)**: `expires_at` đã qua thì
-      dừng đăng hẳn, kể cả job `sponsored_by` — đúng như code đang xử lý
-      (`_is_expired()`), không cần sửa gì thêm.
+## Sửa bug thứ tự hiển thị `/admin/schedule`: bài quá hạn dời lịch sang ngày sau lại hiện lên ĐẦU danh sách (2026-09-16)
 
-      **191 test passed** (175 trước đó + 16 mới — `_is_expired()`: 4
-      test; `_next_available_business_day()`'s `max_search_days`: 1
-      test mới; `_distribute_jobs_with_sponsored_priority()`: 5 test,
-      gồm đúng ví dụ tính tay 4 sponsored + 6 normal, capacity {A:3,
-      B:5} → A=[S,S,N], B=[S,S,N,N,N], dư 2 bị hoãn; `sponsored_only`
-      account setting + `max_overflow_business_days` config: 6 test
-      trong `test_runtime_config.py`). Không đụng `runtime_config.json`
-      thật — xác nhận bằng `md5sum` không đổi + `git status` sạch. Chưa
-      chạy thử `sync_all()` với dữ liệu thật có `sponsored_by`/
-      `expires_at` (side B chưa deploy field mới) — cần xác nhận lại
-      lần đầu tiên có dữ liệu thật.
+(owner báo
+trực tiếp: dời 1 bài quá hạn sang 17/9, nó hiện trước cả bài 16/9).
+Nguyên nhân: `task_id` (cũng là tên file) được sinh 1 LẦN DUY NHẤT
+lúc tạo task, với tiền tố là `scheduled_at` LÚC ĐÓ
+(`new_task_id()`); `list_pending()`/`list_missed()` sort theo TÊN
+FILE (giả định filename luôn khớp nội dung). Khi "Đặt lịch"/"Lên
+lịch lại" (`restore_to_pending()`) hoặc sửa giờ 1 task đang chờ
+(`update()`) đổi `scheduled_at`, cả 2 hàm chỉ ghi đè field bên
+trong JSON, KHÔNG đổi tên file/sinh `task_id` mới — filename vẫn
+mang mốc giờ CŨ (đã quá hạn), nên vẫn thắng khi sort theo tên file,
+dù nội dung thật đã dời sang tận 17/9. Sửa tận gốc: thêm
+`_scheduled_at_sort_key()` trong `schedule_store.py`, sort
+`list_pending()`/`list_missed()` theo `scheduled_at` ĐỌC LẠI TỪ NỘI
+DUNG file, không dựa vào tên file/task_id nữa — đúng luôn cho mọi
+trường hợp sau này kể cả nếu filename lệch nội dung vì lý do khác.
+Xử lý thêm ca `scheduled_at` bị ghi dạng "naive" (không timezone) —
+vốn là tình trạng thật đã biết (form `/admin/schedule/update` và
+reschedule bài quá hạn ghi thẳng giá trị form, không chuẩn hoá) —
+coi là UTC, cùng quy ước `data_sync.py`'s `_last_scheduled_post_time()`
+đã dùng, để tránh crash khi so sánh naive với aware. Thêm 4 test hồi
+quy trong `test_schedule_store.py`: dời bài quá hạn sang sau vẫn
+xếp đúng vị trí, sửa giờ 1 bài pending vẫn xếp lại đúng, `list_missed()`
+cũng sort đúng, và ca `scheduled_at` naive không bị crash.
+**175 test passed** (171 trước đó + 4 mới), không đụng
+`runtime_config.json`/DB thật (đã xác nhận bằng `md5sum` không đổi
+và `git status` sạch ngoài các file code/test/docs vừa sửa).
 
-- [x] **2026-09-16 — Gọn lại UI `/admin/accounts` tab "Đồng bộ": gộp cột
-      Trạng thái+Hành động và Sponsored+Hành động thành switch, đổi tên
-      cột cho rõ nghĩa** (owner phản hồi: bảng vừa thêm cột Sponsored bị
-      rối vì có 2 cột "Hành động" trùng tên, khó biết nút nào của cột
-      nào). Trước đó mỗi công tắc là 1 cặp badge (trạng thái) + form/nút
-      bấm (hành động) — nay gộp thành 1 switch bật/tắt duy nhất mỗi cột
-      (`_toggle_switch()`, hàm dùng chung cho cả 2, `admin.py`). Bảng từ
-      6 cột (Tài khoản, Trạng thái, Hành động, Sponsored, Hành động, Lần
-      sync) rút còn 4 (Tài khoản, **Đồng bộ dữ liệu bên B**, **Chỉ đăng
-      sponsored**, Lần sync) — tên cột tự giải thích chức năng switch,
-      không cần đoán qua cột "Hành động" chung chung nữa; mỗi switch còn
-      có `title`/`aria-label` riêng làm tooltip.
+## Ưu tiên job `sponsored_by` trong luồng `GET /api/jobs` + lên lịch đăng (2026-09-16)
 
-      Kỹ thuật: switch dùng `hx-vals` gửi thẳng `account_id` khi bấm
-      (mẫu đã có sẵn trong `admin.py` ở các nút bootstrap-login, không
-      phải pattern mới), tự biết bấm vào sẽ gọi endpoint bật hay tắt dựa
-      theo trạng thái hiện tại lúc render — không cần JS phía client để
-      tính. Vẫn tái dùng nguyên 4 route cũ
-      (`sync-enable`/`sync-disable`/`sponsored-only-enable`/`-disable`),
-      không đổi backend. Giữ nguyên 2 `hx-confirm` cảnh báo (tắt sync;
-      bật sponsored-only) — nay gắn đúng vào HƯỚNG bấm cần cảnh báo
-      (`confirm_on_check`/`confirm_on_uncheck` trong helper) thay vì
-      luôn hiện ở nút "Tắt"/nút "Bật" cố định như trước.
+(side B thêm 2 field mới:
+`sponsored_by` — khác `null` là tin trả tiền cần ưu tiên nhất,
+`expires_at` — khác `null` là tin có hạn). Thiết kế chốt qua nhiều
+vòng trao đổi với owner (xem `docs/plans` — plan file
+`luminous-stirring-floyd.md` — cho lý luận đầy đủ từng bước), tóm
+tắt:
+1. **Lọc hết hạn**: `_is_expired()` (hàm mới, `data_sync.py`) so
+   `expires_at` với thời điểm mỗi vòng poll (`now_iso`), so string
+   ISO trực tiếp cùng kiểu `latest_job_ts` đang dùng. Job hết hạn
+   bị đánh dấu `seen` và bỏ hẳn (không chờ thử lại — càng để lâu
+   càng hết hạn thêm), áp dụng như nhau cho sponsored lẫn thường.
+2. **Ưu tiên không vượt `posts_per_day`**: sponsored chỉ được chen
+   lên đầu hàng đợi TRONG hạn mức ngày hiện có, không bao giờ vượt
+   qua — giữ nguyên toàn bộ cơ chế an toàn chống Facebook flag.
+3. **Dàn đều qua tài khoản**: hàm mới
+   `_distribute_jobs_with_sponsored_priority()` (`data_sync.py`,
+   tách riêng để test được, gọi thay cho
+   `_water_fill_distribute()` cũ trong `sync_all()`) — chạy
+   water-fill **2 lần**: lần 1 chia sponsored trên full capacity
+   mọi tài khoản, lần 2 chia normal trên capacity còn lại (loại
+   tài khoản `sponsored_only`). Lý do không gộp 1 list sort sẵn:
+   `_water_fill_distribute()` chia theo khối liên tục trong list,
+   dồn hết sponsored lên đầu 1 list sẽ có nguy cơ rơi hết vào 1
+   tài khoản duy nhất.
+4. **Setting mới `AccountConfig.sponsored_only`** (mặc định
+   `False`) — tài khoản bật switch chỉ nhận sponsored, không bao
+   giờ nhận normal job (ở BẤT KỲ ngày nào), để luôn chừa hạn mức
+   phản ứng kịp job sponsored đến gấp. Lưu qua
+   `runtime_config.py`'s `get_sponsored_only_account_ids()`/
+   `set_account_sponsored_only()` (y hệt pattern
+   `sync_disabled_accounts` có sẵn), layer vào
+   `config.py`'s `get_all_accounts()`. UI: cột + nút bật/tắt mới
+   trong `/admin/accounts` tab "Đồng bộ" (route
+   `/accounts/sponsored-only-enable`/`-disable`), dọn dẹp luôn khi
+   xoá tài khoản (`accounts_delete()`).
+5. **Giới hạn tràn ngày**: `_next_available_business_day()` nhận
+   thêm tham số `max_search_days` (mặc định 60 để không phá test
+   cũ, nhưng `sync_all()` luôn truyền
+   `DataSyncConfig.max_overflow_business_days`, setting mới, mặc
+   định **2**) — trước đây backlog job thường có thể tự đặt trước
+   hạn mức tới 60 ngày tương lai, khiến sponsored job mới tới
+   không còn chỗ gần để chen vào. Chỉnh được qua `/admin/config`
+   (tab "Đồng bộ dữ liệu") — thêm vào `EDITABLE_DATA_SYNC_FIELDS`
+   + `_DATA_SYNC_LABELS`, cơ chế form generic có sẵn tự lo phần
+   render/lưu/ép kiểu `int` đúng, không cần route riêng.
+6. Traceability nhỏ: `job_data`/`reasoning` của `ScheduledTask`
+   giờ ghi thêm `sponsored_by`, để `/admin/schedule` và báo cáo
+   nhìn thấy bài nào từng được ưu tiên.
 
-      Không có test nào của `test_admin.py` phụ thuộc cấu trúc bảng cũ
-      (đã grep xác nhận) nên không có test bị ảnh hưởng — **191 test
-      vẫn pass**, xác nhận render UI thật qua `TestClient` (không POST
-      vào `runtime_config.json` thật, chỉ GET để so khớp text/markup
-      mới xuất hiện).
+**Đã xác nhận với owner (2026-09-16)**: `expires_at` đã qua thì
+dừng đăng hẳn, kể cả job `sponsored_by` — đúng như code đang xử lý
+(`_is_expired()`), không cần sửa gì thêm.
 
-      **Cập nhật cùng ngày — owner phản hồi tiếp**: câu giải thích dưới
-      tiêu đề bảng vẫn dồn cả 2 switch + link cấu hình vào 1 đoạn văn
-      dài, khó tách ý. Đổi thành danh sách `<ul>` — mỗi switch 1 dòng
-      riêng, in đậm đúng tên cột để khớp trực quan (label switch nói gì
-      → dòng giải thích đó), câu link cấu hình tách thành đoạn riêng bên
-      dưới. Test lại render qua `TestClient`, 191 test vẫn pass.
+**191 test passed** (175 trước đó + 16 mới — `_is_expired()`: 4
+test; `_next_available_business_day()`'s `max_search_days`: 1
+test mới; `_distribute_jobs_with_sponsored_priority()`: 5 test,
+gồm đúng ví dụ tính tay 4 sponsored + 6 normal, capacity {A:3,
+B:5} → A=[S,S,N], B=[S,S,N,N,N], dư 2 bị hoãn; `sponsored_only`
+account setting + `max_overflow_business_days` config: 6 test
+trong `test_runtime_config.py`). Không đụng `runtime_config.json`
+thật — xác nhận bằng `md5sum` không đổi + `git status` sạch. Chưa
+chạy thử `sync_all()` với dữ liệu thật có `sponsored_by`/
+`expires_at` (side B chưa deploy field mới) — cần xác nhận lại
+lần đầu tiên có dữ liệu thật.
 
-- [x] **2026-09-16 — Phát hiện & sửa bug nghiêm trọng: cursor đồng bộ
-      bên B bị kẹt tại 08/09 suốt 2 ngày, gây comment trùng ít nhất 3
-      candidate** (owner báo: 1 candidate bị comment 2 lần cách nhau 4
-      ngày, nội dung y hệt owner nhớ). Điều tra qua `human_bot.db`,
-      `data_sync_cache/`, và `logs/human_bot.log` xác nhận chuỗi
-      nguyên nhân đầy đủ:
-      1. `_save_sync_state()`/`_mark_seen()`/`_mark_contacted()`/
-         `_record_sync_status()` đều ghi file bằng `path.write_text()`
-         trực tiếp — KHÔNG an toàn khi service bị restart giữa lúc ghi
-         (dự án này restart rất thường xuyên mỗi lần đổi code).
-      2. `_load_sync_state()` bắt mọi lỗi đọc (file hỏng/thiếu) và trả
-         về `{}` — hợp lý để tránh crash, nhưng `{}` trông giống hệt
-         "chưa từng đồng bộ lần nào".
-      3. Log thật xác nhận đúng chuỗi này xảy ra lúc 2026-09-14 18:49:
-         poll trước đó vẫn đang chạy đúng
-         (`since=2026-09-14T02:31...`), đột ngột 1 lần gọi API
-         **không có `since`** (lấy lại toàn bộ lịch sử), ngay sau đó
-         cursor bị tính lại thành `2026-09-08T09:50:40` và **kẹt
-         nguyên tại đó tới tận 16/09** (2 ngày, hàng trăm vòng poll).
-      4. `_cursor()` (giữ con trỏ lùi về đúng job/candidate bị hoãn sớm
-         nhất, để thử lại — cơ chế ĐÚNG cho trường hợp bình thường)
-         không có giới hạn — nếu luôn có ít nhất 1 item bị hoãn mãi
-         mãi trong batch khổng lồ vừa lấy lại, cursor bị ghim vĩnh
-         viễn, tạo vòng lặp tự duy trì: mỗi poll lấy lại y hệt lịch sử
-         cũ → luôn có item bị hoãn → lại ghim ở đúng chỗ cũ.
-      5. Trong hàng trăm candidate bị đánh giá lại mỗi 15 phút, cache
-         `seen` (đúng ra phải chặn) thỉnh thoảng vẫn để lọt — 3
-         candidate (id 62, 103, 107) bị comment lại lần 2, trong đó
-         103 và 107 bị trùng ngay trong CÙNG 1 NGÀY.
+## Gọn lại UI `/admin/accounts` tab "Đồng bộ": gộp cột Trạng thái+Hành động và Sponsored+Hành động thành switch, đổi tên cột cho rõ nghĩa (2026-09-16)
 
-      **Sửa tận gốc** (`human_bot/data_sync.py`): thêm
-      `_atomic_write_json()` (ghi file tạm + `os.replace()` — nguyên tử
-      ở cấp OS, không bao giờ để file ở trạng thái nửa vời), áp dụng
-      cho cả 4 chỗ ghi cache (`_state.json`, ngày-cache seen,
-      `_contacted_contacts.json`, `_sync_status.json`). Thêm setting
-      mới `DataSyncConfig.max_cursor_holdback_days` (mặc định 7 ngày,
-      chỉnh được qua `/admin/config`) — `_cursor()` (tách thành hàm
-      module-level, không còn closure, để test được) giờ chỉ giữ lùi
-      cursor cho item còn TRONG hạn; item bị hoãn quá lâu bị đánh dấu
-      seen (chấp nhận bỏ qua) thay vì ghim cứng vĩnh viễn.
+(owner phản hồi: bảng vừa thêm cột Sponsored bị
+rối vì có 2 cột "Hành động" trùng tên, khó biết nút nào của cột
+nào). Trước đó mỗi công tắc là 1 cặp badge (trạng thái) + form/nút
+bấm (hành động) — nay gộp thành 1 switch bật/tắt duy nhất mỗi cột
+(`_toggle_switch()`, hàm dùng chung cho cả 2, `admin.py`). Bảng từ
+6 cột (Tài khoản, Trạng thái, Hành động, Sponsored, Hành động, Lần
+sync) rút còn 4 (Tài khoản, **Đồng bộ dữ liệu bên B**, **Chỉ đăng
+sponsored**, Lần sync) — tên cột tự giải thích chức năng switch,
+không cần đoán qua cột "Hành động" chung chung nữa; mỗi switch còn
+có `title`/`aria-label` riêng làm tooltip.
 
-      **Khắc phục dữ liệu đang kẹt** (owner chọn: đẩy cursor lên hiện
-      tại, chấp nhận đánh đổi bỏ qua item cũ chưa từng xử lý nếu có,
-      đổi lấy dừng ngay việc quét lại lịch sử): sao lưu
-      `data_sync_cache/_state.json` cũ thành `_state.json.bak-20260916`
-      trước khi sửa, dùng chính `_save_sync_state()` (đã atomic) để ghi
-      `jobs_since`/`candidates_since` = thời điểm hiện tại.
+Kỹ thuật: switch dùng `hx-vals` gửi thẳng `account_id` khi bấm
+(mẫu đã có sẵn trong `admin.py` ở các nút bootstrap-login, không
+phải pattern mới), tự biết bấm vào sẽ gọi endpoint bật hay tắt dựa
+theo trạng thái hiện tại lúc render — không cần JS phía client để
+tính. Vẫn tái dùng nguyên 4 route cũ
+(`sync-enable`/`sync-disable`/`sponsored-only-enable`/`-disable`),
+không đổi backend. Giữ nguyên 2 `hx-confirm` cảnh báo (tắt sync;
+bật sponsored-only) — nay gắn đúng vào HƯỚNG bấm cần cảnh báo
+(`confirm_on_check`/`confirm_on_uncheck` trong helper) thay vì
+luôn hiện ở nút "Tắt"/nút "Bật" cố định như trước.
 
-      **199 test passed** (191 trước đó + 8 mới cho
-      `_atomic_write_json()`/`_cursor()`, gồm test mô phỏng đúng lỗi
-      thật: crash giữa lúc ghi không được để lại file nửa vời; item bị
-      hoãn quá `max_holdback_days` bị đánh dấu seen và cursor bỏ qua
-      nó). Không đụng `runtime_config.json` thật (đã xác nhận md5sum).
-      Có đụng `data_sync_cache/_state.json` THẬT — đây là hành động
-      khắc phục owner yêu cầu trực tiếp, không phải test, đã sao lưu
-      trước khi sửa.
+Không có test nào của `test_admin.py` phụ thuộc cấu trúc bảng cũ
+(đã grep xác nhận) nên không có test bị ảnh hưởng — **191 test
+vẫn pass**, xác nhận render UI thật qua `TestClient` (không POST
+vào `runtime_config.json` thật, chỉ GET để so khớp text/markup
+mới xuất hiện).
 
-      **Cập nhật cùng ngày — owner yêu cầu soát lại `_cursor()` thật
-      kỹ.** `_cursor()` bản thân đúng (trace tay + test không tìm ra
-      lỗi), nhưng soát rộng ra cơ chế `seen` mà nó gọi tới phát hiện
-      thêm 1 bug thật KHÁC, đã XÁC NHẬN bằng dữ liệu thật: `seen` dùng
-      chung 1 namespace ID cho cả job lẫn candidate — `human_bot.db`
-      cho thấy id `"1042"` tồn tại đồng thời ở CẢ job và candidate.
-      Đánh dấu 1 loại seen khiến loại kia bị coi là đã xử lý, bỏ qua
-      VĨNH VIỄN, không exception/log — đây là lỗi NGƯỢC với bug hôm
-      nay (mất hẳn job/candidate thay vì đăng trùng), và việc sửa
-      `_cursor()` gọi `_mark_seen()` nhiều hơn cho item "bỏ cuộc" làm
-      tăng khả năng gặp phải nó (không phải nguyên nhân, nhưng làm
-      trầm trọng hơn). Vụ 1042 may mắn chưa gây hại vì cả 2 xuất hiện
-      cùng 1 vòng poll (snapshot `seen` trong bộ nhớ load 1 lần đầu
-      vòng, chưa thấy write của bên kia).
+**Cập nhật cùng ngày — owner phản hồi tiếp**: câu giải thích dưới
+tiêu đề bảng vẫn dồn cả 2 switch + link cấu hình vào 1 đoạn văn
+dài, khó tách ý. Đổi thành danh sách `<ul>` — mỗi switch 1 dòng
+riêng, in đậm đúng tên cột để khớp trực quan (label switch nói gì
+→ dòng giải thích đó), câu link cấu hình tách thành đoạn riêng bên
+dưới. Test lại render qua `TestClient`, 191 test vẫn pass.
 
-      Sửa: thêm `_seen_key(kind, item_id)` — key ghép `"job:1042"` /
-      `"candidate:1042"` thay vì bare id. `_load_seen_ids()` đọc file
-      cache cũ (key trần, có sẵn trên đĩa) VÀ file mới (key ghép) đúng
-      cả 2 dạng — không cần migrate file cũ. `_mark_seen()` giờ ghi
-      xuống đĩa bằng key ghép luôn (bug thứ 2 phát hiện thêm: nếu chỉ
-      sửa phần đọc mà không sửa phần ghi, job và candidate trùng ID vẫn
-      ĐÈ LÊN NHAU ngay trên đĩa cùng 1 ngày — bắt được bằng chính test
-      hồi quy mới viết, fail ngay lần chạy đầu trước khi sửa tiếp).
+## Phát hiện & sửa bug nghiêm trọng: cursor đồng bộ bên B bị kẹt tại 08/09 suốt 2 ngày, gây comment trùng ít nhất 3 candidate (2026-09-16)
 
-      Thêm 3 test mới (job/candidate trùng ID không còn đụng nhau cả 2
-      chiều; file cache cũ định dạng bare-id vẫn đọc đúng sau nâng cấp)
-      — **201 test passed** (199 + 3, con số 202 lẽ ra đúng nhưng 1 test
-      cũ `test_mark_seen_survives_via_atomic_write` sửa lại assertion
-      cho khớp key mới thay vì thêm mới). Không đụng `runtime_config.json`
-      thật. Đã xác nhận với dữ liệu cache thật (`candidate:62` đọc đúng
-      từ file `2026-09-15.json` định dạng cũ) — tương thích ngược hoạt
-      động đúng trên dữ liệu thật, không chỉ trong test giả lập.
+(owner báo: 1 candidate bị comment 2 lần cách nhau 4
+ngày, nội dung y hệt owner nhớ). Điều tra qua `human_bot.db`,
+`data_sync_cache/`, và `logs/human_bot.log` xác nhận chuỗi
+nguyên nhân đầy đủ:
+1. `_save_sync_state()`/`_mark_seen()`/`_mark_contacted()`/
+   `_record_sync_status()` đều ghi file bằng `path.write_text()`
+   trực tiếp — KHÔNG an toàn khi service bị restart giữa lúc ghi
+   (dự án này restart rất thường xuyên mỗi lần đổi code).
+2. `_load_sync_state()` bắt mọi lỗi đọc (file hỏng/thiếu) và trả
+   về `{}` — hợp lý để tránh crash, nhưng `{}` trông giống hệt
+   "chưa từng đồng bộ lần nào".
+3. Log thật xác nhận đúng chuỗi này xảy ra lúc 2026-09-14 18:49:
+   poll trước đó vẫn đang chạy đúng
+   (`since=2026-09-14T02:31...`), đột ngột 1 lần gọi API
+   **không có `since`** (lấy lại toàn bộ lịch sử), ngay sau đó
+   cursor bị tính lại thành `2026-09-08T09:50:40` và **kẹt
+   nguyên tại đó tới tận 16/09** (2 ngày, hàng trăm vòng poll).
+4. `_cursor()` (giữ con trỏ lùi về đúng job/candidate bị hoãn sớm
+   nhất, để thử lại — cơ chế ĐÚNG cho trường hợp bình thường)
+   không có giới hạn — nếu luôn có ít nhất 1 item bị hoãn mãi
+   mãi trong batch khổng lồ vừa lấy lại, cursor bị ghim vĩnh
+   viễn, tạo vòng lặp tự duy trì: mỗi poll lấy lại y hệt lịch sử
+   cũ → luôn có item bị hoãn → lại ghim ở đúng chỗ cũ.
+5. Trong hàng trăm candidate bị đánh giá lại mỗi 15 phút, cache
+   `seen` (đúng ra phải chặn) thỉnh thoảng vẫn để lọt — 3
+   candidate (id 62, 103, 107) bị comment lại lần 2, trong đó
+   103 và 107 bị trùng ngay trong CÙNG 1 NGÀY.
 
-- [ ] **2026-09-17 — Phát hiện (KHÔNG phải bug human_bot): 2 job ID khác
-      nhau từ bên B (444, 447) mang nội dung THẬT SỰ giống hệt nhau** —
-      owner nhận ra 2 bài đăng nhóm (16/09 16:35 JST và 17/09 13:28 JST)
-      đọc như trùng nội dung. Tra `job_data.attributes` của cả 2
-      (`action_log` id 155/source_id 447 và id 164/source_id 444) xác
-      nhận: cùng công ty (株式会社ケアリッツ・テクノロジーズ), cùng
-      lương (652~1.3 tờ/năm), cùng JLPT N2, cùng visa Gijinkoku, cùng
-      ngành IT/Quản lý dự án, cùng `confidence: 0.99` — chỉ khác phần
-      chữ do AI viết lại (2 lượt redraft độc lập cho 2 "job" riêng).
-      Cơ chế dedup của `human_bot` (`_seen_key`, `_cursor`...) chỉ chống
-      trùng theo ID job, không so sánh nội dung — nên cả 444 và 447 đều
-      hợp lệ được coi là "job mới", đăng đúng theo thiết kế, không có
-      bug trong `sync_all()`/`_mark_seen()`/`_cursor()`. Nguyên nhân
-      thật nằm ở phía B: cùng 1 tin tuyển dụng bị gán 2 ID khác nhau
-      trong dữ liệu nguồn (có thể do tin được nhiều nguồn/CTV đăng lại,
-      mỗi lượt crawl coi là bản ghi mới). **Owner quyết định: báo lại
-      cho bên B rà soát pipeline crawl của họ, KHÔNG thêm dedup theo nội
-      dung ở phía human_bot** (rủi ro false-positive nếu 2 job thật khác
-      nhau vô tình giống thuộc tính). Không có thay đổi code nào cho
-      mục này.
+**Sửa tận gốc** (`human_bot/data_sync.py`): thêm
+`_atomic_write_json()` (ghi file tạm + `os.replace()` — nguyên tử
+ở cấp OS, không bao giờ để file ở trạng thái nửa vời), áp dụng
+cho cả 4 chỗ ghi cache (`_state.json`, ngày-cache seen,
+`_contacted_contacts.json`, `_sync_status.json`). Thêm setting
+mới `DataSyncConfig.max_cursor_holdback_days` (mặc định 7 ngày,
+chỉnh được qua `/admin/config`) — `_cursor()` (tách thành hàm
+module-level, không còn closure, để test được) giờ chỉ giữ lùi
+cursor cho item còn TRONG hạn; item bị hoãn quá lâu bị đánh dấu
+seen (chấp nhận bỏ qua) thay vì ghim cứng vĩnh viễn.
+
+**Khắc phục dữ liệu đang kẹt** (owner chọn: đẩy cursor lên hiện
+tại, chấp nhận đánh đổi bỏ qua item cũ chưa từng xử lý nếu có,
+đổi lấy dừng ngay việc quét lại lịch sử): sao lưu
+`data_sync_cache/_state.json` cũ thành `_state.json.bak-20260916`
+trước khi sửa, dùng chính `_save_sync_state()` (đã atomic) để ghi
+`jobs_since`/`candidates_since` = thời điểm hiện tại.
+
+**199 test passed** (191 trước đó + 8 mới cho
+`_atomic_write_json()`/`_cursor()`, gồm test mô phỏng đúng lỗi
+thật: crash giữa lúc ghi không được để lại file nửa vời; item bị
+hoãn quá `max_holdback_days` bị đánh dấu seen và cursor bỏ qua
+nó). Không đụng `runtime_config.json` thật (đã xác nhận md5sum).
+Có đụng `data_sync_cache/_state.json` THẬT — đây là hành động
+khắc phục owner yêu cầu trực tiếp, không phải test, đã sao lưu
+trước khi sửa.
+
+**Cập nhật cùng ngày — owner yêu cầu soát lại `_cursor()` thật
+kỹ.** `_cursor()` bản thân đúng (trace tay + test không tìm ra
+lỗi), nhưng soát rộng ra cơ chế `seen` mà nó gọi tới phát hiện
+thêm 1 bug thật KHÁC, đã XÁC NHẬN bằng dữ liệu thật: `seen` dùng
+chung 1 namespace ID cho cả job lẫn candidate — `human_bot.db`
+cho thấy id `"1042"` tồn tại đồng thời ở CẢ job và candidate.
+Đánh dấu 1 loại seen khiến loại kia bị coi là đã xử lý, bỏ qua
+VĨNH VIỄN, không exception/log — đây là lỗi NGƯỢC với bug hôm
+nay (mất hẳn job/candidate thay vì đăng trùng), và việc sửa
+`_cursor()` gọi `_mark_seen()` nhiều hơn cho item "bỏ cuộc" làm
+tăng khả năng gặp phải nó (không phải nguyên nhân, nhưng làm
+trầm trọng hơn). Vụ 1042 may mắn chưa gây hại vì cả 2 xuất hiện
+cùng 1 vòng poll (snapshot `seen` trong bộ nhớ load 1 lần đầu
+vòng, chưa thấy write của bên kia).
+
+Sửa: thêm `_seen_key(kind, item_id)` — key ghép `"job:1042"` /
+`"candidate:1042"` thay vì bare id. `_load_seen_ids()` đọc file
+cache cũ (key trần, có sẵn trên đĩa) VÀ file mới (key ghép) đúng
+cả 2 dạng — không cần migrate file cũ. `_mark_seen()` giờ ghi
+xuống đĩa bằng key ghép luôn (bug thứ 2 phát hiện thêm: nếu chỉ
+sửa phần đọc mà không sửa phần ghi, job và candidate trùng ID vẫn
+ĐÈ LÊN NHAU ngay trên đĩa cùng 1 ngày — bắt được bằng chính test
+hồi quy mới viết, fail ngay lần chạy đầu trước khi sửa tiếp).
+
+Thêm 3 test mới (job/candidate trùng ID không còn đụng nhau cả 2
+chiều; file cache cũ định dạng bare-id vẫn đọc đúng sau nâng cấp)
+— **201 test passed** (199 + 3, con số 202 lẽ ra đúng nhưng 1 test
+cũ `test_mark_seen_survives_via_atomic_write` sửa lại assertion
+cho khớp key mới thay vì thêm mới). Không đụng `runtime_config.json`
+thật. Đã xác nhận với dữ liệu cache thật (`candidate:62` đọc đúng
+từ file `2026-09-15.json` định dạng cũ) — tương thích ngược hoạt
+động đúng trên dữ liệu thật, không chỉ trong test giả lập.
+
+## Phát hiện (KHÔNG phải bug human_bot): 2 job ID khác nhau từ bên B (444, 447) mang nội dung THẬT SỰ giống hệt nhau (2026-09-17) [CHƯA XONG]
+
+—
+owner nhận ra 2 bài đăng nhóm (16/09 16:35 JST và 17/09 13:28 JST)
+đọc như trùng nội dung. Tra `job_data.attributes` của cả 2
+(`action_log` id 155/source_id 447 và id 164/source_id 444) xác
+nhận: cùng công ty (株式会社ケアリッツ・テクノロジーズ), cùng
+lương (652~1.3 tờ/năm), cùng JLPT N2, cùng visa Gijinkoku, cùng
+ngành IT/Quản lý dự án, cùng `confidence: 0.99` — chỉ khác phần
+chữ do AI viết lại (2 lượt redraft độc lập cho 2 "job" riêng).
+Cơ chế dedup của `human_bot` (`_seen_key`, `_cursor`...) chỉ chống
+trùng theo ID job, không so sánh nội dung — nên cả 444 và 447 đều
+hợp lệ được coi là "job mới", đăng đúng theo thiết kế, không có
+bug trong `sync_all()`/`_mark_seen()`/`_cursor()`. Nguyên nhân
+thật nằm ở phía B: cùng 1 tin tuyển dụng bị gán 2 ID khác nhau
+trong dữ liệu nguồn (có thể do tin được nhiều nguồn/CTV đăng lại,
+mỗi lượt crawl coi là bản ghi mới). **Owner quyết định: báo lại
+cho bên B rà soát pipeline crawl của họ, KHÔNG thêm dedup theo nội
+dung ở phía human_bot** (rủi ro false-positive nếu 2 job thật khác
+nhau vô tình giống thuộc tính). Không có thay đổi code nào cho
+mục này.
+
+## Bug thật: `comment_on_group_post` timeout 30s chờ ô textbox (2026-09-17)
+
+(`Locator.wait_for: Timeout 30000ms exceeded ... textbox
+"comment|answer"`) trên account `nhtu00`, action_log xác nhận đây
+là LẦN COMMENT ĐẦU TIÊN của account này (chưa từng chạy trước đó).
+Screenshot fail (`screenshots/nhtu00/20260917T081145209Z_comment_on_group_post_fail.png`)
+cho thấy nguyên nhân: **giao diện Facebook của `nhtu00` đang là
+tiếng Việt** ("Viết câu trả lời..."), trong khi
+`human_bot/actions.py` chỉ match tên accessible tiếng Anh
+(`comment|answer`) — không khớp tiếng Việt nên locator không tìm
+thấy gì, dẫn tới timeout.
+
+**Lưu ý quan trọng**: đây là VI PHẠM quy ước dự án đã có từ
+2026-09-03 (`docs/skills/facebook-custom-actions.md`, mục
+"Facebook UI language — must be English") — mọi tài khoản bot bắt
+buộc phải để giao diện Facebook tiếng Anh. Owner xác nhận: quy ước
+này vẫn giữ nguyên làm mặc định (account phải tự set tiếng Anh),
+việc sửa code dưới đây chỉ là **lớp an toàn dự phòng** cho trường
+hợp một account nào đó lỡ chưa/không set đúng, không phải để
+khuyến khích dùng tiếng Việt.
+
+Owner cung cấp trực tiếp (từ UI thật của `nhtu00`, không đoán)
+10/12 chuỗi tiếng Việt cần thiết; 2 chuỗi còn lại xác nhận riêng:
+logo "Facebook" giữ nguyên tên thương hiệu kể cả trên UI tiếng
+Việt (không cần sửa); bộ lọc "Groups results" ở trang kết quả tìm
+kiếm hoá ra chỉ là "Nhóm" (không dịch sát nghĩa "results").
+
+Sửa `human_bot/actions.py`: mở rộng 10 selector `get_by_role(...,
+name=...)` (trước đó chỉ có string/regex tiếng Anh) thành regex
+chấp nhận CẢ tiếng Anh LẪN tiếng Việt — comment textbox, nút "Post
+comment"/"Đăng bình luận", nút "Post"/"Đăng" (2 chỗ: composer
+profile riêng và composer nhóm), "Minimize chat"/"Thu nhỏ đoạn
+chat", "Close chat"/"Đóng đoạn chat", label "Shortcuts"/"Lối tắt
+của bạn", link "Groups"/"Nhóm" trong Shortcuts, "Your groups"/"Nhóm
+của bạn", combobox "Search Facebook"/"Tìm kiếm trên Facebook", link
+filter "Groups results"/"Nhóm", switch "My groups"/"Nhóm của tôi".
+Giữ nguyên hành vi anchor (`^...$`) ở những chỗ trước đó dùng
+`exact=True` để tránh match nhầm phần tử khác (vd nút "Post" là từ
+phổ biến).
+
+**Chưa Codegen-confirm** hầu hết chuỗi tiếng Việt này (trừ #1, lấy
+trực tiếp từ screenshot fail thật) — các chuỗi còn lại do owner tự
+đọc trên UI thật và báo lại bằng lời/ảnh chụp, chưa chạy thử code
+mới trên trình duyệt thật. **199+ test cũ vẫn pass** (chạy
+`pytest tests/ -k "comment or actions or group"`, 30 test liên
+quan pass) — nhưng đây là test chọn selector qua mock, không thay
+thế việc test sống. Cần theo dõi `action_log` của `nhtu00` ở lần
+chạy `comment_on_group_post` kế tiếp để xác nhận sửa đúng thật.
+
+**Còn để mở** (theo yêu cầu owner, KHÔNG sửa trong lần này): tự
+chuyển giao diện Facebook của account `nhtu00` sang tiếng Anh theo
+đúng quy ước dự án — đây vẫn là hướng chính, việc mở rộng regex chỉ
+là lưới an toàn phụ.
+
+## Bug thật: `job_capacities` (cổng lấy job về của `sync_all()`) chưa bao giờ hiện thực đúng công thức owner đã chốt từ trước (2026-09-17)
+
+("today + `max_overflow_business_days` ngày, chia cho
+`max_groups_per_post`, dư slot vẫn tính thêm 1 job"). Owner phát
+hiện qua việc account `nhtu00` vừa sync xong đã có lịch đăng tới tận
+20/9 (3 ngày sau "hôm nay" 17/9), dù rule tràn-ngày tối đa 2 ngày đã
+xác nhận đúng ở mục trước.
+
+**Điều tra** (`scheduled/pending/*.json` thật của `nhtu00`): 35 task
+`post_to_group` đang chờ, cách nhau trung bình ~117 phút (đúng
+`post_min/max_delay_seconds`), trải từ 17/9 10:17 tới 20/9 04:25 —
+tổng ~68 tiếng. Đếm theo đúng "ngày nghiệp vụ" (2h sáng JST):
+17/9=5, 18/9=12 (đúng khớp `posts_per_day`), 19/9=12, 20/9=6. Đối
+chiếu `git log -p` xác nhận: `job_capacities` (đã có từ commit đầu
+tiên viết water-fill, qua cả đợt sponsored-priority 2026-09-16
+cũng không đổi) luôn chỉ là `posts_per_day - đã dùng HÔM NAY`, dùng
+thẳng làm SỐ LƯỢNG JOB coi như 1 job = 1 slot — không cộng dồn
+slot ngày mai/mốt, không chia cho `max_groups_per_post`. Việc chia
+theo từng nhóm/từng ngày (`_next_available_business_day()`, "further
+capped to `available`") chỉ chạy SAU KHI job đã được lấy về —
+không chặn được việc lấy về QUÁ NHIỀU job ngay từ đầu. Đây là
+khoảng trống thật giữa thiết kế đã bàn và code, không phải hồi quy
+(theo git log, chưa từng được code đúng).
+
+**Sửa** (`human_bot/data_sync.py`): hàm mới
+`_max_jobs_over_window(acc, day_post_counts, today, real_used_today,
+max_overflow_business_days)` — cộng slot còn trống của TỪNG ngày
+nghiệp vụ từ hôm nay tới `today + max_overflow_business_days` (dùng
+lại đúng `_count_scheduled_actions_by_day()`, đã sẵn tính theo mọi
+ngày chứ không chỉ hôm nay), rồi chia cho `max_groups_per_post`,
+làm tròn LÊN (ceil) — khớp đúng ví dụ owner: 3+12+12=27÷3=9; test
+thêm ví dụ dư: 1+12+12=25÷3=8 dư 1 ⇒ vẫn 9 job. **Owner xác nhận
+thêm**: slot ngày mai/mốt phải trừ luôn phần đã lên lịch từ CÁC LẦN
+SYNC TRƯỚC (không chỉ hôm nay) — dùng đúng `day_post_counts` (gồm cả
+pending lẫn posted, mọi ngày) nên tự động đúng, không cần sửa gì
+thêm. `job_capacities` trong `sync_all()` (dòng ~1081) giờ gọi hàm
+này thay vì công thức cũ.
+
+**4 test mới** (khớp ví dụ owner; ví dụ dư làm tròn lên; slot
+tương lai bị trừ đúng bởi job đã lên lịch từ poll trước — full cả
+3 ngày ⇒ 0 job; `max_groups_per_post=0` không crash, trả 0 job) —
+**205 test passed** (201 trước đó + 4 mới). Không đụng
+`runtime_config.json`/dữ liệu thật.
+
+**UNVERIFIED LIVE**: chưa chạy `sync_all()` thật qua service đang
+chạy để xác nhận số job lấy về đúng như tính toán — cần theo dõi
+lần poll kế tiếp.
+
+**Cập nhật cùng ngày — owner yêu cầu xoá luôn backlog cũ của
+`nhtu00`** ("Xoá toàn bộ dữ liệu, cache, lịch đăng ở lần sync gần
+nhất"). Thực hiện đúng phạm vi: 35 file lịch đăng `post_to_group`
+sinh ra từ ĐÚNG 1 lần sync lúc 08:43:30 UTC hôm nay (12 job id
+`319,461,523,526,529,532,535,539,542,550,558,570`) — KHÔNG đụng
+task `comment_on_group_post` còn lại của `nhtu00` (`reasoning:
+"manual: composed at /admin/post"`, retry của lỗi comment đã sửa ở
+mục trên — không liên quan tới lỗi over-pull này).
+
+Đã **sao lưu trước khi xoá** (cả `scheduled/`, `data_sync_cache/`
+đều nằm trong `.gitignore`, không có git history để khôi phục) vào
+`data_sync_cache/_cleanup_backups/20260917T092500Z_nhtu00_overpull/`
+(35 file lịch đăng gốc + bản gốc của `data_sync_cache/2026-09-17.json`
+trước khi sửa).
+
+Việc xoá gồm 2 phần bắt buộc phải làm CÙNG NHAU, không chỉ xoá file
+lịch đăng: (1) xoá 35 file `scheduled/pending/*.json`; (2) xoá luôn
+12 key `job:<id>` tương ứng khỏi seen-cache
+(`data_sync_cache/2026-09-17.json`) — nếu chỉ xoá (1) mà bỏ qua (2),
+12 job này vẫn bị đánh dấu "đã xử lý" và **vĩnh viễn không bao giờ
+được lấy lại** ở lần sync sau, kể cả sau khi code đã sửa đúng.
+Không đụng `data_sync_cache/_state.json` (cursor `jobs_since`):
+kiểm tra thấy cursor hiện đứng ở `2026-09-17T05:51:20.944Z` — TRƯỚC
+thời điểm 12 job này từng được `_mark_seen()` (08:43:30) — nên
+không cần rollback, lần sync kế tiếp sẽ tự fetch lại đúng 12 job
+này từ bên B với `since` không đổi.
+
+Xác nhận sau khi dọn: `nhtu00` chỉ còn đúng 1 task pending (task
+comment thủ công nói trên); seen-cache hôm nay chỉ còn 2
+`candidate:*` không liên quan. 205 test vẫn pass.
+
+## Bug thật: `post_to_group` timeout 30s chờ nút mở composer — cùng gốc UI tiếng Việt trên `nhtu00` (2026-09-18)
+
+**Xác nhận sống — comment đã sửa hôm qua hoạt động đúng**: action_log
+`nhtu00` cho thấy lần `comment_on_group_post` lúc 10:17:44 UTC (17/9)
+**thành công**, ngay sau lần fail lúc 08:11 — đúng fix Việt hoá comment
+textbox hôm 17/9.
+
+**Lỗi mới, khác selector**: `Locator.wait_for: Timeout 30000ms exceeded
+... get_by_role("button", name=re.compile(r"write something", re.IGNORECASE))`
+— nút mở composer trên trang nhóm (`post_to_group`, `actions.py:679`),
+KHÔNG phải nút đã sửa hôm qua. Xảy ra **4 LẦN LIÊN TIẾP** cho `nhtu00`
+(16:56, 21:22, 23:23 ngày 17/9, và 01:10 ngày 18/9 — đúng như owner
+quan sát "khá nhiều task gần đây dính lỗi này"), toàn bộ action `post`
+của account này kể từ khi tạo tới giờ đều fail vì đúng 1 nguyên nhân.
+
+Ảnh chụp lỗi mới nhất
+(`screenshots/nhtu00/20260918T011020242Z_post_to_group_fail.png`) xác
+nhận đúng cùng nguyên nhân gốc đã biết: UI tiếng Việt. Nút mở composer
+trên trang nhóm hiện chữ **"Bạn viết gì đi..."**, không khớp regex
+tiếng Anh `write something` — y hệt kiểu lỗi comment hôm qua, chỉ khác
+đây là NÚT KHÁC (mở composer) mà lúc sửa hôm 17/9 chưa động tới vì
+`nhtu00` khi đó chưa từng thử `post_to_group`, chỉ mới thử comment.
+
+**Sửa** (`human_bot/actions.py:677-687`): mở rộng regex nút mở composer
+thành `write something|Bạn viết gì` (unanchored, giống độ lỏng sẵn có
+của bản gốc tiếng Anh — không dùng `exact=True`). 205 test vẫn pass
+(không có test riêng cho selector này — cần trình duyệt thật).
+
+**Chưa xác nhận sống** — cần theo dõi lần `post_to_group` kế tiếp của
+`nhtu00`. Hướng chính vẫn không đổi: chuyển `nhtu00` sang giao diện
+tiếng Anh theo đúng quy ước dự án — xem mục 17/9 phía trên.
+
+**Cập nhật cùng ngày — owner cung cấp trước chữ tiếng Việt của nút còn
+lại** (`post_to_own_profile`'s composer trigger, `actions.py:305`), dù
+`nhtu00` CHƯA từng thử đăng lên tường cá nhân nên chưa có lỗi/screenshot
+thật để đối chiếu — chữ owner cho: **"Tú ơi, bạn đang nghĩ gì thế?"**.
+Khác với bản tiếng Anh ("What's on your mind, `<Tên>`?" — tên nằm CUỐI),
+bản tiếng Việt đặt tên ở ĐẦU ("`<Tên>` ơi, ..."), nên phần regex
+name-agnostic phải khớp vào ĐUÔI câu ("bạn đang nghĩ gì thế") thay vì
+đầu câu như bản tiếng Anh. Sửa `actions.py:305` thành regex
+`what.?s on your mind|bạn đang nghĩ gì thế`. 205 test vẫn pass.
+**Chưa Codegen/live-confirm** (owner cho chữ trước khi lỗi thật xảy ra,
+không phải từ screenshot fail) — cần xác nhận khi `nhtu00` thử đăng
+tường cá nhân lần đầu.
+
+## Bug thật thứ 4 cùng gốc: nút "Photo/video" (icon, không chữ) — `_attach_media()` (2026-09-18)
+
+Sau khi 2 fix trên chạy đúng, `nhtu00` tiếp tục fail `post_to_group` 2
+lần nữa (02:27, 04:25 UTC) với lỗi KHÁC:
+`Locator.wait_for: Timeout ... get_by_role("dialog").get_by_role("button",
+name=re.compile(r"photo.video", re.IGNORECASE))`. Ảnh chụp
+(`screenshots/nhtu00/20260918T042525802Z_post_to_group_fail.png`) xác
+nhận: dialog "Tạo bài viết" mở đúng (fix hôm qua hoạt động tốt), lỗi
+xảy ra ở bước kế — nút đính kèm ảnh/video trong `_attach_media()`
+(`actions.py:204-210`).
+
+**Vì sao hàm này chạy dù task JSON có `media_path: null`**: kiểm tra
+`scheduled/pending|failed/*.json` của `nhtu00` xác nhận toàn bộ đều
+`media_path: null`, nhưng `human_bot/agent.py:207-221` có cơ chế tự
+gắn 1 ảnh meme ngẫu nhiên khi không có `media_path`
+(`get_media_config().attach_random_meme_default`) — nên
+`_attach_media()` vẫn được gọi dù task không tự mang ảnh.
+
+Nút này khác 3 nút đã sửa: **chỉ có icon, không có chữ hiển thị** trên
+UI — không đoán được từ ảnh chụp. Owner tự đọc trực tiếp trên trang
+thật (tooltip/aria-label), cho đúng chữ: **"Ảnh/video"**.
+
+**Sửa** (`actions.py:204-210`): thêm vào cùng regex, đồng thời áp dụng
+lại đúng gotcha đã biết từ 2026-09-04 (ghi ngay phía trên trong
+docstring hàm này) — dấu `/` trong pattern raw sẽ phá cú pháp DSL
+`[name=/pattern/flags]` của Playwright, nên dùng `.` thay `/` y hệt
+cách bản tiếng Anh `photo.video` đã làm: `photo.video|Ảnh.video`. 205
+test vẫn pass. **Chưa live-confirm** — cần theo dõi lần `post_to_group`
+kế tiếp của `nhtu00`.
