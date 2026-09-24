@@ -289,6 +289,11 @@ qua việc quan sát dữ liệu thật hằng ngày.
   là một con số, trong khi "Tất cả" thực ra là "không chọn số nào cả" — dẫn tới
   bị từ chối ngay từ đầu, trang không cập nhật lại được. Đã sửa để "Tất cả" được
   xử lý đúng là "bỏ lọc", không còn bị từ chối.
+- **Rà soát tổng thể dự án theo yêu cầu chủ dự án** ("còn gì cần cải thiện
+  không") — liệt kê đầy đủ ở mục 6 bên dưới theo mức độ ưu tiên. Trong đó, việc
+  được chọn làm ngay: **thêm kiểm tra tự động (CI) trên GitLab** — từ nay mỗi
+  lần đẩy code lên, hệ thống tự chạy lại toàn bộ 212 bài test và báo ngay nếu có
+  gì hỏng, thay vì chỉ dựa vào việc nhớ tự chạy tay.
 
 ---
 
@@ -337,12 +342,34 @@ Một vài lựa chọn thiết kế đáng chú ý, được cân nhắc kỹ c
 - Xem thử giao diện "⚠️ Task quá hạn" trên trình duyệt thật để xác nhận bộ lọc
   và cơ chế tự huỷ sau 30 ngày hiển thị/hoạt động đúng như mong muốn (mới test
   bằng code, chưa xem qua trình duyệt thật).
-- Điều tra tiếp lỗi mức lương "5.000.000 JPY/giờ" — xác định lỗi nằm ở bên B hay
-  ở bước AI trích xuất, trước khi quyết định sửa chỗ nào.
+- Lỗi mức lương "5.000.000 JPY/giờ" — **đã xác định là lỗi dữ liệu phía bên B**,
+  không cần hệ thống này sửa gì, chỉ ghi nhận.
 - Nối toàn bộ hệ thống vào quy trình tự động hoàn chỉnh (chạy theo lịch/tín hiệu
   từ bên B), thay vì cần thao tác tay ở một số bước.
 - Cân nhắc thêm tính năng chọn nhóm đăng theo đúng chủ đề (VD tin ngành IT → nhóm
   về IT) thay vì đăng vào mọi nhóm đã tham gia.
+
+**Từ đợt rà soát tổng thể (2026-09-24), chưa làm — xếp theo mức độ ưu tiên:**
+
+- **[Quan trọng, chủ dự án tự làm được ngay]** Trang quản trị (`/admin`) và API
+  nhận task đang KHÔNG yêu cầu đăng nhập — vì file cấu hình `.env` chưa điền tên
+  đăng nhập/mật khẩu. Nếu máy chủ có thể truy cập từ ngoài (không chỉ máy của
+  bạn), ai cũng đăng bài thật lên Facebook được qua đó. Chỉ cần bạn tự điền vào
+  `.env`, không cần sửa code.
+- **[Quan trọng, chủ dự án tự làm được ngay]** Chuyển giao diện Facebook của
+  `nhtu00` sang tiếng Anh theo đúng quy định (mục 5) — vẫn là hướng xử lý chính,
+  phần "hiểu cả tiếng Việt" chỉ là lưới an toàn phụ.
+- Trang quản trị (~4000 dòng) hiện chưa có bài kiểm tra tự động nào — 2 lỗi thật
+  tuần này (mất bộ lọc, lỗi chọn "Tất cả") đáng lẽ 1 bài test đơn giản đã bắt
+  được sớm hơn. Cần làm dần, ưu tiên khu vực hay thay đổi nhất trước.
+- Cơ sở dữ liệu báo cáo (`human_bot.db`) chưa có cơ chế dọn định kỳ như các nơi
+  khác — hiện còn nhỏ nên chưa gấp, nhưng sẽ phình to dần theo thời gian.
+- Nút "Chọn tất cả" ở tab "Task quá hạn" hiện chỉ chọn được task đang hiển thị
+  trên trang, không phải toàn bộ kết quả đang lọc qua nhiều trang — chưa quyết
+  định có cần sửa thành "chọn thật sự tất cả" hay không.
+- Dọn vài file rác nhỏ còn sót lại từ các đợt sửa lỗi trước (không ảnh hưởng gì,
+  chỉ chiếm chỗ) và 5 bài dữ liệu giả dùng để test giao diện — chờ xác nhận xong
+  việc test để xoá.
 
 ---
 

@@ -72,6 +72,7 @@
 - [Tính năng mới: lọc + tự huỷ "Task quá hạn" sau 30 ngày](#tính-năng-mới-bộ-lọc-quá-hạn-n-ngày-tự-huỷ-task-quá-hạn-30-ngày-ở-task-quá-hạn-2026-09-24)
 - [Bug: bộ lọc "Quá hạn" biến mất khi không có task khớp](#bug-thật-bộ-lọc-quá-hạn-biến-mất-hoàn-toàn-khi-không-có-task-nào-khớp-2026-09-24)
 - [Bug: chọn "Tất cả" ở filter Quá hạn không quay lại đúng (422)](#bug-thật-thứ-2-cùng-tính-năng-chọn-tất-cả-ở-filter-quá-hạn-không-quay-lại-đúng-2026-09-24)
+- [Rà soát toàn diện + thêm CI cho GitLab](#rà-soát-toàn-diện-dự-án-theo-yêu-cầu-owner-còn-gì-cần-cải-thiện-thêm-ci-cho-gitlab-2026-09-24)
 
 ---
 
@@ -3648,3 +3649,65 @@ test — đúng luồng bình thường, không phải lỗi mới). 212 test v�
 (không có test HTTP-level cho `admin.py` từ trước tới giờ trong dự án
 — khớp đúng ranh giới test hiện có, verify bằng `TestClient` thủ công
 thay vì thêm test mới).
+
+## Rà soát toàn diện dự án (theo yêu cầu owner "còn gì cần cải thiện") + thêm CI cho GitLab (2026-09-24)
+
+Owner yêu cầu rà soát tổng thể, chỉ báo cáo không sửa code. Đã bỏ qua
+các điểm yếu ĐÃ ghi rõ từ trước (không selector fallback ngoài điều
+hướng nhóm, LLM fallback chưa nối, fingerprint 1 phần, 3 hành động tạm
+dừng có chủ đích) — tập trung phát hiện MỚI:
+
+1. **[Cao] `/admin` + `POST /tasks` không cần đăng nhập** — service
+   chạy `--host 0.0.0.0`, `.env` để trống cả `ADMIN_USERNAME`/
+   `ADMIN_PASSWORD`/`TASKS_API_KEY` (log tự cảnh báo SECURITY mỗi lần
+   khởi động, xác nhận thật). Độ khó sửa: rất thấp (chỉ cần điền
+   `.env`, cơ chế check đã có sẵn) — **owner tự làm, không phải code**.
+2. **[Cao] `nhtu00` chưa chuyển tiếng Anh** — nguồn gốc cả loạt 5 bug
+   tiếng Việt vá tuần này, vi phạm quy ước gốc 2026-09-03. Độ khó: rất
+   thấp (thao tác tay trong Cài đặt Facebook) — **owner tự làm**.
+3. **[Trung bình] Không có CI** — xem mục ngay dưới, đã làm.
+4. **[Trung bình] `admin.py` không có test HTTP-level** — đúng 2 bug
+   thật tuần này (mất filter khi rỗng, lỗi 422) đều thuộc loại 1 test
+   `TestClient` sẽ bắt được. Chưa làm — cần fixture bypass
+   `_require_auth` + cô lập `scheduled/`/`runtime_config.json`, làm dần
+   theo route quan trọng trước.
+5. **[Trung bình, owner xác nhận: lỗi bên B, chỉ cần ghi chú]** Lỗi
+   lương "5.000.000 JPY/giờ" (job 542) — KHÔNG điều tra thêm theo yêu
+   cầu owner, chỉ ghi nhận đây là lỗi phía nguồn dữ liệu bên B.
+6. **[Trung bình] `human_bot.db` không có cơ chế prune** (khác
+   `scheduled/`/`screenshots/` đã có) — hiện 163KB chưa gấp, nhưng là
+   chỗ duy nhất phình vô hạn theo thời gian. Cần bàn kỹ trước khi làm
+   (đây là dữ liệu báo cáo, `/admin/reports` đọc trực tiếp — không đơn
+   giản như xoá file).
+7. **[Thấp] "Chọn tất cả" ở tab Task quá hạn chỉ chọn task TRANG ĐANG
+   XEM, không phải toàn bộ kết quả lọc qua các trang** — do JS
+   `querySelectorAll` chỉ thấy checkbox có trong DOM (trang hiện tại).
+   Owner đã hỏi, CHƯA quyết định có cần sửa không.
+8. **[Thấp] Dọn rác nhỏ còn sót**: `data_sync_cache/_cleanup_backups/
+   20260917T092500Z_nhtu00_overpull/` (148K, backup lúc dọn `nhtu00`
+   17/9, không nằm trong retention nào); 5 task `[TEST DATA]` trong
+   `missed/` (chờ owner xác nhận test xong để xoá).
+9. **[Thấp] Fix composer tiếng Việt `post_to_own_profile`** — chưa có
+   bằng chứng sống (`nhtu00` chưa từng thử đăng tường cá nhân), không
+   cần làm gì thêm, chỉ theo dõi.
+
+**Owner chọn làm ngay mục #3 (CI)**, các mục còn lại ghi chú như trên,
+chưa làm.
+
+### Thêm `.gitlab-ci.yml` (chỉ GitLab theo yêu cầu owner, không làm GitHub Actions)
+
+Trước khi viết, xác nhận: chạy `pytest` với **môi trường sạch hoàn
+toàn** (`env -i`, không `.env`, không API key nào) — **212 test vẫn
+pass hết**. Không test nào import `playwright`/khởi động trình duyệt
+thật; không `os.environ[...]` bắt buộc ở tầng import module; mọi state
+thật (`runtime_config.json`, `scheduled/`, `data_sync_cache/`) đều cô
+lập qua `tmp_path`/`monkeypatch`. → CI không cần secret/API key nào cả.
+
+Pipeline: 1 stage `test`, image `python:3.11`, cache pip theo
+`CI_COMMIT_REF_SLUG`, chạy `pip install -r requirements.txt -r
+requirements-dev.txt && pytest tests/`, kích hoạt khi push hoặc mở
+merge request. Xác nhận `requirements.txt`+`requirements-dev.txt` cài
+đặt sạch không xung đột (`pip install --dry-run`, mọi package resolve
+đúng). Xác nhận cú pháp YAML hợp lệ (`yaml.safe_load`). **Chưa
+live-confirm** — cần đợi lần push/MR thật đầu tiên lên GitLab để xem
+pipeline chạy đúng, chưa thể tự kiểm tra từ máy local.
