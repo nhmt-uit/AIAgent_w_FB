@@ -247,6 +247,18 @@ qua việc quan sát dữ liệu thật hằng ngày.
   xem lại) — riêng 12 tin gốc phía sau 35 bài đăng đó cũng được "mở khoá" lại để
   lần đồng bộ tới có thể lấy về đúng theo công thức mới, thay vì bị coi là "đã xử
   lý" và mất luôn.
+- **Phát hiện tiếp: fix trên chưa triệt để, lịch đăng vẫn lố thêm đúng 1 ngày.**
+  Chủ dự án kiểm tra thấy `tu_iizuki` vẫn có lịch đăng tới tận 24/9. Tra kỹ thì có
+  2 phần: phần lớn là dữ liệu CŨ bị lấy dư từ TRƯỚC lần sửa nói trên (chưa kịp
+  dọn vì lần dọn trước chỉ làm cho `nhtu00`, đang chờ chủ dự án quyết định có dọn
+  tiếp không) — còn với dữ liệu MỚI (sau khi đã sửa), vẫn có 1 lỗi nhỏ khác khiến
+  vài bài lố thêm đúng 1 ngày so với quy định. Nguyên nhân: hệ thống có 2 bước
+  tính riêng biệt — "tính SỐ LƯỢNG tin nên lấy" (đã sửa đúng ở trên) và "xếp MỖI
+  tin vào ngày nào" (một cơ chế khác, có từ trước) — 2 bước này trước giờ không
+  neo vào cùng 1 mốc ngày, nên khi xử lý nhiều tin liên tiếp trong 1 lần, tin
+  cuối cùng có thể vẫn bị đẩy lố thêm. Đã sửa để cả 2 bước cùng neo vào đúng 1
+  mốc ngày cố định, kèm bài test riêng. Chưa chạy thử trên hệ thống thật để xác
+  nhận 100%.
 
 ---
 
@@ -290,7 +302,10 @@ Một vài lựa chọn thiết kế đáng chú ý, được cân nhắc kỹ c
   hoạt động đúng trên thực tế.
 - Theo dõi lần đồng bộ dữ liệu kế tiếp để xác nhận sửa lỗi "lấy quá nhiều tin"
   hoạt động đúng trên hệ thống thật (mới test bằng dữ liệu giả lập, chưa chạy
-  sống) — lần này `nhtu00` nên chỉ lấy về đúng khoảng 9 tin thay vì 35.
+  sống) — lần này `nhtu00` nên chỉ lấy về đúng khoảng 9 tin thay vì 35, và không
+  còn bài nào lố qua khỏi đúng mốc "hôm nay + 2 ngày".
+- Quyết định có dọn 13 tin backlog cũ (lấy dư từ trước khi sửa) của `tu_iizuki`
+  không — hiện đang tới tận 24/9, tương tự tình huống đã dọn cho `nhtu00`.
 - Điều tra tiếp lỗi mức lương "5.000.000 JPY/giờ" — xác định lỗi nằm ở bên B hay
   ở bước AI trích xuất, trước khi quyết định sửa chỗ nào.
 - Nối toàn bộ hệ thống vào quy trình tự động hoàn chỉnh (chạy theo lịch/tín hiệu

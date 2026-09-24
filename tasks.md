@@ -65,6 +65,7 @@
 - [18/09: Bug `post_to_group` timeout nút mở composer — cùng gốc UI tiếng Việt](#bug-thật-post_to_group-timeout-30s-chờ-nút-mở-composer-cùng-gốc-ui-tiếng-việt-trên-nhtu00-2026-09-18)
 - [18/09: Bug thứ 4 cùng gốc — nút "Photo/video" (icon, không chữ)](#bug-thật-thứ-4-cùng-gốc-nút-photovideo-icon-không-chữ-_attach_media-2026-09-18)
 - [18/09: [Chưa xử lý] Job 542 lương sai đơn vị "5tr JPY/giờ"](#phát-hiện-không-phải-bug-human_bot-job-542-có-mức-lương-đọc-sai-đơn-vị-5000000-jpygiờ-2026-09-18-chưa-xử-lý)
+- [18/09: Bug lịch đăng vẫn lố 1 ngày — neo tràn-ngày vào mốc cố định](#bug-thật-lịch-đăng-vẫn-lố-1-ngày-qua-khỏi-today-max_overflow_business_days-dù-đã-có-_max_jobs_over_window-2026-09-18)
 
 ---
 
@@ -3385,3 +3386,60 @@ Chưa xác định được đây là lỗi ở bên B (dữ liệu nguồn) hay
 soạn bài để biết `period` bị gán sai ở đâu, trước khi quyết định sửa
 chỗ nào. Không có thay đổi code nào cho mục này — ghi nhận để điều tra
 tiếp, KHÔNG được coi là đã xử lý.
+
+## Bug thật: lịch đăng vẫn lố 1 ngày qua khỏi "today + max_overflow_business_days" dù đã có `_max_jobs_over_window()` (2026-09-18)
+
+Owner phát hiện: `tu_iizuki` đang có lịch đăng tới tận **24/9** (13 job,
+31 bài) dù rule chốt là tối đa "today + 2 ngày". Điều tra 2 việc riêng:
+
+1. **Phần lớn là dữ liệu CŨ, không phải bug tái phát**: `created_at`
+   của cả 13 job đều từ **14/9-16/9** — TRƯỚC khi `job_capacities`
+   được sửa (17/9). Đây là backlog bị lấy dư y hệt lỗi của `nhtu00`,
+   nhưng xảy ra trên `tu_iizuki` và CHƯA từng được dọn (lần dọn 17/9
+   chỉ theo đúng phạm vi owner yêu cầu lúc đó — `nhtu00` — không đụng
+   `tu_iizuki`).
+2. **Nhưng có thật 1 lỗi mới, nhỏ hơn, trên dữ liệu MỚI (sau fix)**:
+   tính lại theo ngày nghiệp vụ cho `nhtu00` (job tạo sau 17/9): 18/9=4,
+   19/9=12 (đầy), 20/9=12 (đầy), **21/9=3** — lố đúng 1 ngày so với cửa
+   sổ đúng ra chỉ nên tới 20/9.
+
+**Nguyên nhân lỗi #2** (owner hỏi thẳng: "công thức tôi gửi có lỗ hổng
+gì không?" — trả lời: KHÔNG, công thức tính SỐ LƯỢNG job đúng; lỗ hổng
+nằm ở CHỖ NỐI giữa "đếm bao nhiêu" và "xếp vào ngày nào"): sync_all()
+truyền thẳng `cfg.max_overflow_business_days` (=2) làm `max_search_days`
+cho MỌI job, nghĩa là "được tràn thêm 2 ngày kể từ vị trí
+`next_post_time` job đó ĐANG ĐỨNG" — mà `next_post_time` tự trôi dần
+qua từng job trong CÙNG 1 lần sync (do khoảng cách đăng bắt buộc), nên
+tới job cuối hàng đợi, nó có thể đã đứng ở ngày 20 rồi và vẫn được cấp
+thêm 2 ngày NỮA (tới 22) — quy tắc "+2 ngày" áp dụng LẶP LẠI, cộng dồn
+qua nhiều job, thay vì neo vào 1 mốc ngày chung.
+
+**Sửa** (`human_bot/data_sync.py`): hàm mới `_overflow_days_remaining
+(current_day, today, max_overflow_business_days)` — tính số ngày CÒN
+ĐƯỢC PHÉP dò, đo từ vị trí job hiện tại tới đúng mốc CỐ ĐỊNH
+`today + max_overflow_business_days` (không đổi cho cả lần sync), cạn
+mốc thì trả 0 → job bị hoãn thẳng, không tràn thêm nữa dù đang đứng ở
+đâu. `sync_all()`'s job loop giờ tính `max_search_days` bằng hàm này
+mỗi lần gọi `_next_available_business_day()`, thay vì truyền thẳng hằng
+số cũ.
+
+**Nhân tiện phát hiện thêm 1 điểm cần biết** (không phải bug riêng,
+chỉ là làm rõ định nghĩa): `_next_available_business_day()`'s
+`max_search_days=N` từ trước giờ thực ra chỉ kiểm tra N NGÀY (hôm nay +
+(N-1) ngày tiếp), không phải "hôm nay + N ngày" — ví dụ owner
+("hôm nay 3, mai 12, mốt 12") có 3 ngày ứng với N=3 chứ không phải N=2.
+`_overflow_days_remaining()` tính đúng theo cách hiểu của owner (mốc =
+`today + max_overflow_business_days`, TÍNH CẢ hôm nay), nên khi job
+đang đứng đúng "hôm nay" thì trả về 3 (không phải 2) — khớp đúng
+`_max_jobs_over_window()` đã tính (`range(max_overflow_business_days +
+1)` = 3 ngày) từ đầu.
+
+3 test mới (job đứng đúng hôm nay → được đủ 3 ngày; job đã trôi sang
++1/+2 → số ngày còn lại giảm tương ứng, không được cộng thêm; job đã
+trôi qua khỏi mốc → 0, hoãn thẳng) — **208 test passed** (205 + 3).
+**Chưa live-confirm** — cần theo dõi vài lần sync tiếp theo để xác
+nhận không còn job nào lố qua khỏi đúng mốc `today + 2` nữa.
+
+**Còn để mở** (owner chưa quyết định, hỏi riêng): có dọn luôn 13 job
+backlog cũ của `tu_iizuki` (tới 24/9) giống cách đã dọn `nhtu00` hôm
+17/9 không?
