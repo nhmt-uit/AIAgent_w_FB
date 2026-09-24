@@ -180,12 +180,24 @@ async def _schedule_cleanup_loop() -> None:
     Runs once at startup, then once a day — this is disk housekeeping,
     not something that needs a tight interval. Reporting history lives in
     human_bot.db regardless (human_bot/db.py), so this never loses
-    anything /admin/reports can show."""
+    anything /admin/reports can show.
+
+    Also runs schedule_store.cancel_stale_missed() (2026-09-24, owner
+    request) — MISSED_DIR previously had no cleanup of its own at all
+    (see that function's docstring), so a task nobody reviewed in
+    /admin/schedule's "⚠️ Task quá hạn" tab would sit there forever.
+    Same daily cadence is plenty for a 30-day-default threshold; bundled
+    into this existing loop rather than a new one since it's the same
+    kind of housekeeping, not something latency-sensitive."""
     while True:
         try:
             schedule_store.cleanup_old()
         except Exception:  # noqa: BLE001 - a cleanup failure must not take down posting
             logger.exception("schedule_store.cleanup_old failed")
+        try:
+            schedule_store.cancel_stale_missed()
+        except Exception:  # noqa: BLE001 - a cleanup failure must not take down posting
+            logger.exception("schedule_store.cancel_stale_missed failed")
         await asyncio.sleep(SCHEDULE_CLEANUP_INTERVAL_SECONDS)
 
 
