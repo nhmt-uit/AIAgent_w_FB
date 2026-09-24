@@ -73,6 +73,7 @@
 - [Bug: bộ lọc "Quá hạn" biến mất khi không có task khớp](#bug-thật-bộ-lọc-quá-hạn-biến-mất-hoàn-toàn-khi-không-có-task-nào-khớp-2026-09-24)
 - [Bug: chọn "Tất cả" ở filter Quá hạn không quay lại đúng (422)](#bug-thật-thứ-2-cùng-tính-năng-chọn-tất-cả-ở-filter-quá-hạn-không-quay-lại-đúng-2026-09-24)
 - [Rà soát toàn diện + thêm CI cho GitLab](#rà-soát-toàn-diện-dự-án-theo-yêu-cầu-owner-còn-gì-cần-cải-thiện-thêm-ci-cho-gitlab-2026-09-24)
+- [Thay popup xác nhận mặc định bằng modal tự làm](#thay-popup-xác-nhận-mặc-định-của-trình-duyệt-bằng-modal-tự-làm-2026-09-24)
 
 ---
 
@@ -3711,3 +3712,44 @@ merge request. Xác nhận `requirements.txt`+`requirements-dev.txt` cài
 đúng). Xác nhận cú pháp YAML hợp lệ (`yaml.safe_load`). **Chưa
 live-confirm** — cần đợi lần push/MR thật đầu tiên lên GitLab để xem
 pipeline chạy đúng, chưa thể tự kiểm tra từ máy local.
+
+## Thay popup xác nhận mặc định của trình duyệt bằng modal tự làm (2026-09-24)
+
+Bối cảnh: owner hỏi có nên làm trang đăng nhập thật (thay Basic Auth)
+không — trao đổi xong chốt: Basic Auth đã đủ an toàn cho quy mô dự án
+này (1-2 người dùng nội bộ), làm trang đăng nhập riêng là việc "cho
+đẹp" chứ không "cần để an toàn", **CHƯA làm**. Từ đó owner hỏi tiếp có
+thể thay modal mặc định bằng modal tự làm không — làm rõ có 2 loại modal
+mặc định khác nhau trong app:
+1. `window.confirm()` của trình duyệt, hiện ra qua `hx-confirm="..."`
+   (9 chỗ trong `admin.py`, VD "Xoá tất cả mục đã chọn?") — **thay được**.
+2. Popup đăng nhập Basic Auth — **không thay bằng modal được**, vì do
+   chính trình duyệt vẽ khi nhận header `WWW-Authenticate: Basic`,
+   không phải HTML của trang; muốn có giao diện tự làm (trang hay
+   modal) bắt buộc phải bỏ Basic Auth, chuyển sang session/cookie —
+   việc này gắn liền với quyết định "trang đăng nhập" ở trên, chưa làm.
+
+**Sửa mục (1)** (`human_bot/admin.py`'s `_PAGE_STYLE` — khối `<script>`
+dùng chung mọi trang): thêm 1 listener bắt sự kiện `htmx:confirm` (htmx
+tự bắn ra TRƯỚC mọi request, `evt.detail.question` = đúng chuỗi
+`hx-confirm` của phần tử đó, `null` nếu phần tử không có `hx-confirm`
+— cho đi qua bình thường trong trường hợp đó). Khi có `question`:
+`preventDefault()` để chặn popup mặc định, dựng modal bằng đúng
+`.modal-backdrop`/`.modal-box` app đã dùng sẵn (không cần CSS mới),
+2 nút "Huỷ"/"Xác nhận" — bấm "Xác nhận" gọi
+`evt.detail.issueRequest(true)` (API chính thức của htmx để tự thay
+popup xác nhận, `true` để không bắn lại `htmx:confirm` lần 2 cho đúng
+request đó). Dựng phần text câu hỏi bằng `textContent` (không ghép
+chuỗi HTML) — 1 vài `hx-confirm` có chèn text do admin nhập (VD tên tài
+khoản), tránh rủi ro escape sai dù rủi ro thật rất thấp (admin tự nhập,
+không phải input công khai).
+
+Không cần sửa markup ở 9 chỗ dùng `hx-confirm` — chỉ cần thêm listener
+này, mọi nút hiện có tự động dùng modal mới mà không cần đổi thuộc
+tính gì. Kiểm tra kỹ: không có nút nào trong 9 chỗ đó nằm sẵn bên trong
+1 modal khác (`awk` quét mọi hàm có "modal" trong tên, không thấy
+`hx-confirm` nào) — nên việc modal mới tự xoá sạch `#modal-root` trước
+khi dựng là an toàn, không phá modal cha nào đang mở. 212 test vẫn pass
+(thay đổi thuần JS/HTML, không đụng logic Python nào). **Chưa
+live-confirm qua trình duyệt thật** — cần bạn tự bấm thử 1 nút xoá bất
+kỳ để xác nhận modal mới hiện đúng.

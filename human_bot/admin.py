@@ -780,6 +780,59 @@ _PAGE_STYLE = """
     if (backdrop) backdrop.remove();
   });
 
+  // Custom confirm modal replacing the browser's native window.confirm()
+  // popup for every hx-confirm="..." button in the app (2026-09-24, owner
+  // request — same .modal-backdrop/.modal-box the rest of the app already
+  // uses, instead of the unstylable native dialog). htmx fires
+  // "htmx:confirm" before EVERY request, not just ones with hx-confirm —
+  // evt.detail.question is null for those, so this lets them straight
+  // through untouched. preventDefault() + later calling
+  // evt.detail.issueRequest(true) is htmx's own documented way to swap in
+  // a custom confirm UI; the `true` skips "htmx:confirm" firing again for
+  // the same request. Built via DOM methods (not string-concatenated
+  // innerHTML) for the question text specifically, since a few
+  // hx-confirm values embed admin-entered text (e.g. an account id) —
+  // textContent needs no manual escaping either way.
+  document.addEventListener("htmx:confirm", function (e) {
+    if (!e.detail.question) return;
+    e.preventDefault();
+    var root = document.getElementById("modal-root");
+    if (!root) { e.detail.issueRequest(true); return; } // no modal slot available — fail open rather than silently block the action
+    root.innerHTML = "";
+    var backdrop = document.createElement("div");
+    backdrop.className = "modal-backdrop";
+    var box = document.createElement("div");
+    box.className = "modal-box";
+    box.setAttribute("role", "alertdialog");
+    box.setAttribute("aria-modal", "true");
+    var question = document.createElement("p");
+    question.style.margin = "0 0 20px";
+    question.textContent = e.detail.question;
+    var actions = document.createElement("div");
+    actions.className = "form-actions";
+    var cancelBtn = document.createElement("button");
+    cancelBtn.type = "button";
+    cancelBtn.className = "btn-secondary";
+    cancelBtn.style.marginRight = "8px";
+    cancelBtn.textContent = "Huỷ";
+    var okBtn = document.createElement("button");
+    okBtn.type = "button";
+    okBtn.textContent = "Xác nhận";
+    function close() { backdrop.remove(); }
+    cancelBtn.addEventListener("click", close);
+    okBtn.addEventListener("click", function () {
+      close();
+      e.detail.issueRequest(true);
+    });
+    actions.appendChild(cancelBtn);
+    actions.appendChild(okBtn);
+    box.appendChild(question);
+    box.appendChild(actions);
+    backdrop.appendChild(box);
+    backdrop.addEventListener("click", function (ev) { if (ev.target === backdrop) close(); });
+    root.appendChild(backdrop);
+  });
+
   // Repeatable content blocks for /admin/post's "Đăng vào nhóm" form
   // (human_bot/admin.py's post_form/post_schedule_groups): each block is
   // a content_<i>/groups_<i> field pair — see post_schedule_groups()'s

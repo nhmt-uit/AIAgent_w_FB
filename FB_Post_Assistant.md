@@ -294,6 +294,15 @@ qua việc quan sát dữ liệu thật hằng ngày.
   được chọn làm ngay: **thêm kiểm tra tự động (CI) trên GitLab** — từ nay mỗi
   lần đẩy code lên, hệ thống tự chạy lại toàn bộ 212 bài test và báo ngay nếu có
   gì hỏng, thay vì chỉ dựa vào việc nhớ tự chạy tay.
+- **Bàn về trang đăng nhập cho `/admin`, tạm chưa làm**: hiện tại `/admin` dùng
+  kiểu đăng nhập đơn giản có sẵn của trình duyệt (ô nhập user/pass xấu, không
+  tuỳ biến được) — chỉ cần chủ dự án tự bật lên (điền vào file cấu hình) là đã
+  an toàn. Làm trang đăng nhập đẹp riêng thì được, nhưng tốn công hơn hẳn và
+  chưa thật sự cần thiết với quy mô hiện tại — quyết định: chưa làm.
+- **Thay các hộp thoại xác nhận (VD "Xoá tất cả mục đã chọn?") bằng giao diện tự
+  làm**, thay vì dùng hộp thoại mặc định xấu của trình duyệt. Giờ mọi nút xoá/
+  huỷ trong `/admin` đều hiện đúng kiểu popup đồng bộ với phần còn lại của
+  trang, không cần đổi gì ở từng nút — chỉ 1 chỗ sửa chung cho toàn bộ trang.
 
 ---
 
