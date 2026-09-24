@@ -22,8 +22,11 @@ dinh do.
 """
 import asyncio
 import dataclasses
+import hashlib
 import json
 import os
+import re
+import secrets
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -579,6 +582,244 @@ def delete_registered_account(account_id: str) -> None:
     RUNTIME_CONFIG_PATH.write_text(
         json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8"
     )
+
+
+# --- /admin login: MOD accounts (2026-09-24) --------------------------------
+#
+# The ADMIN login (singular, exactly one) is NOT stored here — it stays in
+# .env (ADMIN_USERNAME/ADMIN_PASSWORD, checked directly in human_bot/admin.py),
+# unchanged from the project's original Basic-Auth-era design, and doubles as
+# the on/off switch for the whole login feature (blank = no login required
+# at all, for every page including /admin/mod-users — see admin.py's
+# _is_login_configured()). MOD is the second tier: any number of extra
+# accounts an ADMIN can create/delete/reset the password of via
+# /admin/mod-users, with the SAME full access as ADMIN everywhere else.
+#
+# Storage follows the exact same read-merge-write shape as _ACCOUNTS_KEY
+# above (read _read_all(), mutate only this one top-level key, write the
+# whole dict back — no atomic temp-file write here either, matching every
+# other writer in this module) — deliberately NOT folded into _ACCOUNTS_KEY
+# itself, since these are login credentials for the admin PANEL, unrelated
+# to the Facebook accounts_ the bot posts from that key already holds.
+_MOD_USERS_KEY = "mod_users"
+
+# PBKDF2-HMAC-SHA256 iteration count — OWASP's 2023 baseline recommendation
+# for this specific algorithm. Stored per-record (not just as this module
+# constant) so a future increase never invalidates already-hashed
+# passwords — verify_password() always re-hashes with whatever count the
+# record itself says was used to create it.
+_PBKDF2_ITERATIONS = 260_000
+
+# 2026-09-24 fix (real bug, found via live-testing during a careful re-audit
+# of this feature, not part of the original request): add_mod_user() used to
+# only BLACKLIST "/" and whitespace — a username like "mo?d" passed that
+# check fine, but "?"/"#"/"%"/"&" all have special meaning inside a URL, and
+# human_bot/admin.py builds every MOD action link by string-concatenating
+# the raw username straight into a path (f"/admin/mod-users/{username}/delete").
+# Confirmed live: creating "mo?d" produced a genuinely broken delete/edit
+# link (the browser parses "?d/delete" as a query string, not part of the
+# path) — that account became permanently unreachable through the UI.
+# Switched to an ALLOWLIST instead (same defensive posture as
+# _account_id_error()'s `[a-z0-9_]+` for Facebook account_id above, just
+# slightly wider — MOD usernames aren't forced lowercase): letters, digits,
+# underscore, dot, hyphen. None of these need URL-encoding in a path
+# segment, so no character in a valid username can ever split/reinterpret
+# the URLs built from it.
+_MOD_USERNAME_PATTERN = re.compile(r"^[A-Za-z0-9_.-]+$")
+
+# 2026-09-24 fix (real bug, same re-audit as above): add_mod_user()/
+# update_mod_user_password() used to only check a password was non-empty —
+# the admin UI's <input minlength="6"> is client-side only and trivially
+# bypassed by posting the form data directly (confirmed live: a 1-character
+# password was accepted and hashed/stored with no server-side objection at
+# all). Enforced here instead, the one place both the "add" and "reset
+# password" flows funnel through, so the UI's own minlength stays purely a
+# nice-to-have (immediate feedback), never the actual guarantee.
+_MIN_PASSWORD_LENGTH = 6
+
+
+def hash_password(password: str) -> tuple[str, str, int]:
+    """Returns (password_hash_hex, salt_hex, iterations) for a freshly
+    chosen password — a random salt every call (secrets.token_hex(16)), so
+    hashing the same password twice never produces the same output. Pure
+    function, no file I/O — callers (add_mod_user/update_mod_user_password
+    below) are responsible for actually persisting the result."""
+    salt = secrets.token_hex(16)
+    digest = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), bytes.fromhex(salt), _PBKDF2_ITERATIONS)
+    return digest.hex(), salt, _PBKDF2_ITERATIONS
+
+
+def verify_password(password: str, password_hash: str, salt: str, iterations: int) -> bool:
+    """Re-hashes `password` with the SAME salt/iterations the stored hash
+    was created with, then compares in constant time via
+    secrets.compare_digest — same constant-time-comparison discipline
+    admin.py's own Basic-Auth check and human_bot/service.py's API-key
+    check already use, just applied to a derived hash instead of the raw
+    secret (a password must never be compared directly, even in constant
+    time — the salted hash is the whole point)."""
+    try:
+        salt_bytes = bytes.fromhex(salt)
+    except ValueError:
+        return False
+    digest = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt_bytes, iterations)
+    return secrets.compare_digest(digest.hex(), password_hash)
+
+
+def get_mod_users() -> list[dict[str, Any]]:
+    """Every MOD account, in whatever order they were stored. Includes
+    password_hash/salt/iterations (needed by resolve_login()/get_mod_user()
+    below to verify a login attempt) — callers rendering this to HTML
+    (admin.py's /admin/mod-users page) must never echo those two fields,
+    only username/created_at."""
+    data = _read_all()
+    raw = data.get(_MOD_USERS_KEY, [])
+    if not isinstance(raw, list):
+        return []
+    result = []
+    for item in raw:
+        if not isinstance(item, dict) or not str(item.get("username", "")).strip():
+            continue
+        result.append({
+            "username": str(item["username"]).strip(),
+            "password_hash": str(item.get("password_hash", "")),
+            "salt": str(item.get("salt", "")),
+            "iterations": int(item.get("iterations") or _PBKDF2_ITERATIONS),
+            "created_at": str(item.get("created_at", "")),
+        })
+    return result
+
+
+def get_mod_user(username: str) -> dict[str, Any] | None:
+    """Case-sensitive lookup by username (matches how ADMIN_USERNAME is
+    already compared via secrets.compare_digest elsewhere) — the single
+    place admin.py's per-request session re-validation calls into, so a
+    MOD account deleted mid-session is rejected on that MOD's very next
+    request rather than only once their session cookie eventually
+    expires. Uses secrets.compare_digest rather than "==", matching how
+    ADMIN_USERNAME is compared elsewhere (resolve_login above) — usernames
+    aren't secret, so this isn't closing a real exploitable timing leak,
+    but it keeps every identity comparison in this module consistently
+    constant-time rather than leaving one silent exception. Compares UTF-8
+    encoded bytes, not the raw str, since secrets.compare_digest raises
+    TypeError on non-ASCII str input — and a login attempt's username here
+    is untrusted, unvalidated user input (unlike stored MOD usernames,
+    already restricted to ASCII by _MOD_USERNAME_PATTERN), so this must
+    not crash on e.g. a Vietnamese username being tried by mistake."""
+    username_bytes = username.encode("utf-8")
+    for m in get_mod_users():
+        if secrets.compare_digest(m["username"].encode("utf-8"), username_bytes):
+            return m
+    return None
+
+
+def add_mod_user(username: str, password: str) -> None:
+    """Creates a new MOD account. Raises ValueError (Vietnamese message,
+    meant to be shown directly in the admin UI) if the username is blank,
+    contains a character that isn't in _MOD_USERNAME_PATTERN's allowlist
+    (would break the /admin/mod-users/{username}/... URL path — see that
+    pattern's own comment for the real incident this closes), the password
+    is under _MIN_PASSWORD_LENGTH characters, or the username is already
+    taken. No cap on the number of MOD accounts (owner explicitly removed
+    the earlier 4-account limit on 2026-09-24 — ADMIN is still exactly 1,
+    unchanged, since that one stays in .env). Read-merge-write, same shape
+    as save_registered_account() above."""
+    username = username.strip()
+    if not username:
+        raise ValueError("Tên đăng nhập không được để trống.")
+    if not _MOD_USERNAME_PATTERN.fullmatch(username):
+        raise ValueError("Tên đăng nhập chỉ được dùng chữ, số, dấu chấm, gạch ngang và gạch dưới.")
+    if len(password) < _MIN_PASSWORD_LENGTH:
+        raise ValueError(f"Mật khẩu phải có ít nhất {_MIN_PASSWORD_LENGTH} ký tự.")
+    existing = get_mod_users()
+    if any(m["username"] == username for m in existing):
+        raise ValueError(f"Tài khoản MOD '{username}' đã tồn tại.")
+    password_hash, salt, iterations = hash_password(password)
+    existing.append({
+        "username": username,
+        "password_hash": password_hash,
+        "salt": salt,
+        "iterations": iterations,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    })
+    data = _read_all()
+    data[_MOD_USERS_KEY] = existing
+    RUNTIME_CONFIG_PATH.write_text(
+        json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8"
+    )
+
+
+def update_mod_user_password(username: str, new_password: str) -> None:
+    """Resets one MOD account's password in place — raises ValueError if
+    that username doesn't exist or new_password is under
+    _MIN_PASSWORD_LENGTH characters (same server-side floor add_mod_user()
+    enforces — this "reset password" path must not be a way around it).
+    Preserves the original created_at (unlike a blind
+    save_registered_account()-style upsert, which would be wrong here:
+    overwriting created_at on every password change would make the
+    /admin/mod-users list lie about how long an account has existed)."""
+    existing = get_mod_users()
+    match = next((m for m in existing if m["username"] == username), None)
+    if match is None:
+        raise ValueError(f"Không tìm thấy tài khoản MOD '{username}'.")
+    if len(new_password) < _MIN_PASSWORD_LENGTH:
+        raise ValueError(f"Mật khẩu phải có ít nhất {_MIN_PASSWORD_LENGTH} ký tự.")
+    password_hash, salt, iterations = hash_password(new_password)
+    match["password_hash"] = password_hash
+    match["salt"] = salt
+    match["iterations"] = iterations
+    data = _read_all()
+    data[_MOD_USERS_KEY] = existing
+    RUNTIME_CONFIG_PATH.write_text(
+        json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8"
+    )
+
+
+def delete_mod_user(username: str) -> None:
+    """Idempotent — deleting a username that doesn't exist is a no-op, same
+    style as delete_registered_account() above (a double-click or a stale
+    page shouldn't surface an error for "already gone")."""
+    data = _read_all()
+    data[_MOD_USERS_KEY] = [m for m in get_mod_users() if m["username"] != username]
+    RUNTIME_CONFIG_PATH.write_text(
+        json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8"
+    )
+
+
+def resolve_login(username: str, password: str) -> tuple[str, str] | None:
+    """Checks `username`/`password` against ADMIN first (read fresh from
+    os.environ, never cached — so an .env change takes effect on the very
+    next login attempt without a restart), then against the MOD list.
+    Returns (role, canonical_username) — "ADMIN" or "MOD" plus the
+    username to persist in the session — or None if neither matched.
+
+    Deliberately does NOT check whether login is even "on" (i.e. whether
+    ADMIN_USERNAME/PASSWORD are set at all) — that's a separate concern
+    that belongs to admin.py's _is_login_configured()/_require_login(),
+    since THIS function is only ever called from the login-submit route,
+    where a login is by definition already being attempted. With no
+    ADMIN_USERNAME/PASSWORD configured and no MOD users stored, this
+    always returns None, which is the correct (if never-actually-reached
+    in practice) behavior.
+
+    ADMIN is checked before MOD on purpose: if a MOD account ever happened
+    to share the same username as ADMIN_USERNAME (an edge case, not
+    expected in normal use), that username is treated as the RESERVED
+    admin identity outright — only the admin password is accepted for it,
+    and MOD is never even consulted for that same username, even if a
+    same-named MOD account's password would otherwise have matched. This
+    avoids a confusing situation where typing the wrong password for the
+    admin username could still succeed by accident via a same-named MOD
+    account."""
+    admin_user = os.environ.get("ADMIN_USERNAME", "")
+    admin_pass = os.environ.get("ADMIN_PASSWORD", "")
+    if admin_user and secrets.compare_digest(username, admin_user):
+        if admin_pass and secrets.compare_digest(password, admin_pass):
+            return "ADMIN", admin_user
+        return None
+    mod = get_mod_user(username)
+    if mod is not None and verify_password(password, mod["password_hash"], mod["salt"], mod["iterations"]):
+        return "MOD", mod["username"]
+    return None
 
 
 # --- Account pause state (safety, applies to ANY account) -------------------

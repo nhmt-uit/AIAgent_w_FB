@@ -294,15 +294,53 @@ qua việc quan sát dữ liệu thật hằng ngày.
   được chọn làm ngay: **thêm kiểm tra tự động (CI) trên GitLab** — từ nay mỗi
   lần đẩy code lên, hệ thống tự chạy lại toàn bộ 212 bài test và báo ngay nếu có
   gì hỏng, thay vì chỉ dựa vào việc nhớ tự chạy tay.
-- **Bàn về trang đăng nhập cho `/admin`, tạm chưa làm**: hiện tại `/admin` dùng
-  kiểu đăng nhập đơn giản có sẵn của trình duyệt (ô nhập user/pass xấu, không
-  tuỳ biến được) — chỉ cần chủ dự án tự bật lên (điền vào file cấu hình) là đã
-  an toàn. Làm trang đăng nhập đẹp riêng thì được, nhưng tốn công hơn hẳn và
-  chưa thật sự cần thiết với quy mô hiện tại — quyết định: chưa làm.
 - **Thay các hộp thoại xác nhận (VD "Xoá tất cả mục đã chọn?") bằng giao diện tự
   làm**, thay vì dùng hộp thoại mặc định xấu của trình duyệt. Giờ mọi nút xoá/
   huỷ trong `/admin` đều hiện đúng kiểu popup đồng bộ với phần còn lại của
   trang, không cần đổi gì ở từng nút — chỉ 1 chỗ sửa chung cho toàn bộ trang.
+- **Làm trang đăng nhập thật cho `/admin`, thay hẳn kiểu đăng nhập xấu của trình
+  duyệt** — bàn kỹ qua nhiều bước với chủ dự án trước khi làm (đọc kỹ toàn bộ code
+  liên quan trước, xác nhận lại 3 điểm còn mơ hồ trước khi viết dòng code nào).
+  Kết quả: có 1 trang đăng nhập riêng do mình thiết kế; 2 loại tài khoản — **ADMIN**
+  (đúng 1, vẫn cấu hình trong file `.env` như trước) và **MOD** (tối đa 4 tài
+  khoản phụ, do ADMIN tự thêm/xoá/đổi mật khẩu qua 1 trang quản lý riêng). Cả
+  ADMIN và MOD đều dùng được mọi chức năng như nhau, chỉ riêng trang quản lý tài
+  khoản MOD đó là chỉ ADMIN mở được. Vẫn bật/tắt được y hệt trước (để trống thông
+  tin trong `.env` là tắt hoàn toàn, vào thẳng không cần đăng nhập). Mật khẩu MOD
+  được mã hoá trước khi lưu, không lưu ở dạng đọc được. Đã viết thêm test tự động
+  kiểm tra kỹ luồng đăng nhập (bao gồm cả tình huống ADMIN xoá 1 tài khoản MOD
+  ngay khi người đó đang đăng nhập — hệ thống phải đá họ ra ngay, không đợi tới
+  lúc phiên hết hạn), toàn bộ chạy đúng ngay từ lần thử đầu tiên.
+- **Rà soát lại tính năng đăng nhập vừa làm xong (2026-09-24)** — theo đúng yêu
+  cầu của chủ dự án, dò lại từng điểm của kế hoạch xem có sai sót/thiếu gì không,
+  báo cáo trước rồi mới sửa. Không chỉ đọc lại code mà **tự tay gửi request thật**
+  qua từng luồng để kiểm chứng, nhờ vậy bắt được 3 lỗi thật sự có thể khai thác
+  được (không phải chỉ là nghi ngờ trên giấy): (1) tên tài khoản MOD từng chấp
+  nhận vài ký tự đặc biệt (`?`, `#`, `%`, `&`) làm hỏng luôn đường dẫn xoá/sửa
+  tài khoản đó — tạo xong là kẹt, không xoá/sửa lại được qua giao diện; (2) trang
+  đổi mật khẩu MOD trả sai kiểu phản hồi khi tắt JavaScript, vỡ giao diện dù mọi
+  trang tương tự khác đều đúng; (3) độ dài mật khẩu tối thiểu chỉ được chặn ở
+  giao diện, ai gửi thẳng dữ liệu bỏ qua form vẫn tạo được mật khẩu 1 ký tự. Đã
+  sửa cả 3, cộng 2 điểm nhỏ hơn (một chỗ dựa vào sự trùng hợp thay vì logic rõ
+  ràng, một chỗ nên đồng bộ cách so sánh cho nhất quán) — sửa điểm nhỏ thứ 2 lại
+  lộ ra 1 lỗi khác mới tinh (username có dấu tiếng Việt lúc đăng nhập làm hệ
+  thống báo lỗi thay vì chỉ báo "không tìm thấy"), bắt và sửa luôn trong cùng
+  lượt kiểm tra thay vì để lọt. Mỗi lỗi sửa xong đều có bài test riêng xác nhận,
+  tổng cộng thêm test này lên 239/239 bài chạy qua. Chưa đưa lên hệ thống chính
+  thức (git) theo đúng yêu cầu của chủ dự án.
+- **2 việc chỉnh sửa thêm cho tính năng đăng nhập, ngay sau đợt sửa lỗi trên
+  (2026-09-24)**: (1) Bỏ hẳn giới hạn tối đa 4 tài khoản MOD — con số 4 lúc đầu
+  chỉ là ước lượng khi mô tả yêu cầu, không phải luật cứng cần giữ, giờ tạo bao
+  nhiêu tài khoản MOD cũng được (ADMIN vẫn đúng 1, không đổi). (2) Một lỗi hiển
+  thị thật: ở màn hình vừa/nhỏ (khoảng 800-1024px chiều rộng, ví dụ cửa sổ trình
+  duyệt không phóng to hết cỡ), thanh điều hướng trên cùng phải xuống dòng vì
+  không đủ chỗ, nhưng khung chứa nó lại có chiều cao cố định — phần xuống dòng
+  bị tràn ra ngoài và đè thẳng lên tiêu đề/danh sách MOD ngay bên dưới. Không
+  phát hiện được bằng cách đọc code, phải tự chụp ảnh màn hình qua trình duyệt
+  giả lập ở nhiều kích thước mới thấy rõ. Đã sửa xong, chụp lại xác nhận hết đè
+  ở mọi kích thước màn hình đã thử — lỗi này ảnh hưởng chung cho MỌI trang
+  `/admin`, không chỉ riêng trang quản lý MOD, chỉ là trang đó có nhiều mục
+  trong menu nhất nên lộ ra rõ nhất.
 
 ---
 
@@ -360,17 +398,23 @@ Một vài lựa chọn thiết kế đáng chú ý, được cân nhắc kỹ c
 
 **Từ đợt rà soát tổng thể (2026-09-24), chưa làm — xếp theo mức độ ưu tiên:**
 
-- **[Quan trọng, chủ dự án tự làm được ngay]** Trang quản trị (`/admin`) và API
-  nhận task đang KHÔNG yêu cầu đăng nhập — vì file cấu hình `.env` chưa điền tên
-  đăng nhập/mật khẩu. Nếu máy chủ có thể truy cập từ ngoài (không chỉ máy của
-  bạn), ai cũng đăng bài thật lên Facebook được qua đó. Chỉ cần bạn tự điền vào
-  `.env`, không cần sửa code.
+- **[Quan trọng, chủ dự án tự làm được ngay — CÒN CẦN LÀM]** Trang quản trị
+  (`/admin`) và API nhận task đang KHÔNG yêu cầu đăng nhập — vì file cấu hình
+  `.env` chưa điền tên đăng nhập/mật khẩu. Đã làm xong hẳn 1 trang đăng nhập
+  thật (xem mục ngay trên) nhưng vẫn CHƯA CÓ HIỆU LỰC cho tới khi bạn tự điền
+  `ADMIN_USERNAME`/`ADMIN_PASSWORD` vào `.env` rồi khởi động lại — không cần
+  sửa code, chỉ cần bạn làm bước đó.
 - **[Quan trọng, chủ dự án tự làm được ngay]** Chuyển giao diện Facebook của
   `nhtu00` sang tiếng Anh theo đúng quy định (mục 5) — vẫn là hướng xử lý chính,
   phần "hiểu cả tiếng Việt" chỉ là lưới an toàn phụ.
-- Trang quản trị (~4000 dòng) hiện chưa có bài kiểm tra tự động nào — 2 lỗi thật
-  tuần này (mất bộ lọc, lỗi chọn "Tất cả") đáng lẽ 1 bài test đơn giản đã bắt
-  được sớm hơn. Cần làm dần, ưu tiên khu vực hay thay đổi nhất trước.
+- Trang quản trị (~4000 dòng) hầu như chưa có bài kiểm tra tự động (đã làm riêng
+  cho phần đăng nhập, xem mục trên, vì đây là phần nhạy cảm nhất) — 2 lỗi thật
+  tuần này ở phần "Task quá hạn" (mất bộ lọc, lỗi chọn "Tất cả") đáng lẽ 1 bài
+  test đơn giản đã bắt được sớm hơn. Cần làm dần cho các phần còn lại, ưu tiên
+  khu vực hay thay đổi nhất trước.
+- Chưa tự tay thử trang đăng nhập mới trên trình duyệt thật — mới xác nhận bằng
+  test tự động. Cần bạn tự bật lên và bấm thử theo đúng các bước đã đề ra trước
+  khi tin tưởng hoàn toàn.
 - Cơ sở dữ liệu báo cáo (`human_bot.db`) chưa có cơ chế dọn định kỳ như các nơi
   khác — hiện còn nhỏ nên chưa gấp, nhưng sẽ phình to dần theo thời gian.
 - Nút "Chọn tất cả" ở tab "Task quá hạn" hiện chỉ chọn được task đang hiển thị

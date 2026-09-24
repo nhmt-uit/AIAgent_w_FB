@@ -366,3 +366,180 @@ def test_disabling_safety_cooldown_hides_the_info_banner_too(isolated_runtime_co
     info = rc.get_resume_cooldown_info("acc1")
     assert info is not None
     assert info["week"] == 1
+
+
+# --- /admin login: MOD accounts + resolve_login (2026-09-24) ---------------
+
+def test_hash_password_and_verify_roundtrip():
+    password_hash, salt, iterations = rc.hash_password("hunter2")
+    assert rc.verify_password("hunter2", password_hash, salt, iterations) is True
+    assert rc.verify_password("wrong-password", password_hash, salt, iterations) is False
+
+
+def test_hash_password_uses_a_unique_salt_each_call():
+    hash1, salt1, _ = rc.hash_password("same-password")
+    hash2, salt2, _ = rc.hash_password("same-password")
+    assert salt1 != salt2
+    assert hash1 != hash2  # different salt => different digest for the same password
+
+
+def test_get_mod_users_empty_by_default(isolated_runtime_config):
+    assert rc.get_mod_users() == []
+    assert rc.get_mod_user("nobody") is None
+
+
+def test_get_mod_user_lookup_with_non_ascii_username_does_not_crash(isolated_runtime_config):
+    """2026-09-24: get_mod_user() switched to secrets.compare_digest() for
+    the username comparison (was plain "=="). compare_digest() raises
+    TypeError on a non-ASCII str, and the username here is untrusted login
+    input, not a validated stored username — must not crash on a login
+    attempt with e.g. a Vietnamese username."""
+    rc.add_mod_user("mod1", "secret123")
+    assert rc.get_mod_user("têncógiấu") is None
+    assert rc.get_mod_user("mod1") is not None
+
+
+def test_add_mod_user_then_get_mod_users(isolated_runtime_config):
+    rc.add_mod_user("mod1", "secret123")
+    users = rc.get_mod_users()
+    assert len(users) == 1
+    assert users[0]["username"] == "mod1"
+    # Never stores the plaintext password anywhere.
+    assert "secret123" not in json.dumps(users)
+    assert rc.get_mod_user("mod1") is not None
+    assert rc.get_mod_user("mod2") is None
+
+
+def test_add_mod_user_rejects_url_unsafe_characters(isolated_runtime_config):
+    """Real bug found via live-testing (2026-09-24): the username allowlist
+    used to only blacklist "/" and whitespace — "?"/"#"/"%"/"&" all slipped
+    through, and each one breaks the /admin/mod-users/{username}/...  URL
+    human_bot/admin.py builds by string-concatenating the raw username
+    (confirmed live: a MOD named "mo?d" got a delete/edit link the browser
+    parses as path "/admin/mod-users/mo" + query "d/delete" — permanently
+    stuck, unreachable through the UI). Now an allowlist (letters/digits/
+    "."/"-"/"_" only), so every rejected case here is representative of a
+    whole class, not just these specific characters."""
+    for bad_username in ("mod/1", "mod 1", "mod\t1", "mo?d", "mo#d", "mo%d", "mo&d", "mo+d"):
+        try:
+            rc.add_mod_user(bad_username, "secret123")
+            assert False, f"expected ValueError for {bad_username!r}"
+        except ValueError:
+            pass
+    assert rc.get_mod_users() == []
+
+
+def test_add_mod_user_accepts_the_full_allowlisted_character_set(isolated_runtime_config):
+    """The fix for the bug above must not become OVERLY strict — dots,
+    hyphens, and underscores are common in real usernames and must still
+    work."""
+    rc.add_mod_user("mod.name-1_ok", "secret123")
+    assert rc.get_mod_user("mod.name-1_ok") is not None
+
+
+def test_add_mod_user_duplicate_username_rejected(isolated_runtime_config):
+    rc.add_mod_user("mod1", "secret123")
+    try:
+        rc.add_mod_user("mod1", "different-password")
+        assert False, "expected ValueError"
+    except ValueError:
+        pass
+    assert len(rc.get_mod_users()) == 1
+
+
+def test_add_mod_user_no_cap_on_account_count(isolated_runtime_config):
+    """Owner explicitly removed the earlier 4-account cap (2026-09-24) —
+    ADMIN is still exactly 1 (in .env, unrelated to this), but there is no
+    upper bound on the number of MOD accounts an ADMIN can create."""
+    for i in range(6):
+        rc.add_mod_user(f"mod{i}", "secret123")
+    assert len(rc.get_mod_users()) == 6
+
+
+def test_delete_mod_user_idempotent(isolated_runtime_config):
+    rc.add_mod_user("mod1", "secret123")
+    rc.delete_mod_user("mod1")
+    assert rc.get_mod_users() == []
+    rc.delete_mod_user("never-existed")  # no raise
+
+
+def test_update_mod_user_password_preserves_created_at(isolated_runtime_config):
+    rc.add_mod_user("mod1", "old-password")
+    created_at_before = rc.get_mod_user("mod1")["created_at"]
+    rc.update_mod_user_password("mod1", "new-password")
+    record = rc.get_mod_user("mod1")
+    assert record["created_at"] == created_at_before
+    assert rc.verify_password("old-password", record["password_hash"], record["salt"], record["iterations"]) is False
+    assert rc.verify_password("new-password", record["password_hash"], record["salt"], record["iterations"]) is True
+
+
+def test_update_mod_user_password_unknown_user_raises(isolated_runtime_config):
+    try:
+        rc.update_mod_user_password("ghost", "whatever")
+        assert False, "expected ValueError"
+    except ValueError:
+        pass
+
+
+def test_add_mod_user_rejects_password_shorter_than_minimum(isolated_runtime_config):
+    """Real bug found via live-testing (2026-09-24): the admin UI's
+    <input minlength="6"> is client-side only — posting the form data
+    directly bypassed it entirely (confirmed live: a 1-character password
+    was accepted and hashed with no server-side objection). Enforced here
+    now, the one place both "add" and "reset password" funnel through."""
+    try:
+        rc.add_mod_user("mod1", "12345")  # 5 chars, one under the floor
+        assert False, "expected ValueError"
+    except ValueError:
+        pass
+    assert rc.get_mod_users() == []
+    rc.add_mod_user("mod1", "123456")  # exactly the floor — must succeed
+    assert rc.get_mod_user("mod1") is not None
+
+
+def test_update_mod_user_password_rejects_password_shorter_than_minimum(isolated_runtime_config):
+    """Same floor as add_mod_user() — the "reset password" flow must not
+    be a way around it."""
+    rc.add_mod_user("mod1", "secret123")
+    try:
+        rc.update_mod_user_password("mod1", "short")
+        assert False, "expected ValueError"
+    except ValueError:
+        pass
+    # Unaffected by the rejected attempt.
+    record = rc.get_mod_user("mod1")
+    assert rc.verify_password("secret123", record["password_hash"], record["salt"], record["iterations"]) is True
+
+
+def test_resolve_login_admin(isolated_runtime_config, monkeypatch):
+    monkeypatch.setenv("ADMIN_USERNAME", "boss")
+    monkeypatch.setenv("ADMIN_PASSWORD", "boss-pass")
+    assert rc.resolve_login("boss", "boss-pass") == ("ADMIN", "boss")
+    assert rc.resolve_login("boss", "wrong") is None
+    assert rc.resolve_login("not-boss", "boss-pass") is None
+
+
+def test_resolve_login_mod(isolated_runtime_config, monkeypatch):
+    monkeypatch.delenv("ADMIN_USERNAME", raising=False)
+    monkeypatch.delenv("ADMIN_PASSWORD", raising=False)
+    rc.add_mod_user("mod1", "mod-pass")
+    assert rc.resolve_login("mod1", "mod-pass") == ("MOD", "mod1")
+    assert rc.resolve_login("mod1", "wrong") is None
+    assert rc.resolve_login("mod-ghost", "mod-pass") is None
+
+
+def test_resolve_login_admin_checked_before_mod_on_username_collision(isolated_runtime_config, monkeypatch):
+    """An unlikely edge case (a MOD account happening to share ADMIN's
+    username) is still defined behavior: the ADMIN branch wins, and that
+    MOD's own password is never even consulted."""
+    monkeypatch.setenv("ADMIN_USERNAME", "shared")
+    monkeypatch.setenv("ADMIN_PASSWORD", "admin-pass")
+    rc.add_mod_user("shared", "mod-pass")
+    assert rc.resolve_login("shared", "admin-pass") == ("ADMIN", "shared")
+    assert rc.resolve_login("shared", "mod-pass") is None  # MOD's own password does NOT work for this username
+
+
+def test_resolve_login_returns_none_with_nothing_configured(isolated_runtime_config, monkeypatch):
+    monkeypatch.delenv("ADMIN_USERNAME", raising=False)
+    monkeypatch.delenv("ADMIN_PASSWORD", raising=False)
+    assert rc.resolve_login("anyone", "anything") is None

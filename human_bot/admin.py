@@ -6,8 +6,11 @@ in .env and restarting the process — now a form that writes
 runtime_config.json and takes effect on the very next post; (2) typing
 post content as a terminal command-line argument — now a textarea. This page has real
 Facebook-posting power (it calls the exact same run_task() as the /tasks
-API n8n uses), so it is protected with HTTP Basic Auth when ADMIN_USERNAME
-and ADMIN_PASSWORD are set in .env, and should never be exposed to the
+API n8n uses), so it is protected by a real session-based login (added
+2026-09-24, see _require_login()/_require_admin_role() below) whenever
+ADMIN_USERNAME and ADMIN_PASSWORD are set in .env — a single ADMIN account
+plus up to 4 MOD accounts (managed at /admin/mod-users, ADMIN-only; MOD has
+full access everywhere else) — and should never be exposed to the
 public internet — see docs/architecture.md.
 VI: Giao dien quan tri web, chi dung noi bo, duoc gan vao ung dung FastAPI
 cua human_bot/service.py duoi duong dan /admin. No thay the hai viec:
@@ -16,9 +19,11 @@ trinh — gio la mot form ghi vao runtime_config.json va co hieu luc ngay
 tu lan dang bai tiep theo; (2) go noi dung bai dang truc tiep trong tham
 so dong lenh terminal — gio la mot o textarea. Trang nay co quyen dang bai that len Facebook (no
 goi dung ham run_task() giong het API /tasks ma n8n dung), nen duoc bao
-ve bang HTTP Basic Auth khi ADMIN_USERNAME va ADMIN_PASSWORD duoc dat
-trong .env, va khong duoc phep mo ra internet cong khai — xem
-docs/architecture.md.
+ve bang dang nhap that (session that, tu 2026-09-24) khi ADMIN_USERNAME
+va ADMIN_PASSWORD duoc dat trong .env — 1 tai khoan ADMIN duy nhat cong
+toi da 4 tai khoan MOD (quan ly o /admin/mod-users, chi ADMIN vao duoc;
+MOD co toan quyen o moi trang khac) — va khong duoc phep mo ra internet
+cong khai — xem docs/architecture.md.
 
 Ghi chu ve redesign (2026): giao dien duoc lam lai (CSS/HTML) de de nhin
 va de dung hon, nhung TOAN BO logic route/form-field-name/POST handler
@@ -49,7 +54,6 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
-from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from pathlib import Path
 
 from human_bot import bootstrap_login_sessions, db, schedule_store, screenshots
@@ -119,11 +123,16 @@ from human_bot.runtime_config import (
     get_secrets_config,
     save_secrets_overrides,
     get_active_ai_provider_config,
+    add_mod_user,
+    delete_mod_user,
+    get_mod_user,
+    get_mod_users,
+    resolve_login,
+    update_mod_user_password,
 )
 from human_bot.safety_cooldown_config import SafetyCooldownConfig
 
 router = APIRouter(prefix="/admin", tags=["admin"])
-_security = HTTPBasic(auto_error=False)
 
 # Human-readable Vietnamese labels for internal snake_case keys shown
 # anywhere in the admin UI (dropdowns, tables) — the raw key (e.g.
@@ -550,7 +559,16 @@ _PAGE_STYLE = """
 }
 @layer components {
   .topbar { @apply bg-white border-b border-gray-200 sticky top-0 z-10 px-4 sm:px-6; }
-  .topbar-inner { @apply max-w-6xl mx-auto flex items-center gap-4 sm:gap-7 h-14 flex-wrap; }
+  /* 2026-09-24 fix (real bug, found via screenshot at ~800-1024px width):
+     this used a FIXED h-14 (56px) together with flex-wrap. Once the nav +
+     user chip no longer fit on one row (happened once "Quản lý MOD" and
+     the ADMIN/MOD user chip + logout button were added), the wrapped
+     rows were squeezed into that fixed 56px box and overflowed OUTSIDE
+     it — and because .topbar has z-10 (its own stacking context) while
+     <main> below has no z-index, that overflow visually painted on TOP
+     of the page's H1/content instead of pushing it down. min-h instead
+     of h lets the sticky bar grow to fit however many rows it wraps to. */
+  .topbar-inner { @apply max-w-6xl mx-auto flex items-center gap-4 sm:gap-7 min-h-[56px] py-2 flex-wrap; }
   .brand { @apply font-bold text-base tracking-tight flex items-center gap-2; }
   .brand-dot { @apply w-2.5 h-2.5 rounded-full bg-indigo-600 inline-block; }
   nav.topnav { @apply flex gap-1 flex-wrap; }
@@ -1243,22 +1261,457 @@ def _is_htmx(request: Request) -> bool:
     return request.headers.get("hx-request") == "true"
 
 
-def _require_auth(credentials: HTTPBasicCredentials | None = Depends(_security)) -> None:
-    expected_user = os.environ.get("ADMIN_USERNAME")
-    expected_pass = os.environ.get("ADMIN_PASSWORD")
-    if not expected_user or not expected_pass:
+# --- Real login (2026-09-24) — replaces the old Basic Auth (_require_auth/
+# HTTPBasic, removed once every route below was confirmed working on the
+# new _require_login) with a real session-based login: a styled
+# /admin/login page instead of the browser's native Basic Auth popup, plus
+# 2 roles (ADMIN — exactly one, still lives in .env; MOD — 0-4 accounts,
+# managed by ADMIN at /admin/mod-users, stored in runtime_config.json's
+# resolve_login()/get_mod_users()).
+
+class NotLoggedIn(Exception):
+    """Raised by _require_login()/_require_admin_role() below instead of
+    HTTPException — a FastAPI Depends() can't itself return an arbitrary
+    redirect response, so human_bot/service.py registers an
+    @app.exception_handler(NotLoggedIn) that decides between a normal 303
+    redirect and an htmx-aware HX-Redirect header (see that handler's own
+    docstring). `next_path` (just the path, e.g. "/admin/schedule" — never
+    a full URL) is where to send the user back to after they log in;
+    /admin/login's own POST handler is what actually validates it's safe
+    to redirect to (starts with "/admin/") before using it, since THIS
+    class just carries whatever request.url.path happened to be at the
+    point of failure, which is always same-origin by construction but
+    still gets re-validated on the consuming end as defense in depth."""
+    def __init__(self, next_path: str | None = None) -> None:
+        super().__init__("not logged in")
+        self.next_path = next_path
+
+
+def _is_login_configured() -> bool:
+    """Whether /admin login is "on" at all — the single on/off switch for
+    the whole feature, identical to _require_auth's old Basic-Auth gate:
+    both ADMIN_USERNAME and ADMIN_PASSWORD must be set in .env. Blank
+    means every page (including /admin/mod-users) is fully open, exactly
+    like today's Basic-Auth-off behavior — no partial protection when
+    disabled. Every one of _require_login/_require_admin_role/the login
+    routes/_build_current_user calls this FIRST, so there is exactly one
+    place that decides "is login on" — never duplicated/re-derived."""
+    return bool(os.environ.get("ADMIN_USERNAME", "").strip() and os.environ.get("ADMIN_PASSWORD", "").strip())
+
+
+def _current_role(request: Request) -> str | None:
+    """The logged-in role for THIS request, re-validated fresh every time
+    rather than trusting the session cookie blindly — so an admin
+    changing ADMIN_USERNAME, or deleting a MOD account, takes effect on
+    that user's very NEXT request instead of only once their session
+    cookie eventually expires (up to 14 days otherwise, see
+    human_bot/service.py's SessionMiddleware setup). Returns None (and
+    clears the now-stale session as a side effect) if the session doesn't
+    correspond to a currently-valid identity."""
+    role = request.session.get("role")
+    username = request.session.get("username")
+    if not role or not username:
+        return None
+    if role == "ADMIN":
+        current_admin = os.environ.get("ADMIN_USERNAME", "")
+        if current_admin and secrets.compare_digest(username, current_admin):
+            return "ADMIN"
+        request.session.clear()
+        return None
+    if role == "MOD":
+        if get_mod_user(username) is not None:
+            return "MOD"
+        request.session.clear()
+        return None
+    request.session.clear()  # unrecognized role value — treat as not-logged-in
+    return None
+
+
+def _require_login(request: Request) -> None:
+    """Replaces _require_auth as the dependency for every "any logged-in
+    user" route (ADMIN or MOD — both have full access everywhere except
+    /admin/mod-users, see _require_admin_role below)."""
+    if not _is_login_configured():
         return
-    valid = (credentials is not None
-             and secrets.compare_digest(credentials.username, expected_user)
-             and secrets.compare_digest(credentials.password, expected_pass))
-    if not valid:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Unauthorized",
-                             headers={"WWW-Authenticate": "Basic"})
+    if _current_role(request) is None:
+        raise NotLoggedIn(next_path=request.url.path)
 
 
-def _layout(body: str, active: str = "") -> str:
+def _require_admin_role(request: Request) -> None:
+    """Dependency for /admin/mod-users' routes ONLY — a strict superset of
+    _require_login's check plus the role gate, so a route depends on this
+    INSTEAD OF _require_login, never both. Not-logged-in still raises
+    NotLoggedIn (same redirect-to-login behavior as everywhere else,
+    since we can't know whether a not-logged-in visitor would have been
+    ADMIN); logged in as MOD raises a plain 403 (they ARE logged in, just
+    not allowed here — a redirect to login would be wrong/confusing)."""
+    if not _is_login_configured():
+        return
+    role = _current_role(request)
+    if role is None:
+        raise NotLoggedIn(next_path=request.url.path)
+    if role != "ADMIN":
+        raise HTTPException(status.HTTP_403_FORBIDDEN, detail="Chỉ tài khoản ADMIN mới có quyền truy cập trang này.")
+
+
+def _build_current_user(request: Request) -> dict[str, str] | None:
+    """For _layout() to render "logged in as X (role)" + the logout button
+    + the ADMIN-only "Quản lý MOD" nav link. Returns None whenever there's
+    nothing meaningful to show: login disabled (matches _is_login_configured()'s
+    "fully open, zero visual change" behavior), or no valid session."""
+    if not _is_login_configured():
+        return None
+    role = _current_role(request)
+    if role is None:
+        return None
+    return {"username": request.session.get("username", ""), "role": role}
+
+
+def _safe_next_path(next_raw: str | None) -> str:
+    """Validates a `next` redirect target came from OUR OWN /admin area
+    before ever using it — the open-redirect guard for /admin/login's POST
+    handler. Must start with "/admin/" (single leading slash, not "//..."
+    which some browsers treat as protocol-relative to another host) and
+    must not contain "://" (rules out an embedded absolute URL smuggled
+    into the path, e.g. "/admin/../https://evil.example"). Falls back to
+    "/admin" (the safe default) for anything that doesn't pass.
+
+    2026-09-24: accepts the bare "/admin" path explicitly, not just
+    "/admin/..." — previously a caller passing exactly "/admin" always fell
+    through to the same "/admin" fallback anyway, so behavior never
+    actually changed, but the check only worked by coincidence and would
+    have silently broken if the fallback value ever changed."""
+    if next_raw and not next_raw.startswith("//") and "://" not in next_raw and (
+        next_raw == "/admin" or next_raw.startswith("/admin/")
+    ):
+        return next_raw
+    return "/admin"
+
+
+def _login_layout(body: str) -> str:
+    """Standalone minimal page shell for /admin/login — deliberately NOT
+    _layout() reused: _layout()'s whole <nav> is meaningless (worse,
+    misleading — links to pages the visitor can't reach yet) before
+    login, and giving _layout() a "hide the nav" flag just for this one
+    page would mean threading it through all 9 existing call sites for
+    no benefit to them. Shares _PAGE_STYLE (same CSS/fonts/colors) so the
+    login page still looks like part of the same app — the whole point
+    of "a real custom page, not the browser's native popup"."""
+    return f"""<!doctype html>
+<html lang="vi"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Đăng nhập — human_bot admin</title>{_PAGE_STYLE}</head>
+<body>
+<div id="modal-root"></div>
+<main style="max-width:420px; margin:72px auto 0; padding:0 16px;">
+{body}
+</main>
+</body></html>"""
+
+
+def _login_page_html(next_path: str, show_error: bool) -> str:
+    error_html = (
+        '<p class="error">⚠️ Tên đăng nhập hoặc mật khẩu không đúng.</p>'
+        if show_error
+        else ""
+    )
+    return f"""
+<div class="card">
+  <h1 style="margin-top:0;">🔒 Đăng nhập</h1>
+  <p class="page-desc" style="margin-top:0;">human_bot admin</p>
+  {error_html}
+  <form method="post" action="/admin/login">
+    <input type="hidden" name="next" value="{html.escape(next_path)}">
+    <div class="field-stack">
+      <div class="field-label">Tên đăng nhập</div>
+      <div class="field-input"><input type="text" name="username" required autofocus autocomplete="username"></div>
+    </div>
+    <div class="field-stack" style="margin-top:10px;">
+      <div class="field-label">Mật khẩu</div>
+      <div class="field-input"><input type="password" name="password" required autocomplete="current-password"></div>
+    </div>
+    <div class="form-actions" style="margin-top:18px;">
+      <button type="submit" style="width:100%;">Đăng nhập</button>
+    </div>
+  </form>
+</div>"""
+
+
+@router.get("/login", response_class=HTMLResponse)
+async def login_page(request: Request, next: str = "/admin", error: bool = False):
+    """Public — must be reachable while logged out, obviously. If login
+    isn't even configured (_is_login_configured() False), there's nothing
+    to log into, so this just bounces straight to /admin rather than
+    showing a pointless form. If a valid session already exists (e.g. the
+    user hit "back" after logging in), also skip straight past the form."""
+    if not _is_login_configured() or _current_role(request) is not None:
+        return RedirectResponse("/admin", status_code=303)
+    return _login_layout(_login_page_html(_safe_next_path(next), error))
+
+
+@router.post("/login")
+async def login_submit(request: Request):
+    if not _is_login_configured():
+        return RedirectResponse("/admin", status_code=303)
+    form = await request.form()
+    username = str(form.get("username", "")).strip()
+    password = str(form.get("password", ""))
+    next_path = _safe_next_path(str(form.get("next", "")).strip() or None)
+    result = resolve_login(username, password)
+    if result is None:
+        from urllib.parse import urlencode
+        qs = urlencode({"error": "1", "next": next_path})
+        return RedirectResponse(f"/admin/login?{qs}", status_code=303)
+    role, canonical_username = result
+    # Clear first (defensive: never carry over anything from a previous,
+    # different identity's session into this one — avoids session
+    # fixation across a login boundary) before setting the new identity.
+    request.session.clear()
+    request.session["role"] = role
+    request.session["username"] = canonical_username
+    return RedirectResponse(next_path, status_code=303)
+
+
+@router.post("/logout")
+async def logout(request: Request):
+    # No auth dependency here on purpose: logging out an already-logged-out
+    # (or already-expired) session is harmless and should never itself
+    # bounce through the NotLoggedIn redirect machinery — just clear
+    # whatever session may or may not exist and send them to the login page.
+    request.session.clear()
+    return RedirectResponse("/admin/login", status_code=303)
+
+
+# --- /admin/mod-users (ADMIN-only) ------------------------------------------
+#
+# Mirrors /admin/accounts's table/modal/hx-confirm pattern exactly (see
+# _accounts_content_html/_account_modal_html/accounts_add/accounts_delete
+# above) — same htmx conventions, same reused .modal-backdrop/.modal-box/
+# .data-table CSS, same custom-confirm-modal JS (already global, no changes
+# needed) for the delete button's hx-confirm.
+
+def _mod_users_content_html(saved: bool = False, error: str | None = None) -> str:
+    users = get_mod_users()
+    flash = '<p class="flash">✅ Đã lưu.</p>' if saved else ""
+    err = f'<p class="error">⚠️ {html.escape(error)}</p>' if error else ""
+
+    if not users:
+        rows_html = '<tr><td colspan="3" class="muted">Chưa có tài khoản MOD nào.</td></tr>'
+    else:
+        rows = []
+        for u in users:
+            uname = html.escape(u["username"])
+            rows.append(f"""
+<tr>
+  <td>{uname}</td>
+  <td>{_local_dt_html(u["created_at"]) if u["created_at"] else "?"}</td>
+  <td class="col-actions">
+    <button type="button" class="btn-small"
+            hx-get="/admin/mod-users/{uname}/edit-password-modal" hx-target="#modal-root" hx-swap="innerHTML">🔑 Đổi mật khẩu</button>
+    <form method="post" action="/admin/mod-users/{uname}/delete" style="display:inline;"
+          hx-post="/admin/mod-users/{uname}/delete" hx-target="#mod-users-content" hx-swap="outerHTML"
+          hx-confirm="Xoá tài khoản MOD '{uname}'? Phiên đăng nhập hiện tại của tài khoản này (nếu có) sẽ bị đăng xuất ngay ở lần thao tác kế tiếp của họ.">
+      <button type="submit" class="btn-secondary btn-small">Xoá</button>
+    </form>
+  </td>
+</tr>""")
+        rows_html = "".join(rows)
+
+    add_btn = '<button type="button" hx-get="/admin/mod-users/add-modal" hx-target="#modal-root" hx-swap="innerHTML">➕ Thêm tài khoản MOD</button>'
+
+    return f"""
+<div class="card" id="mod-users-content">
+  {flash}{err}
+  <p class="page-desc" style="margin-top:0;">{len(users)} tài khoản MOD hiện có — mỗi tài khoản có đầy đủ quyền như ADMIN ở mọi trang khác, chỉ riêng trang này (quản lý tài khoản đăng nhập) là chỉ ADMIN vào được.</p>
+  {add_btn}
+  <div class="table-scroll" style="margin-top:12px;">
+    <table class="data-table">
+      <thead><tr><th>Tên đăng nhập</th><th>Tạo lúc</th><th>Thao tác</th></tr></thead>
+      <tbody>{rows_html}</tbody>
+    </table>
+  </div>
+</div>"""
+
+
+def _mod_user_add_modal_html(username: str = "", error: str | None = None) -> str:
+    err_html = f'<p class="error">⚠️ {html.escape(error)}</p>' if error else ""
+    return f"""
+<div class="modal-backdrop" onclick="if(event.target===this) this.remove()">
+  <div class="modal-box">
+    <div class="modal-header">
+      <h2>➕ Thêm tài khoản MOD</h2>
+      <button type="button" class="modal-close" onclick="this.closest('.modal-backdrop').remove()">✕</button>
+    </div>
+    {err_html}
+    <form method="post" action="/admin/mod-users/add" hx-post="/admin/mod-users/add" hx-target="#modal-root" hx-swap="innerHTML">
+      <div class="field-stack">
+        <div class="field-label">Tên đăng nhập</div>
+        <div class="field-input"><input type="text" name="username" value="{html.escape(username)}" required autofocus></div>
+      </div>
+      <div class="field-stack" style="margin-top:10px;">
+        <div class="field-label">Mật khẩu</div>
+        <div class="field-input"><input type="password" name="password" required minlength="6"></div>
+      </div>
+      <div class="field-stack" style="margin-top:10px;">
+        <div class="field-label">Nhập lại mật khẩu</div>
+        <div class="field-input"><input type="password" name="password_confirm" required minlength="6"></div>
+      </div>
+      <div class="form-actions">
+        <button type="button" class="btn-secondary" style="margin-right:8px;" onclick="this.closest('.modal-backdrop').remove()">Huỷ</button>
+        <button type="submit">Thêm</button>
+      </div>
+    </form>
+  </div>
+</div>"""
+
+
+def _mod_user_password_modal_html(username: str, error: str | None = None) -> str:
+    uname = html.escape(username)
+    err_html = f'<p class="error">⚠️ {html.escape(error)}</p>' if error else ""
+    return f"""
+<div class="modal-backdrop" onclick="if(event.target===this) this.remove()">
+  <div class="modal-box">
+    <div class="modal-header">
+      <h2>🔑 Đổi mật khẩu — {uname}</h2>
+      <button type="button" class="modal-close" onclick="this.closest('.modal-backdrop').remove()">✕</button>
+    </div>
+    {err_html}
+    <form method="post" action="/admin/mod-users/{uname}/edit-password" hx-post="/admin/mod-users/{uname}/edit-password" hx-target="#mod-users-content" hx-swap="outerHTML">
+      <div class="field-stack">
+        <div class="field-label">Mật khẩu mới</div>
+        <div class="field-input"><input type="password" name="new_password" required minlength="6" autofocus></div>
+      </div>
+      <div class="field-stack" style="margin-top:10px;">
+        <div class="field-label">Nhập lại mật khẩu mới</div>
+        <div class="field-input"><input type="password" name="new_password_confirm" required minlength="6"></div>
+      </div>
+      <div class="form-actions">
+        <button type="button" class="btn-secondary" style="margin-right:8px;" onclick="this.closest('.modal-backdrop').remove()">Huỷ</button>
+        <button type="submit">Đổi mật khẩu</button>
+      </div>
+    </form>
+  </div>
+</div>"""
+
+
+@router.get("/mod-users", response_class=HTMLResponse)
+async def mod_users_page(request: Request, saved: bool = False, error: str | None = None, _: None = Depends(_require_admin_role)) -> str:
+    content = _mod_users_content_html(saved, error)
+    if _is_htmx(request):
+        return content
+    return _layout(f"""
+<h1>Quản lý tài khoản MOD</h1>
+{content}
+""", active="mod_users", current_user=_build_current_user(request))
+
+
+@router.get("/mod-users/add-modal", response_class=HTMLResponse)
+async def mod_users_add_modal(_: None = Depends(_require_admin_role)) -> str:
+    return _mod_user_add_modal_html()
+
+
+@router.post("/mod-users/add")
+async def mod_users_add(request: Request, _: None = Depends(_require_admin_role)):
+    form = await request.form()
+    username = str(form.get("username", "")).strip()
+    password = str(form.get("password", ""))
+    password_confirm = str(form.get("password_confirm", ""))
+    error: str | None = None
+    if not password:
+        error = "Mật khẩu không được để trống."
+    elif password != password_confirm:
+        error = "Mật khẩu nhập lại không khớp."
+    if error is None:
+        try:
+            add_mod_user(username, password)
+        except ValueError as e:
+            error = str(e)
+    if error:
+        if _is_htmx(request):
+            return HTMLResponse(_mod_user_add_modal_html(username=username, error=error))
+        from urllib.parse import urlencode
+        return RedirectResponse(url=f"/admin/mod-users?{urlencode({'error': error})}", status_code=303)
+    if _is_htmx(request):
+        return HTMLResponse(_mod_users_content_html(saved=True))
+    return RedirectResponse(url="/admin/mod-users?saved=1", status_code=303)
+
+
+@router.post("/mod-users/{username}/delete")
+async def mod_users_delete(request: Request, username: str, _: None = Depends(_require_admin_role)):
+    delete_mod_user(username)
+    if _is_htmx(request):
+        return HTMLResponse(_mod_users_content_html(saved=True))
+    return RedirectResponse(url="/admin/mod-users?saved=1", status_code=303)
+
+
+@router.get("/mod-users/{username}/edit-password-modal", response_class=HTMLResponse)
+async def mod_users_edit_password_modal(username: str, _: None = Depends(_require_admin_role)) -> str:
+    return _mod_user_password_modal_html(username)
+
+
+@router.post("/mod-users/{username}/edit-password")
+async def mod_users_edit_password(request: Request, username: str, _: None = Depends(_require_admin_role)):
+    form = await request.form()
+    new_password = str(form.get("new_password", ""))
+    new_password_confirm = str(form.get("new_password_confirm", ""))
+    error: str | None = None
+    if not new_password:
+        error = "Mật khẩu không được để trống."
+    elif new_password != new_password_confirm:
+        error = "Mật khẩu nhập lại không khớp."
+    if error is None:
+        try:
+            update_mod_user_password(username, new_password)
+        except ValueError as e:
+            error = str(e)
+    # 2026-09-24 fix (real bug, found via live-testing during a careful
+    # re-audit of this feature): this route used to always return the bare
+    # #mod-users-content fragment, regardless of _is_htmx() — every OTHER
+    # mutating route added alongside it (mod_users_add, mod_users_delete)
+    # already branches on this, matching the whole app's own convention
+    # (see _is_htmx()'s docstring: every mutating form must still work with
+    # JS disabled, just with a full page reload). Confirmed live: this
+    # form's plain, non-htmx <form method="post"> fallback (present in the
+    # markup, per that same convention) actually returned a naked HTML
+    # fragment with no <html>/<head>/nav — a broken page, not a full reload.
+    if error:
+        if _is_htmx(request):
+            return HTMLResponse(_mod_user_password_modal_html(username, error=error))
+        from urllib.parse import urlencode
+        return RedirectResponse(url=f"/admin/mod-users?{urlencode({'error': error})}", status_code=303)
+    if _is_htmx(request):
+        return HTMLResponse(_mod_users_content_html(saved=True))
+    return RedirectResponse(url="/admin/mod-users?saved=1", status_code=303)
+
+
+def _layout(body: str, active: str = "", *, current_user: dict[str, str] | None = None) -> str:
+    """`current_user` (2026-09-24, added alongside the real /admin login):
+    {"username": str, "role": "ADMIN"|"MOD"} for whoever is logged in, or
+    None whenever there's nothing meaningful to show — either login is
+    disabled entirely (_build_current_user() returns None in that case,
+    matching "fully open, zero visual change" — the nav below looks
+    exactly like it did before this feature existed), or genuinely no
+    valid session. Every one of this function's call sites is already
+    inside a route handler with `request: Request` in scope, so each just
+    passes `current_user=_build_current_user(request)`."""
     def nav_class(key: str) -> str:
         return "active" if key == active else ""
+
+    mod_users_link = (
+        f'<a href="/admin/mod-users" class="{nav_class("mod_users")}">Quản lý MOD</a>'
+        if current_user is not None and current_user["role"] == "ADMIN"
+        else ""
+    )
+    user_chip = (
+        f"""<div style="display:flex; align-items:center; gap:10px; font-size:13px; color:#6b7280;">
+      <span>{html.escape(current_user["username"])} ({html.escape(current_user["role"])})</span>
+      <form method="post" action="/admin/logout" style="margin:0;">
+        <button type="submit" class="btn-secondary btn-small">Đăng xuất</button>
+      </form>
+    </div>"""
+        if current_user is not None
+        else ""
+    )
 
     return f"""<!doctype html>
 <html lang="vi"><head><meta charset="utf-8">
@@ -1277,7 +1730,9 @@ def _layout(body: str, active: str = "") -> str:
       <a href="/admin/groups" class="{nav_class('groups')}">Nhóm đã tham gia</a>
       <a href="/admin/schedule" class="{nav_class('schedule')}">Lịch đăng</a>
       <a href="/admin/reports" class="{nav_class('reports')}">Báo cáo</a>
+      {mod_users_link}
     </nav>
+    {user_chip}
   </div>
 </div>
 <main>
@@ -1287,7 +1742,7 @@ def _layout(body: str, active: str = "") -> str:
 
 
 @router.get("", response_class=HTMLResponse)
-async def admin_home(_: None = Depends(_require_auth)) -> str:
+async def admin_home(request: Request, _: None = Depends(_require_login)) -> str:
     accounts = get_all_accounts()
     accounts_html = "".join(f"<li>{html.escape(a.display_name)} ({html.escape(aid)})</li>" for aid, a in accounts.items()) or '<span class="muted">Chưa có tài khoản nào</span>'
 
@@ -1342,11 +1797,11 @@ async def admin_home(_: None = Depends(_require_auth)) -> str:
     <div class="desc">Tài khoản nào đăng bao nhiêu bài mỗi tuần, đăng vào nhóm nào, tỉ lệ thành công/thất bại.</div>
   </a>
 </div>
-""", active="home")
+""", active="home", current_user=_build_current_user(request))
 
 
 @router.get("/config", response_class=HTMLResponse)
-async def config_form(saved: bool = False, tab: str = "behavior", _: None = Depends(_require_auth)) -> str:
+async def config_form(request: Request, saved: bool = False, tab: str = "behavior", _: None = Depends(_require_login)) -> str:
     def render_rows(config_cls, editable_fields, labels, current, prefix, field_subset=None):
         """`field_subset` narrows which of `editable_fields` actually get
         rendered here — used to split DataSyncConfig's 2 AI-toggle fields
@@ -1451,11 +1906,11 @@ async def config_form(saved: bool = False, tab: str = "behavior", _: None = Depe
 </div>
 <div class="form-actions"><button type="submit">Lưu cấu hình</button></div>
 </form>
-""", active="config")
+""", active="config", current_user=_build_current_user(request))
 
 
 @router.post("/config")
-async def config_save(request: Request, _: None = Depends(_require_auth)) -> RedirectResponse:
+async def config_save(request: Request, _: None = Depends(_require_login)) -> RedirectResponse:
     """Blindly casting every numeric field to `float` here used to corrupt
     any field whose dataclass actually declares `int` (found 2026-09-07:
     HumanMouseConfig.min_steps/max_steps went 8 -> 8.0 the very first time
@@ -1489,7 +1944,7 @@ async def config_save(request: Request, _: None = Depends(_require_auth)) -> Red
 
 
 @router.post("/config/ai-provider", response_class=HTMLResponse)
-async def config_ai_provider_save(request: Request, _: None = Depends(_require_auth)) -> str:
+async def config_ai_provider_save(request: Request, _: None = Depends(_require_login)) -> str:
     form = await request.form()
     provider_keys = [p["key"] for p in _AI_PROVIDERS]
     provider = str(form.get("ai_provider", "anthropic")).strip().lower()
@@ -1513,7 +1968,7 @@ async def config_ai_provider_save(request: Request, _: None = Depends(_require_a
 
 
 @router.post("/config/ai-provider/clear-key", response_class=HTMLResponse)
-async def config_ai_provider_clear_key(request: Request, _: None = Depends(_require_auth)) -> str:
+async def config_ai_provider_clear_key(request: Request, _: None = Depends(_require_login)) -> str:
     form = await request.form()
     provider = str(form.get("provider", "")).strip().lower()
     provider_info = next((p for p in _AI_PROVIDERS if p["key"] == provider), None)
@@ -1640,12 +2095,12 @@ def _bootstrap_login_modal_html(account_id: str) -> str:
 
 
 @router.get("/accounts/bootstrap-login-modal", response_class=HTMLResponse)
-async def accounts_bootstrap_login_modal(account_id: str, _: None = Depends(_require_auth)) -> str:
+async def accounts_bootstrap_login_modal(account_id: str, _: None = Depends(_require_login)) -> str:
     return _bootstrap_login_modal_html(account_id)
 
 
 @router.post("/accounts/bootstrap-login/start", response_class=HTMLResponse)
-async def accounts_bootstrap_login_start(request: Request, _: None = Depends(_require_auth)) -> str:
+async def accounts_bootstrap_login_start(request: Request, _: None = Depends(_require_login)) -> str:
     form = await request.form()
     account_id = str(form.get("account_id", "")).strip()
     if not re.fullmatch(r"[a-z0-9_]+", account_id or ""):
@@ -1660,12 +2115,12 @@ async def accounts_bootstrap_login_start(request: Request, _: None = Depends(_re
 
 
 @router.get("/accounts/bootstrap-login/status", response_class=HTMLResponse)
-async def accounts_bootstrap_login_status(account_id: str, _: None = Depends(_require_auth)) -> str:
+async def accounts_bootstrap_login_status(account_id: str, _: None = Depends(_require_login)) -> str:
     return _bootstrap_login_status_html(account_id)
 
 
 @router.post("/accounts/bootstrap-login/confirm", response_class=HTMLResponse)
-async def accounts_bootstrap_login_confirm(request: Request, _: None = Depends(_require_auth)) -> str:
+async def accounts_bootstrap_login_confirm(request: Request, _: None = Depends(_require_login)) -> str:
     form = await request.form()
     account_id = str(form.get("account_id", "")).strip()
     ok, error = await bootstrap_login_sessions.confirm(account_id)
@@ -1698,7 +2153,7 @@ async def accounts_bootstrap_login_confirm(request: Request, _: None = Depends(_
 
 
 @router.post("/accounts/bootstrap-login/cancel", response_class=HTMLResponse)
-async def accounts_bootstrap_login_cancel(request: Request, _: None = Depends(_require_auth)) -> str:
+async def accounts_bootstrap_login_cancel(request: Request, _: None = Depends(_require_login)) -> str:
     form = await request.form()
     account_id = str(form.get("account_id", "")).strip()
     await bootstrap_login_sessions.cancel(account_id)
@@ -2113,7 +2568,7 @@ def _accounts_content_html(saved: bool = False, error: str | None = None, oob: b
 @router.get("/accounts", response_class=HTMLResponse)
 async def accounts_page(
     request: Request, saved: bool = False, error: str | None = None, tab: str = "accounts",
-    _: None = Depends(_require_auth),
+    _: None = Depends(_require_login),
 ) -> str:
     content = _accounts_content_html(saved, error)
     if _is_htmx(request):
@@ -2146,16 +2601,16 @@ async def accounts_page(
     {_sync_content_html(saved=(saved and active_tab == "sync"))}
   </div>
 </div>
-""", active="accounts")
+""", active="accounts", current_user=_build_current_user(request))
 
 
 @router.get("/accounts/add-modal", response_class=HTMLResponse)
-async def accounts_add_modal(_: None = Depends(_require_auth)) -> str:
+async def accounts_add_modal(_: None = Depends(_require_login)) -> str:
     return _account_modal_html()
 
 
 @router.post("/accounts/add")
-async def accounts_add(request: Request, _: None = Depends(_require_auth)):
+async def accounts_add(request: Request, _: None = Depends(_require_login)):
     form = await request.form()
     account_id = str(form.get("account_id", "")).strip().lower()
     display_name = str(form.get("display_name", "")).strip()
@@ -2189,7 +2644,7 @@ async def accounts_add(request: Request, _: None = Depends(_require_auth)):
 
 
 @router.post("/accounts/pause")
-async def accounts_pause(request: Request, _: None = Depends(_require_auth)):
+async def accounts_pause(request: Request, _: None = Depends(_require_login)):
     form = await request.form()
     account_id = str(form.get("account_id", "")).strip()
     set_account_paused(account_id, True)
@@ -2199,7 +2654,7 @@ async def accounts_pause(request: Request, _: None = Depends(_require_auth)):
 
 
 @router.post("/accounts/resume")
-async def accounts_resume(request: Request, _: None = Depends(_require_auth)):
+async def accounts_resume(request: Request, _: None = Depends(_require_login)):
     form = await request.form()
     account_id = str(form.get("account_id", "")).strip()
     resume_account(account_id)  # clears the pause AND starts the reduced-limit cooldown
@@ -2209,7 +2664,7 @@ async def accounts_resume(request: Request, _: None = Depends(_require_auth)):
 
 
 @router.post("/accounts/sync-disable")
-async def accounts_sync_disable(request: Request, _: None = Depends(_require_auth)):
+async def accounts_sync_disable(request: Request, _: None = Depends(_require_login)):
     form = await request.form()
     account_id = str(form.get("account_id", "")).strip()
     set_account_sync_enabled(account_id, False)
@@ -2219,7 +2674,7 @@ async def accounts_sync_disable(request: Request, _: None = Depends(_require_aut
 
 
 @router.post("/accounts/sync-enable")
-async def accounts_sync_enable(request: Request, _: None = Depends(_require_auth)):
+async def accounts_sync_enable(request: Request, _: None = Depends(_require_login)):
     form = await request.form()
     account_id = str(form.get("account_id", "")).strip()
     set_account_sync_enabled(account_id, True)
@@ -2229,7 +2684,7 @@ async def accounts_sync_enable(request: Request, _: None = Depends(_require_auth
 
 
 @router.post("/accounts/sponsored-only-enable")
-async def accounts_sponsored_only_enable(request: Request, _: None = Depends(_require_auth)):
+async def accounts_sponsored_only_enable(request: Request, _: None = Depends(_require_login)):
     form = await request.form()
     account_id = str(form.get("account_id", "")).strip()
     set_account_sponsored_only(account_id, True)
@@ -2239,7 +2694,7 @@ async def accounts_sponsored_only_enable(request: Request, _: None = Depends(_re
 
 
 @router.post("/accounts/sponsored-only-disable")
-async def accounts_sponsored_only_disable(request: Request, _: None = Depends(_require_auth)):
+async def accounts_sponsored_only_disable(request: Request, _: None = Depends(_require_login)):
     form = await request.form()
     account_id = str(form.get("account_id", "")).strip()
     set_account_sponsored_only(account_id, False)
@@ -2249,7 +2704,7 @@ async def accounts_sponsored_only_disable(request: Request, _: None = Depends(_r
 
 
 @router.post("/accounts/delete")
-async def accounts_delete(request: Request, _: None = Depends(_require_auth)):
+async def accounts_delete(request: Request, _: None = Depends(_require_login)):
     """Removes the account from human_bot entirely, whatever its origin:
     delete_registered_account() drops it from /admin/accounts' registry
     (no-op if it's a code-level ACCOUNTS entry instead), and
@@ -2309,7 +2764,7 @@ async def accounts_delete(request: Request, _: None = Depends(_require_auth)):
 
 
 @router.get("/accounts/rate-limits-modal", response_class=HTMLResponse)
-async def accounts_rate_limits_modal(account_id: str, _: None = Depends(_require_auth)) -> str:
+async def accounts_rate_limits_modal(account_id: str, _: None = Depends(_require_login)) -> str:
     accounts = get_all_accounts()
     if account_id not in accounts:
         return _rate_limits_modal_html(account_id, RateLimits(), is_override=False, error="Không tìm thấy tài khoản này")
@@ -2318,7 +2773,7 @@ async def accounts_rate_limits_modal(account_id: str, _: None = Depends(_require
 
 
 @router.post("/accounts/rate-limits")
-async def accounts_rate_limits_save(request: Request, _: None = Depends(_require_auth)):
+async def accounts_rate_limits_save(request: Request, _: None = Depends(_require_login)):
     """Saves a per-account RateLimits override (human_bot/runtime_config.py's
     save_rate_limits_overrides) — or, on the "Khôi phục mặc định" button
     (form field `reset`), clears it back to the account's code-level
@@ -2412,6 +2867,7 @@ def _parse_scheduled_at(raw: str) -> datetime | None:
 
 @router.get("/post", response_class=HTMLResponse)
 async def post_form(
+    request: Request,
     account_id: str | None = None,
     scheduled: int | None = None,
     posted: str | None = None,
@@ -2425,7 +2881,7 @@ async def post_form(
     prefill_content: str | None = None,
     prefill_target_url: str | None = None,
     prefill_retry_of_log_id: int | None = None,
-    _: None = Depends(_require_auth),
+    _: None = Depends(_require_login),
 ) -> str:
     accounts = get_all_accounts()
     account_ids = list(accounts)
@@ -2434,6 +2890,7 @@ async def post_form(
             '<h1>Đăng bài</h1><div class="empty-state">Chưa có tài khoản nào — '
             'đăng ký ở <a href="/admin/accounts">/admin/accounts</a> trước.</div>',
             active="post",
+            current_user=_build_current_user(request),
         )
     if account_id not in accounts:
         account_id = account_ids[0]
@@ -2616,7 +3073,7 @@ async def post_form(
     {comment_post_card}
   </div>
 </div>
-""", active="post")
+""", active="post", current_user=_build_current_user(request))
 
 
 def _parse_retry_of_log_id(form) -> int | None:
@@ -2637,7 +3094,7 @@ def _parse_retry_of_log_id(form) -> int | None:
 
 
 @router.post("/post/schedule-profile")
-async def post_schedule_profile(request: Request, _: None = Depends(_require_auth)) -> RedirectResponse:
+async def post_schedule_profile(request: Request, _: None = Depends(_require_login)) -> RedirectResponse:
     form = await request.form()
     account_id = str(form.get("account_id", "")).strip()
     content = str(form.get("content", "")).strip()
@@ -2664,7 +3121,7 @@ async def post_schedule_profile(request: Request, _: None = Depends(_require_aut
 
 
 @router.post("/post/schedule-groups")
-async def post_schedule_groups(request: Request, _: None = Depends(_require_auth)) -> RedirectResponse:
+async def post_schedule_groups(request: Request, _: None = Depends(_require_login)) -> RedirectResponse:
     form = await request.form()
     account_id = str(form.get("account_id", "")).strip()
 
@@ -2724,7 +3181,7 @@ async def post_schedule_groups(request: Request, _: None = Depends(_require_auth
 
 
 @router.post("/post/schedule-comment")
-async def post_schedule_comment(request: Request, _: None = Depends(_require_auth)) -> RedirectResponse:
+async def post_schedule_comment(request: Request, _: None = Depends(_require_login)) -> RedirectResponse:
     """Schedules a comment onto a specific existing FB post/profile (not a
     new post like schedule-groups above) — added 2026-09-12 so /admin/
     reports' "📅 Đặt lịch" has a landing page for a candidate comment.
@@ -3399,7 +3856,7 @@ async def schedule_list(
     date: str | None = None,
     tz_offset: int = 0,
     missed_min_days: str | None = None,
-    _: None = Depends(_require_auth),
+    _: None = Depends(_require_login),
 ) -> str:
     # missed_min_days arrives as a STRING query param (not int | None)
     # because the "— Tất cả —" filter option's value is "" — FastAPI
@@ -3422,7 +3879,7 @@ async def schedule_list(
 <p class="page-desc">Mọi bài chờ đăng — tự động từ bộ đồng bộ bên B (human_bot/data_sync.py) hoặc soạn thủ công ở /admin/post — đều nằm ở đây trước khi thật sự chạy.</p>
 {_auto_fire_status_html()}
 {content}
-""", active="schedule")
+""", active="schedule", current_user=_build_current_user(request))
 
 
 def _schedule_redirect(account_id: str | None, page: int, **params) -> RedirectResponse:
@@ -3468,7 +3925,7 @@ def _schedule_form_filter(form) -> tuple[str | None, int, int, int, str | None, 
 
 
 @router.post("/schedule/update")
-async def schedule_update(request: Request, _: None = Depends(_require_auth)):
+async def schedule_update(request: Request, _: None = Depends(_require_login)):
     form = await request.form()
     account_id, page, page_size, missed_page, action_filter, date_filter, tz_offset, _missed_min_days = _schedule_form_filter(form)
     task_id = str(form.get("task_id", ""))
@@ -3490,7 +3947,7 @@ async def schedule_update(request: Request, _: None = Depends(_require_auth)):
 
 
 @router.post("/schedule/cancel")
-async def schedule_cancel(request: Request, _: None = Depends(_require_auth)):
+async def schedule_cancel(request: Request, _: None = Depends(_require_login)):
     form = await request.form()
     account_id, page, page_size, missed_page, action_filter, date_filter, tz_offset, _missed_min_days = _schedule_form_filter(form)
     task_id = str(form.get("task_id", ""))
@@ -3506,7 +3963,7 @@ async def schedule_cancel(request: Request, _: None = Depends(_require_auth)):
 # the one-time startup sweep pulled out of pending/.
 
 @router.post("/schedule/missed/reschedule")
-async def schedule_missed_reschedule(request: Request, _: None = Depends(_require_auth)):
+async def schedule_missed_reschedule(request: Request, _: None = Depends(_require_login)):
     """"📅 Đặt lịch" on a missed task — admin picks the content/time by
     hand, same edit form shape as schedule_update() above, but the SOURCE
     is missed/ instead of pending/ (schedule_store.restore_to_pending())."""
@@ -3530,7 +3987,7 @@ async def schedule_missed_reschedule(request: Request, _: None = Depends(_requir
 async def schedule_missed_suggest(
     task_id: str, account_id: str | None = None, page: int = 1, page_size: int = _SCHEDULE_PAGE_SIZE,
     missed_page: int = 1, missed_min_days: int | None = None,
-    _: None = Depends(_require_auth),
+    _: None = Depends(_require_login),
 ) -> str:
     """"🔄 Lên lịch lại" step 1 on a missed task — same suggestion engine
     as /admin/reports' retry flow (_suggest_reschedule_at()), just fed a
@@ -3577,7 +4034,7 @@ async def schedule_missed_suggest(
 
 
 @router.post("/schedule/missed/reschedule-confirm")
-async def schedule_missed_reschedule_confirm(request: Request, _: None = Depends(_require_auth)):
+async def schedule_missed_reschedule_confirm(request: Request, _: None = Depends(_require_login)):
     """"🔄 Lên lịch lại" step 2 — admin confirmed the suggested slot."""
     form = await request.form()
     account_id, page, page_size, missed_page, _action_filter, _date_filter, _tz_offset, missed_min_days = _schedule_form_filter(form)
@@ -3597,7 +4054,7 @@ async def schedule_missed_reschedule_confirm(request: Request, _: None = Depends
 
 
 @router.post("/schedule/missed/cancel")
-async def schedule_missed_cancel(request: Request, _: None = Depends(_require_auth)):
+async def schedule_missed_cancel(request: Request, _: None = Depends(_require_login)):
     form = await request.form()
     account_id, page, page_size, missed_page, _action_filter, _date_filter, _tz_offset, missed_min_days = _schedule_form_filter(form)
     task_id = str(form.get("task_id", ""))
@@ -3608,7 +4065,7 @@ async def schedule_missed_cancel(request: Request, _: None = Depends(_require_au
 
 
 @router.post("/schedule/missed/bulk-cancel")
-async def schedule_missed_bulk_cancel(request: Request, _: None = Depends(_require_auth)):
+async def schedule_missed_bulk_cancel(request: Request, _: None = Depends(_require_login)):
     """"🗑️ Xoá đã chọn" — the "chọn nhiều/chọn tất cả rồi xoá một lúc"
     owner asked for. `task_ids` arrives as a repeated form field (each
     checked checkbox); every id gets cancel_missed()'d independently —
@@ -3676,7 +4133,7 @@ def _fire_now_confirm_modal_html(
 
 
 @router.post("/schedule/fire-now")
-async def schedule_fire_now(request: Request, _: None = Depends(_require_auth)):
+async def schedule_fire_now(request: Request, _: None = Depends(_require_login)):
     """Post a scheduled task immediately, bypassing auto_fire_enabled — this
     button is the manual override for when that safety gate is (correctly)
     left off. See docs/architecture.md section 3c.
@@ -3927,7 +4384,7 @@ async def groups_form(
     account_id: str | None = None,
     saved: bool = False,
     error: str | None = None,
-    _: None = Depends(_require_auth),
+    _: None = Depends(_require_login),
 ) -> str:
     content = _groups_content_html(account_id, saved, error)
     if _is_htmx(request):
@@ -3936,11 +4393,11 @@ async def groups_form(
 <h1>Nhóm đã tham gia</h1>
 <p class="page-desc">Danh sách nhóm Facebook mỗi tài khoản đã tham gia. Bộ đồng bộ dữ liệu bên B (human_bot/data_sync.py) dùng danh sách này để broadcast mỗi bài tuyển dụng mới vào tất cả các nhóm của tài khoản tương ứng. Lưu ở đây có hiệu lực ngay, không cần sửa code hay khởi động lại. Ưu tiên URL dạng ID số thay vì tên tuỳ chỉnh — xem docs/skills/group-targeting.md, mục "Numeric ID vs. custom (vanity) group URL".</p>
 {content}
-""", active="groups")
+""", active="groups", current_user=_build_current_user(request))
 
 
 @router.get("/groups/add-modal", response_class=HTMLResponse)
-async def groups_add_modal(account_id: str | None = None, _: None = Depends(_require_auth)) -> str:
+async def groups_add_modal(account_id: str | None = None, _: None = Depends(_require_login)) -> str:
     accounts = get_all_accounts()
     account_ids = list(accounts)
     if account_id not in accounts:
@@ -3953,7 +4410,7 @@ def _find_group(groups: list[GroupRef], group_id: str) -> GroupRef | None:
 
 
 @router.get("/groups/edit-modal", response_class=HTMLResponse)
-async def groups_edit_modal(account_id: str, group_id: str, _: None = Depends(_require_auth)) -> str:
+async def groups_edit_modal(account_id: str, group_id: str, _: None = Depends(_require_login)) -> str:
     g = _find_group(get_joined_groups(account_id), group_id)
     if g is None:
         return _group_modal_html("edit", account_id, group_id=group_id, error="Mục không còn tồn tại — có thể đã bị xoá.")
@@ -3961,7 +4418,7 @@ async def groups_edit_modal(account_id: str, group_id: str, _: None = Depends(_r
 
 
 @router.post("/groups/add")
-async def groups_add(request: Request, _: None = Depends(_require_auth)):
+async def groups_add(request: Request, _: None = Depends(_require_login)):
     form = await request.form()
     account_id = str(form.get("account_id", ""))
     name = str(form.get("name", "")).strip()
@@ -3983,7 +4440,7 @@ async def groups_add(request: Request, _: None = Depends(_require_auth)):
 
 
 @router.post("/groups/update")
-async def groups_update(request: Request, _: None = Depends(_require_auth)):
+async def groups_update(request: Request, _: None = Depends(_require_login)):
     form = await request.form()
     account_id = str(form.get("account_id", ""))
     group_id = str(form.get("group_id", "")).strip()
@@ -4014,7 +4471,7 @@ async def groups_update(request: Request, _: None = Depends(_require_auth)):
 
 
 @router.post("/groups/delete")
-async def groups_delete(request: Request, _: None = Depends(_require_auth)):
+async def groups_delete(request: Request, _: None = Depends(_require_login)):
     form = await request.form()
     account_id = str(form.get("account_id", ""))
     group_id = str(form.get("group_id", "")).strip()
@@ -5020,7 +5477,7 @@ def _reports_content_html(
 
 
 @router.get("/screenshot")
-async def admin_screenshot(path: str, _: None = Depends(_require_auth)):
+async def admin_screenshot(path: str, _: None = Depends(_require_login)):
     """Serves one evidence screenshot (human_bot/screenshots.py) from
     /admin/reports' "Ảnh" column. `path` is the absolute path stored in
     action_log.screenshot_path — resolved and checked against
@@ -5049,7 +5506,7 @@ async def reports_page(
     posted: str | None = None,
     error: str | None = None,
     warning: str | None = None,
-    _: None = Depends(_require_auth),
+    _: None = Depends(_require_login),
 ) -> str:
     content = _reports_content_html(account_id=account_id, days=days, page=page, page_size=page_size, job_page=job_page, candidate_page=candidate_page, tab=tab, posted=posted, error=error, warning=warning)
     if _is_htmx(request):
@@ -5058,7 +5515,7 @@ async def reports_page(
 <h1>Báo cáo</h1>
 <p class="page-desc">Thống kê từ toàn bộ hành động human_bot đã thử thực hiện (thành công lẫn thất bại) — ghi tự động mỗi lần qua human_bot/agent.py's run_task(), không phân biệt đăng thủ công, từ hàng đợi, đặt lịch, hay tự động từ bộ đồng bộ bên B.</p>
 {content}
-""", active="reports")
+""", active="reports", current_user=_build_current_user(request))
 
 
 def _reports_redirect(account_id: str | None, days: str | None, page: int, **params) -> RedirectResponse:
@@ -5069,7 +5526,7 @@ def _reports_redirect(account_id: str | None, days: str | None, page: int, **par
 
 
 @router.post("/reports/repost")
-async def reports_repost(request: Request, _: None = Depends(_require_auth)):
+async def reports_repost(request: Request, _: None = Depends(_require_login)):
     """"Đăng lại" — resubmit a past action_log row as a brand-new task via
     run_task(), fired immediately (same as /admin/schedule's "Đăng ngay").
     Only ever text-only: media_path is never captured in action_log (see
@@ -5173,7 +5630,7 @@ async def reports_repost_choice(
     job_page: int = 1,
     candidate_page: int = 1,
     tab: str = "recent",
-    _: None = Depends(_require_auth),
+    _: None = Depends(_require_login),
 ) -> str:
     """Opens the 3-way "Đăng lại" choice modal (owner request 2026-09-12)
     — hx-target="#modal-root" from _repost_choice_button_html()."""
@@ -5196,7 +5653,7 @@ async def reports_reschedule_suggest(
     job_page: int = 1,
     candidate_page: int = 1,
     tab: str = "recent",
-    _: None = Depends(_require_auth),
+    _: None = Depends(_require_login),
 ) -> str:
     """Step 1 of "Lên lịch lại" — computes and shows the suggested slot
     (_suggest_reschedule_at()); admin confirms via
@@ -5247,7 +5704,7 @@ async def reports_reschedule_suggest(
 
 
 @router.post("/reports/reschedule-confirm")
-async def reports_reschedule_confirm(request: Request, _: None = Depends(_require_auth)):
+async def reports_reschedule_confirm(request: Request, _: None = Depends(_require_login)):
     """"Lên lịch lại" step 2 — creates the actual ScheduledTask at the
     admin-confirmed slot (schedule_store, same as any other pending task —
     reviewable/editable/cancellable at /admin/schedule before it fires).

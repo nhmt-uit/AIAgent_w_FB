@@ -38,18 +38,21 @@ from dotenv import load_dotenv
 
 load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 
-from fastapi import Depends, FastAPI, Header, HTTPException, status  # noqa: E402
+from fastapi import Depends, FastAPI, Header, HTTPException, Request, status  # noqa: E402
+from fastapi.responses import RedirectResponse, Response  # noqa: E402
 from pydantic import BaseModel  # noqa: E402
+from starlette.middleware.sessions import SessionMiddleware  # noqa: E402
 
 import asyncio  # noqa: E402
 import logging  # noqa: E402
 import os  # noqa: E402
 import secrets  # noqa: E402
 import sys  # noqa: E402
+from urllib.parse import quote  # noqa: E402
 from datetime import datetime, timezone  # noqa: E402
 
 from human_bot import data_sync, schedule_store, screenshots  # noqa: E402
-from human_bot.admin import router as admin_router  # noqa: E402
+from human_bot.admin import NotLoggedIn, router as admin_router  # noqa: E402
 from human_bot.agent import TaskRequest, run_task  # noqa: E402
 from human_bot.browser_pool import close_all, warm_up  # noqa: E402
 from human_bot.config import AccountStatus, get_all_accounts  # noqa: E402
@@ -295,6 +298,30 @@ def _warn_if_auth_unconfigured() -> list[str]:
     return missing
 
 
+def _get_or_create_session_secret() -> str:
+    """Key used to sign the /admin login-session cookie (Starlette's
+    SessionMiddleware, added 2026-09-24 alongside the real login page that
+    replaced Basic Auth — see human_bot/admin.py's _require_login()).
+
+    Unlike ADMIN_USERNAME/ADMIN_PASSWORD/TASKS_API_KEY above, a missing
+    SESSION_SECRET_KEY is NOT treated as an open security hole worth an
+    interactive abort prompt — it only means sessions can't survive a
+    restart (a UX papercut: everyone gets logged out), not that anyone
+    unauthenticated gets in. So this generates a fresh random key at
+    every process startup instead (secrets.token_hex(32) — same entropy
+    class as a real secret should have) and just logs a lighter warning
+    recommending a persistent value be set in .env."""
+    configured = os.environ.get("SESSION_SECRET_KEY", "").strip()
+    if configured:
+        return configured
+    logger.warning(
+        "SECURITY: SESSION_SECRET_KEY not set in .env — using a random ephemeral key for "
+        "this run only. Every /admin login session will be invalidated the next time this "
+        "service restarts. Set SESSION_SECRET_KEY in .env for sessions that survive a restart."
+    )
+    return secrets.token_hex(32)
+
+
 def _confirm_startup_or_abort(missing: list[str]) -> None:
     """Interactive y/n gate for the auth-missing case — requested
     2026-09-10 after the project owner asked for a way to not silently
@@ -367,6 +394,50 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="human_bot", lifespan=lifespan)
+
+# /admin login session cookie (2026-09-24) — see _get_or_create_session_secret()'s
+# docstring and human_bot/admin.py's _require_login()/_current_role(). Added
+# unconditionally (regardless of whether ADMIN_USERNAME/PASSWORD are set, i.e.
+# regardless of whether login is actually "on") — the middleware itself is
+# cheap and harmless when unused; the on/off toggle lives entirely in
+# admin.py's _is_login_configured(), not here.
+app.add_middleware(
+    SessionMiddleware,
+    secret_key=_get_or_create_session_secret(),
+    session_cookie="human_bot_admin_session",
+    max_age=14 * 24 * 60 * 60,  # 14 days — owner's explicit choice, 2026-09-24
+    same_site="lax",
+    # This project's own long-standing threat model (see this file's module
+    # docstring above): /admin is for local/trusted-network use only, never
+    # exposed unauthenticated to the public internet. If that ever changes
+    # and this sits behind real TLS, flip this to True.
+    https_only=False,
+)
+
+
+@app.exception_handler(NotLoggedIn)
+async def _handle_not_logged_in(request: Request, exc: NotLoggedIn) -> Response:
+    """A route's _require_login()/_require_admin_role() dependency raises
+    this instead of returning a redirect directly (a FastAPI Depends()
+    can't itself short-circuit a route with an arbitrary response — an
+    exception + handler is the standard way). Two different responses
+    depending on how the request arrived:
+    - A normal browser navigation (no session / session revoked) gets a
+      real 303 redirect to the login page.
+    - An htmx-driven request (clicking a button that does an hx-post/hx-get
+      partway through the page) gets an HX-Redirect header instead — a
+      plain 303 here would make htmx try to swap the login page's HTML
+      into whatever small target div triggered the request, which reads
+      as a broken UI rather than "please log in again". HX-Redirect tells
+      htmx to do a full top-level navigation instead."""
+    login_url = "/admin/login"
+    if exc.next_path:
+        login_url += "?next=" + quote(exc.next_path, safe="")
+    if request.headers.get("hx-request") == "true":
+        return Response(status_code=200, headers={"HX-Redirect": login_url})
+    return RedirectResponse(login_url, status_code=303)
+
+
 app.include_router(admin_router)
 
 

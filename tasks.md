@@ -72,6 +72,7 @@
 - [Tính năng mới: lọc + tự huỷ "Task quá hạn" sau 30 ngày](#tính-năng-mới-bộ-lọc-quá-hạn-n-ngày-tự-huỷ-task-quá-hạn-30-ngày-ở-task-quá-hạn-2026-09-24)
 - [Bug: bộ lọc "Quá hạn" biến mất khi không có task khớp](#bug-thật-bộ-lọc-quá-hạn-biến-mất-hoàn-toàn-khi-không-có-task-nào-khớp-2026-09-24)
 - [Bug: chọn "Tất cả" ở filter Quá hạn không quay lại đúng (422)](#bug-thật-thứ-2-cùng-tính-năng-chọn-tất-cả-ở-filter-quá-hạn-không-quay-lại-đúng-2026-09-24)
+- [Đăng nhập thật cho /admin — ADMIN + MOD](#đăng-nhập-thật-cho-admin-admin-mod-thay-hẳn-http-basic-auth-2026-09-24)
 - [Rà soát toàn diện + thêm CI cho GitLab](#rà-soát-toàn-diện-dự-án-theo-yêu-cầu-owner-còn-gì-cần-cải-thiện-thêm-ci-cho-gitlab-2026-09-24)
 - [Thay popup xác nhận mặc định bằng modal tự làm](#thay-popup-xác-nhận-mặc-định-của-trình-duyệt-bằng-modal-tự-làm-2026-09-24)
 
@@ -3753,3 +3754,246 @@ khi dựng là an toàn, không phá modal cha nào đang mở. 212 test vẫn p
 (thay đổi thuần JS/HTML, không đụng logic Python nào). **Chưa
 live-confirm qua trình duyệt thật** — cần bạn tự bấm thử 1 nút xoá bất
 kỳ để xác nhận modal mới hiện đúng.
+
+## Đăng nhập thật cho `/admin` — ADMIN + MOD, thay hẳn HTTP Basic Auth (2026-09-24)
+
+Owner yêu cầu: bật/tắt được đăng nhập (giữ nguyên cơ chế cũ), trang đăng
+nhập tự làm (không phải popup trình duyệt), 2 vai trò — **ADMIN** (đúng
+1, cố định trong `.env`, ADMIN có quyền thêm/xoá/sửa MOD) và **MOD**
+(0-4 tài khoản). Cả 2 toàn quyền mọi trang, **trừ** `/admin/mod-users`
+(trang quản lý tài khoản MOD mới) chỉ ADMIN vào được. Yêu cầu rõ: "đọc
+kĩ code, không được cẩu thả" — đã dùng **plan mode** đầy đủ (3 Explore
+agent đọc trực tiếp `admin.py`/`runtime_config.py`/`service.py`/test
+suite trước khi thiết kế, 1 Plan agent thiết kế chi tiết, xác nhận lại 3
+quyết định mở với owner qua `AskUserQuestion` trước khi viết code) — xem
+plan file đã lưu trong hội thoại để có đầy đủ lý luận từng bước.
+
+**3 quyết định đã chốt với owner trước khi code**: tên đăng nhập MOD
+phân biệt hoa/thường (khớp cách `ADMIN_USERNAME` so sánh); phiên đăng
+nhập hết hạn sau **14 ngày**; **có** thêm bộ test HTTP thật riêng cho
+đăng nhập (phá lệ quy ước "không test HTTP cho `admin.py`" — lý do:
+bug loại session/redirect/phân quyền chỉ test HTTP thật mới bắt được).
+
+### `human_bot/runtime_config.py` — thêm mới, không sửa gì cũ
+
+Đặt ngay sau khối `accounts`/`save_registered_account` có sẵn, sao chép
+đúng khuôn read-merge-write của khối đó. Khoá JSON mới `mod_users`
+(list `{username, password_hash, salt, iterations, created_at}`,
+KHÔNG BAO GIỜ lộ `password_hash`/`salt` ra HTML):
+- `hash_password()`/`verify_password()` — `hashlib.pbkdf2_hmac` (260k
+  vòng, chuẩn OWASP 2023), salt riêng mỗi user (`secrets.token_hex(16)`),
+  so bằng `secrets.compare_digest` (đúng kiểu constant-time app đã dùng
+  cho Basic Auth/API key).
+- `get_mod_users()`, `get_mod_user(username)`, `add_mod_user()` (báo lỗi
+  trùng tên/quá 4 tài khoản/chứa `/` hoặc khoảng trắng — ký tự `/` sẽ phá
+  route `/admin/mod-users/{username}/...`, phát hiện lúc review lại code
+  chứ owner không yêu cầu, tự thêm cho chắc), `update_mod_user_password()`
+  (giữ nguyên `created_at`), `delete_mod_user()` (xoá êm, không lỗi nếu
+  không tồn tại).
+- `resolve_login(username, password) -> (role, username) | None` —
+  kiểm tra ADMIN trước (đọc `.env` tươi mỗi lần); **quan trọng**: nếu
+  username khớp `ADMIN_USERNAME` thì coi đây là danh tính ADMIN đã bị
+  "giữ chỗ" — sai mật khẩu ADMIN thì trả `None` LUÔN, KHÔNG rơi xuống dò
+  tiếp danh sách MOD dù lỡ có 1 tài khoản MOD trùng tên — phát hiện bug
+  này ngay trong lúc viết test đầu tiên (test ban đầu kỳ vọng sai, sửa
+  lại code cho đúng ý đã ghi trong kế hoạch).
+- **13 test mới** (băm/so mật khẩu, salt khác nhau mỗi lần, CRUD MOD đủ
+  ca kể cả trùng tên/quá 4/ký tự cấm/user không tồn tại, `resolve_login`
+  cả 3 trường hợp dùng `monkeypatch.setenv`/`delenv` đúng tiền lệ
+  `test_service_auth_warning.py`).
+
+### `human_bot/service.py`
+
+`_get_or_create_session_secret()` — đọc `SESSION_SECRET_KEY`, rỗng thì
+tự sinh `secrets.token_hex(32)` + cảnh báo SECURITY RIÊNG (KHÔNG gộp
+vào `_missing_auth_env_vars()`/lời nhắc chặn khởi động — chỉ là bất
+tiện mất phiên, không phải lỗ hổng mở, không đáng chặn khởi động).
+`app.add_middleware(SessionMiddleware, ..., max_age=14 ngày, same_site=
+"lax", https_only=False)` — thêm KHÔNG ĐIỀU KIỆN (không phụ thuộc đăng
+nhập bật/tắt — middleware rẻ, vô hại khi không dùng tới; công tắc thật
+nằm ở `admin.py`'s `_is_login_configured()`). Thêm `NotLoggedIn`
+(định nghĩa ở `admin.py`) + `@app.exception_handler(NotLoggedIn)` —
+303 redirect cho request thường, header `HX-Redirect` cho request htmx
+(so `request.headers.get("hx-request")`, tránh htmx cố gắn HTML trang
+login vào giữa 1 mảnh nhỏ khi phiên hết hạn giữa lúc thao tác).
+
+### `human_bot/admin.py` — điểm chạm chính
+
+- `NotLoggedIn`, `_is_login_configured()`, `_current_role(request)`
+  (nơi DUY NHẤT xác thực lại session mỗi request — ADMIN so lại
+  `ADMIN_USERNAME` hiện tại, MOD tra lại `get_mod_user()`; không khớp
+  thì tự `request.session.clear()` — đảm bảo owner đổi `ADMIN_USERNAME`
+  hoặc xoá 1 MOD đang có phiên mở thì người đó bị đá ra NGAY lần thao
+  tác kế tiếp, không cần đợi hết 14 ngày), `_require_login`,
+  `_require_admin_role` (403 nếu là MOD, không redirect — vì họ THẬT SỰ
+  đã đăng nhập, chỉ không đủ quyền), `_build_current_user` (cho
+  `_layout` hiện tên/vai trò), `_safe_next_path` (chặn open-redirect:
+  chỉ nhận `/admin/...`, không chấp nhận `//` hay `://`).
+- Route mới: `GET/POST /admin/login`, `POST /admin/logout`,
+  `/admin/mod-users` (+ `add-modal`/`add`/`{username}/delete`/
+  `{username}/edit-password-modal`/`{username}/edit-password`) — theo
+  đúng khuôn `/admin/accounts` (bảng `data-table`, modal thêm, xoá dùng
+  `hx-confirm` — tái dùng nguyên modal xác nhận tự làm ở mục trên,
+  không sửa gì).
+- **Đổi tên máy móc 47 chỗ** `Depends(_require_auth)` →
+  `Depends(_require_login)` (xác nhận đúng 47 bằng `grep -c` trước khi
+  đổi, khớp con số kế hoạch), rồi xoá hẳn `_require_auth`/`_security`
+  (`HTTPBasic`)/import `HTTPBasicCredentials` không dùng nữa.
+- `_layout(body, active="")` → thêm `current_user=None`: hiện link
+  "Quản lý MOD" khi ADMIN, hiện tên/vai trò + nút "Đăng xuất" khi đã
+  đăng nhập, ẩn hết khi đăng nhập đang tắt (y hệt giao diện cũ). **Phát
+  hiện lệch nhỏ so với kế hoạch lúc code thật**: kế hoạch (dựa trên
+  Explore agent) nói "cả 9 chỗ gọi `_layout` đều đã có sẵn `request`" —
+  kiểm tra lại thấy `admin_home`, `config_form`, `post_form` (3/9 chỗ)
+  THỰC RA CHƯA có `request: Request` trong signature — đã tự thêm vào
+  cả 3 hàm này (việc nhỏ, không đổi hướng kế hoạch, chỉ ghi lại vì kế
+  hoạch ban đầu nói sai 1 chi tiết nhỏ).
+- `_login_layout()` riêng (không tái dùng `_layout` — nav vô nghĩa lúc
+  chưa đăng nhập), form đăng nhập thường (không htmx, vì muốn chuyển cả
+  trang khi thành công/thất bại).
+
+### Test HTTP thật — `tests/test_admin_login.py` (mới, phá lệ có chủ đích)
+
+Dựng 1 FastAPI app TỐI GIẢN (chỉ `admin_router` + đúng
+`SessionMiddleware`/`NotLoggedIn` handler service.py dùng) — **KHÔNG**
+import thẳng `human_bot.service.app`, vì `lifespan()` thật của nó mở
+trình duyệt Playwright thật + bắn request mạng thật sang bên B lúc
+khởi động — tuyệt đối không được để test kích hoạt. 8 test: đăng nhập
+tắt vào thẳng mọi trang kể cả `/admin/mod-users`; đăng nhập bật chưa có
+session → redirect đúng URL; cùng tình huống với header htmx → nhận
+`HX-Redirect` thay vì 303; ADMIN đúng vào được `/admin/mod-users`; MOD
+đúng bị chặn 403 ở `/admin/mod-users` nhưng vào bình thường mọi trang
+khác; sai mật khẩu → redirect kèm `error=1`; **xoá MOD đang có phiên mở
+ở 1 `TestClient` khác → request kế tiếp của họ bị đá ra ngay** (xác
+nhận đúng cơ chế xác thực-lại-mỗi-request); `next` trỏ ra ngoài bị bỏ
+qua, về `/admin`. Cả 8 pass ngay lần chạy đầu.
+
+**Tổng cộng 234 test passed** (208 trước đợt review 24/9 + 13 mod-user
++ 8 login + 1 validation ký tự cấm + đợt modal xác nhận trước đó dùng
+lại 212 làm mốc — xem `git diff --stat` cho số chính xác từng file).
+
+### `.env.example` + `requirements.txt`
+
+Thêm `SESSION_SECRET_KEY` (giải thích rõ: rỗng = phiên tự sinh ngẫu
+nhiên mỗi lần khởi động, mất phiên khi restart) ngay cạnh
+`ADMIN_USERNAME`/`ADMIN_PASSWORD`, bổ sung 1 đoạn giải thích vai trò
+MOD. `itsdangerous>=2.2` vào `requirements.txt` (đã cài ngầm qua
+Starlette, nay khai trực tiếp vì code gọi thẳng qua `SessionMiddleware`).
+
+**Chưa live-confirm qua trình duyệt thật** — toàn bộ trên mới xác nhận
+qua test tự động (unit + HTTP `TestClient`), CHƯA mở trình duyệt thật
+click thử. Owner cần tự làm theo đúng checklist đã ghi trong kế hoạch:
+(1) tắt đăng nhập vẫn vào thẳng mọi trang; (2) bật lên, thấy đúng trang
+login tự làm (không phải popup trình duyệt); (3) sai thông tin → 1 câu
+báo lỗi chung; (4) đăng nhập đúng từ 1 trang bất kỳ (VD `/admin/schedule`)
+quay lại đúng trang đó; (5) ADMIN thêm 1 MOD, đăng xuất, đăng nhập MOD
+→ mọi trang bình thường, riêng `/admin/mod-users` bị chặn; (6) ADMIN xoá
+MOD đó lúc phiên MOD vẫn mở ở máy khác → phiên đó bị đá ra ngay; (7) có
+`SESSION_SECRET_KEY` thì phiên sống qua restart, không có thì mất; (8)
+bấm 1 nút xoá lúc phiên vừa hết hạn (xoá cookie qua devtools) → chuyển
+hẳn sang trang login, không vỡ giao diện.
+
+### Rà soát lại tính năng đăng nhập sau khi làm xong — 3 lỗi thật + 2 điểm nhỏ (2026-09-24)
+
+Owner yêu cầu dò lại cẩn thận từng điểm của kế hoạch xem có sai sót/thiếu gì
+không, báo cáo trước khi sửa. Đối chiếu plan file với code thật + **tự tay
+test qua HTTP thật** (không chỉ đọc code) phát hiện 3 lỗi thật đã xác nhận
+sống được, cộng 2 điểm nhỏ nên dọn luôn vì cùng khu vực. Owner duyệt sửa,
+yêu cầu chia nhỏ từng lỗi để dễ kiểm tra — sửa và test riêng từng cái:
+
+1. **Username MOD chấp nhận ký tự phá URL.** `add_mod_user()` cũ chỉ chặn
+   `/` và khoảng trắng (danh sách đen) — `?`, `#`, `%`, `&` lọt qua. Test
+   sống xác nhận: tạo MOD tên `mo?d` thì link xoá/sửa build ra
+   `/admin/mod-users/{username}/...` bị trình duyệt hiểu sai thành path
+   `/admin/mod-users/mo` + query `d/delete` — vĩnh viễn không bấm được qua
+   UI. **Sửa**: đổi sang danh sách trắng
+   `_MOD_USERNAME_PATTERN = ^[A-Za-z0-9_.-]+$` (`runtime_config.py`). Test
+   mới: `test_add_mod_user_rejects_url_unsafe_characters`,
+   `test_add_mod_user_accepts_the_full_allowlisted_character_set`.
+2. **`mod_users_edit_password` thiếu nhánh htmx/không-htmx.** Mọi route
+   thay đổi dữ liệu khác ở trang này (`mod_users_add`,
+   `mod_users_delete`) đều có nhánh: htmx trả mảnh HTML, form thường
+   (JS tắt) trả `RedirectResponse` cả trang — riêng route đổi mật khẩu MOD
+   thì luôn trả mảnh HTML trần, kể cả khi submit bằng form thường (test
+   sống xác nhận: ra trang không có `<html>`/nav, vỡ giao diện). **Sửa**:
+   thêm đúng nhánh `_is_htmx(request)` như các route kia
+   (`human_bot/admin.py`). Test mới:
+   `test_edit_mod_password_non_htmx_falls_back_to_redirect_not_bare_fragment`.
+3. **Không giới hạn độ dài mật khẩu MOD ở backend.** `minlength="6"` chỉ có
+   ở HTML — test sống xác nhận tạo được MOD với mật khẩu 1 ký tự bằng cách
+   gửi thẳng HTTP request bỏ qua form. **Sửa**: thêm hằng
+   `_MIN_PASSWORD_LENGTH = 6`, kiểm tra ở cả `add_mod_user()` và
+   `update_mod_user_password()`. Test mới:
+   `test_add_mod_user_rejects_password_shorter_than_minimum`,
+   `test_update_mod_user_password_rejects_password_shorter_than_minimum`.
+4. **(nhỏ) `_safe_next_path("/admin")` đúng nhờ trùng hợp, không nhờ logic.**
+   Điều kiện cũ chỉ chấp nhận `"/admin/..."` (có `/` cuối) — path
+   `"/admin"` (không dấu `/`) tự động rớt xuống fallback, mà fallback lại
+   đúng là `"/admin"` nên hành vi tình cờ đúng, không phải vì có xử lý
+   riêng. Sửa để chấp nhận tường minh path `"/admin"` (bằng chuỗi) hoặc
+   `"/admin/..."`, không đổi hành vi quan sát được, chỉ hết fragile.
+5. **(nhỏ) `get_mod_user()` so username bằng `==` thay vì constant-time.**
+   Không phải lỗ hổng thật (username không phải bí mật), nhưng đồng bộ với
+   cách `resolve_login()` đã so `ADMIN_USERNAME`. Đổi sang
+   `secrets.compare_digest()`. **Bẫy tự phát hiện khi sửa**:
+   `compare_digest()` chỉ nhận chuỗi ASCII, mà username nhập lúc đăng nhập
+   là input chưa kiểm chứng (không như username MOD đã lưu, vốn đã bị ép
+   ASCII bởi allowlist) — gõ username có dấu tiếng Việt sẽ làm
+   `TypeError` (crash) thay vì trả "không tìm thấy". Sửa lại bằng cách so
+   `.encode("utf-8")` (bytes) thay vì so thẳng `str`. Test mới:
+   `test_get_mod_user_lookup_with_non_ascii_username_does_not_crash`.
+
+**Sự cố phụ trong lúc verify (đã dọn xong)**: một script live-test dùng
+`TestClient` để kiểm tra lỗi #1/#3 nhưng quên gán
+`rc.RUNTIME_CONFIG_PATH` sang file tạm — vô tình ghi 3 tài khoản MOD test
+(`mo?d`, `mod1`, `weakmod`) thẳng vào `runtime_config.json` thật. Phát
+hiện ngay (tài khoản còn sống qua lần chạy script khác), backup ra
+`/tmp`, `pop("mod_users", None)` rồi ghi lại, `diff` xác nhận đúng 17
+khoá gốc còn nguyên, xoá backup tạm. Từ lần sau verify lại đúng cách bằng
+`rc.RUNTIME_CONFIG_PATH = tmp_path`. Nhắc lại quy tắc dự án: **không bao
+giờ test sống ghi vào `runtime_config.json` thật, luôn cô lập qua
+`isolated_runtime_config`/gán tạm `RUNTIME_CONFIG_PATH`.**
+
+**Kết quả**: 239/239 test pass (`pytest -q`), không sửa gì ngoài phạm vi 5
+điểm trên. Chưa commit (owner yêu cầu "Không commit nhé").
+
+### 2 yêu cầu tiếp theo của owner sau đợt sửa lỗi trên (2026-09-24)
+
+1. **Bỏ giới hạn 4 tài khoản MOD.** Owner làm rõ lại: nói "có thể có 4 MOD"
+   là ước lượng thực tế lúc mô tả yêu cầu ban đầu, không phải giới hạn cứng
+   cần thực thi trong code. Xoá hẳn `_MAX_MOD_USERS`
+   (`runtime_config.py`) và mọi chỗ dùng nó: `add_mod_user()` không còn
+   check "đã đủ 4 tài khoản" nữa; `/admin/mod-users` (`admin.py`) bỏ nút
+   "➕ Thêm tài khoản MOD" bị vô hiệu hoá khi đầy và dòng mô tả "Tối đa 4
+   tài khoản MOD (x/4)" — chỉ còn đếm số tài khoản hiện có, không còn
+   trần. ADMIN vẫn đúng 1 tài khoản duy nhất (không đổi, vẫn nằm trong
+   `.env`, không liên quan tới giới hạn này). Test cũ
+   `test_add_mod_user_max_four_enforced` (khẳng định tài khoản MOD thứ 5
+   bị từ chối) đổi thành `test_add_mod_user_no_cap_on_account_count`
+   (tạo 6 tài khoản, xác nhận cả 6 đều được tạo thành công).
+2. **Lỗi thật: danh sách MOD đè lên header ở màn hình hẹp.** Owner báo
+   "Danh sách MOD đang nằm trên cả HEADER". Đọc HTML tĩnh không thấy gì
+   sai — phải tự chụp ảnh màn hình qua Playwright (render trang
+   `/admin/mod-users` thật, có 2 tài khoản MOD, ở nhiều độ rộng khác nhau)
+   mới bắt được: ở khoảng 800-1024px, thanh điều hướng trên cùng
+   (`.topbar`) có `nav.topnav` (7-8 mục, kể cả mục mới "Quản lý MOD") +
+   khối tên người dùng/nút "Đăng xuất" không đủ chỗ trên 1 hàng, phải
+   `flex-wrap` xuống 2-3 hàng — nhưng `.topbar-inner` lại đặt chiều cao
+   CỐ ĐỊNH `h-14` (56px, viết từ thời chỉ có 1 hàng nav, chưa tính tới
+   lúc thêm mục "Quản lý MOD" + user chip). Nội dung 2-3 hàng bị ép vào
+   khung 56px đó tràn ra ngoài, và do `.topbar` có `z-10` (tạo stacking
+   context riêng) trong khi `<main>` bên dưới không có `z-index`, phần
+   tràn ra đó vẽ ĐÈ LÊN tiêu đề/bảng danh sách MOD thay vì đẩy nó xuống —
+   đúng y hệt mô tả của owner. Sửa: đổi `h-14` (chiều cao cứng) thành
+   `min-h-[56px]` + `py-2` (chỉ là chiều cao tối thiểu, tự giãn thêm hàng
+   khi cần) trong `_PAGE_STYLE`'s `.topbar-inner` (`admin.py`) — ảnh
+   hưởng TOÀN BỘ trang `/admin` (dùng chung 1 `_layout()`), không riêng
+   `/admin/mod-users`, dù chỉ trang đó mới đủ nhiều mục nav để lộ ra lỗi
+   ở độ rộng thường dùng. Chụp lại ảnh ở 1280/1024/800/375px sau khi sửa,
+   xác nhận hết đè ở mọi độ rộng. Đây là lỗi thuần CSS, không có test tự
+   động nào bắt được (project không test rendering/CSS) — chỉ xác nhận
+   bằng ảnh chụp Playwright thực tế.
+
+**Kết quả**: 239/239 test pass sau cả 2 việc trên (không có test mới nào
+liên quan tới CSS, chỉ 1 test đổi cho việc bỏ giới hạn MOD). Vẫn chưa
+commit.
