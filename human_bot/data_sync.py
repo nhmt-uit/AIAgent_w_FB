@@ -803,6 +803,34 @@ def _last_scheduled_comment_time(account_id: str) -> datetime | None:
     return latest
 
 
+def _overflow_days_remaining(current_day: date, today: date, max_overflow_business_days: int) -> int:
+    """How many more business days _next_available_business_day() may
+    search, counted from `current_day` up to and including the FIXED
+    boundary `today + max_overflow_business_days` — not a flat N passed
+    straight through regardless of where `current_day` already is.
+
+    2026-09-18 fix: sync_all() used to pass `cfg.max_overflow_business_days`
+    straight to `_next_available_business_day()` as `max_search_days` for
+    EVERY job, meaning "N more days allowed from wherever this job's
+    `next_post_time` currently stands" — but `next_post_time` drifts
+    forward across jobs within the same poll (per-post spacing), so by
+    the last job in a big batch it could already stand on, say, day+2,
+    and still get N MORE days on top of that (up to day+4) — the "+N
+    days" rule compounding per job instead of anchoring to one shared
+    day. Confirmed live: account nhtu00 still had a few posts land 1
+    business day past "today + max_overflow_business_days" even after
+    _max_jobs_over_window() (this same conversation, one commit back)
+    correctly capped how many JOBS got pulled in the first place — the
+    job-count cap and the per-job day-search were each computed against
+    a different implicit boundary.
+
+    Returns 0 (search nothing, caller must defer) once `current_day` is
+    already past the boundary — never negative, and never lets a job
+    "borrow" days from beyond the fixed cutoff regardless of how far its
+    own timeline has already drifted."""
+    return max((today + timedelta(days=max_overflow_business_days) - current_day).days + 1, 0)
+
+
 def _next_available_business_day(
     dt: datetime,
     daily_limit: int,
@@ -1318,13 +1346,30 @@ async def sync_all(account_ids: list[str], cfg: DataSyncConfig | None = None) ->
             # docstring): tìm ngày nghiệp vụ sớm nhất (bắt đầu từ chỗ
             # `next_post_time` đang đứng) còn ít nhất 1 slot, đẩy
             # next_post_time sang đúng ngày đó nếu cần. available==0 chỉ
-            # còn xảy ra khi vượt quá cfg.max_overflow_business_days ngày
-            # tìm kiếm (mặc định 2, hạ từ 60 hôm 2026-09-16 — xem
-            # data_sync_config.py và job_capacities'/sponsored_jobs' comment
-            # phía trên) — hoãn cả job trong trường hợp đó.
+            # còn xảy ra khi vượt quá mốc `today + cfg.max_overflow_business_days`
+            # — hoãn cả job trong trường hợp đó.
+            #
+            # max_search_days ĐỘNG theo NGÀY CỐ ĐỊNH, không phải hằng số
+            # cfg.max_overflow_business_days truyền thẳng như trước
+            # (2026-09-18 fix — real gap tìm thấy live: account nhtu00 dù
+            # đã có _max_jobs_over_window() giới hạn đúng SỐ job lấy về,
+            # vẫn có vài bài rớt lố 1 ngày qua khỏi "hôm nay + 2"). Lý do:
+            # cfg.max_overflow_business_days truyền thẳng nghĩa là "được
+            # tràn thêm N ngày kể từ vị trí next_post_time đang đứng" —
+            # mà next_post_time tự trôi dần qua từng job trong CÙNG 1 lần
+            # sync (do khoảng cách đăng bắt buộc), nên tới job cuối hàng
+            # đợi, nó có thể đã đứng ở ngày 20 rồi và vẫn được cấp thêm 2
+            # ngày NỮA (tới 22) — quy tắc "+N ngày" bị cộng dồn qua nhiều
+            # job thay vì neo vào 1 mốc chung. Sửa: tính lại số ngày còn
+            # được phép dò MỖI LẦN, đo từ vị trí job hiện tại tới đúng mốc
+            # `today + cfg.max_overflow_business_days` (không đổi) — cạn
+            # mốc thì trả 0, hoãn thẳng, không tràn thêm nữa dù job đứng ở
+            # đâu.
+            current_day = daily_limits.business_day_key(next_post_time)
+            max_search_days = _overflow_days_remaining(current_day, today, cfg.max_overflow_business_days)
             next_post_time, post_day_key, available = _next_available_business_day(
                 next_post_time, daily_post_limit, day_post_counts, today, real_recent_posts,
-                cfg.max_overflow_business_days,
+                max_search_days,
             )
             if available <= 0:
                 deferred_jobs_inner.append(job)

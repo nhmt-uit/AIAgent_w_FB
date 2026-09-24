@@ -20,6 +20,7 @@ from human_bot.data_sync import (
     _last_scheduled_post_time,
     _max_jobs_over_window,
     _next_available_business_day,
+    _overflow_days_remaining,
     _pick_groups_for_job,
     _seen_key,
     _water_fill_distribute,
@@ -290,6 +291,43 @@ def test_next_available_business_day_respects_custom_max_search_days():
     )
     assert available == 0  # gave up at the 2-day bound, never reached day_after
     assert day_after not in day_counts  # sanity: that day genuinely had room
+
+
+# --- _overflow_days_remaining (anchors the tràn-ngày search to a fixed day,
+# not a flat N-more-days from wherever a job's own timeline has drifted) ----
+#
+# Real incident, 2026-09-18: sync_all() passed cfg.max_overflow_business_days
+# straight through as max_search_days for EVERY job, so a job whose
+# next_post_time had already drifted forward (per-post spacing, across many
+# jobs in one poll) got N MORE days on top of wherever it already stood —
+# even though _max_jobs_over_window() (previous fix) correctly capped how
+# many jobs got pulled overall. A few of nhtu00's real posts still landed 1
+# business day past "today + max_overflow_business_days" because of this.
+
+def test_overflow_days_remaining_full_budget_from_today():
+    """A job still sitting on `today` gets the full window: today itself
+    plus max_overflow_business_days more — 3 days total when the setting
+    is 2, matching the owner's own worked example (today/mai/mốt)."""
+    today = date(2026, 9, 18)
+    assert _overflow_days_remaining(today, today, max_overflow_business_days=2) == 3
+
+
+def test_overflow_days_remaining_shrinks_as_the_job_drifts_forward():
+    """A job whose own next_post_time has already drifted to today+1 (or
+    +2) must NOT get 2 more days on top of that — it gets only whatever is
+    left before the shared boundary."""
+    today = date(2026, 9, 18)
+    assert _overflow_days_remaining(today + timedelta(days=1), today, max_overflow_business_days=2) == 2
+    assert _overflow_days_remaining(today + timedelta(days=2), today, max_overflow_business_days=2) == 1
+
+
+def test_overflow_days_remaining_zero_once_past_the_fixed_boundary():
+    """A job already past `today + max_overflow_business_days` gets 0 —
+    no more searching, the caller must defer it — rather than rolling
+    forward indefinitely."""
+    today = date(2026, 9, 18)
+    assert _overflow_days_remaining(today + timedelta(days=3), today, max_overflow_business_days=2) == 0
+    assert _overflow_days_remaining(today + timedelta(days=10), today, max_overflow_business_days=2) == 0
 
 
 # --- _max_jobs_over_window (multi-day + group-count-aware job pull cap) -----
