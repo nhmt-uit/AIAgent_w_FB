@@ -254,6 +254,75 @@ def mark_missed(task_id: str, reason: str) -> bool:
     return dest is not None
 
 
+def missed_overdue_days(task: ScheduledTask, now: datetime | None = None) -> int:
+    """How many full days ago `task`'s ORIGINAL scheduled_at was —
+    2026-09-24, owner request for a "quá hạn ≥ N ngày" filter on
+    /admin/schedule's "⚠️ Task quá hạn" tab. Shared with
+    cancel_stale_missed() below so the filter and the auto-cleanup
+    threshold always agree on what "N days overdue" means (both measure
+    from scheduled_at, not from whenever the startup sweep happened to
+    move the file into MISSED_DIR — a task swept today after sitting
+    overdue for a week already reads as 7 days overdue, not 0).
+    Uses the same naive/aware-safe parsing as _scheduled_at_sort_key()
+    (a naive scheduled_at is treated as UTC)."""
+    now = now or datetime.now(timezone.utc)
+    return (now - _scheduled_at_sort_key(task)).days
+
+
+# Default threshold for cancel_stale_missed() below — matches the widest
+# option (30 ngày) of /admin/schedule's own "quá hạn ≥ N ngày" filter
+# (owner's explicit choice, 2026-09-24: a missed task nobody looked at
+# for a whole month is not coming back).
+STALE_MISSED_MAX_AGE_DAYS = 30
+
+
+def cancel_stale_missed(max_age_days: int = STALE_MISSED_MAX_AGE_DAYS, now: datetime | None = None) -> int:
+    """Auto-cancel any MISSED_DIR task whose original scheduled_at is
+    more than `max_age_days` in the past — owner request 2026-09-24:
+    MISSED_DIR previously had NO cleanup of its own at all (unlike
+    posted/failed/cancelled, which cleanup_old() prunes after
+    SCHEDULE_RETENTION_DAYS) — a task nobody reviews just sits there
+    forever, see MISSED_DIR's own docstring above ("chờ bạn duyệt").
+
+    Reuses cancel_missed() so this is exactly "the same 🗑️ Xoá click a
+    human would eventually make", not a separate/harsher deletion path —
+    the task's own JSON moves to CANCELLED_DIR (still on disk, still
+    readable, and still subject to cleanup_old()'s normal retention
+    later — "giữ lại lịch sử" for now, not forever), and the ORIGINAL
+    miss reason's .result.txt is left behind in MISSED_DIR exactly as
+    cancel_missed() already does for a manual cancel. The only addition
+    here: appends a short note to that leftover .result.txt recording
+    that THIS particular cancel was automatic, so a later look at the
+    history doesn't read as "an admin decided this", when nobody did.
+
+    Called from human_bot/service.py's daily `_schedule_cleanup_loop()`
+    (same cadence as cleanup_old() — this is disk/backlog housekeeping,
+    not something that needs a tight interval). Returns how many were
+    cancelled, for logging."""
+    now = now or datetime.now(timezone.utc)
+    count = 0
+    for task in list_missed():
+        if missed_overdue_days(task, now) < max_age_days:
+            continue
+        if not cancel_missed(task.task_id):
+            continue
+        count += 1
+        note_path = _safe_path_in(task.task_id, MISSED_DIR).with_suffix(".result.txt")
+        try:
+            existing = note_path.read_text(encoding="utf-8")
+        except OSError:
+            existing = ""
+        note = (
+            f"\n\n[Tự động huỷ lúc {now.isoformat()} — quá hạn hơn "
+            f"{max_age_days} ngày mà chưa được xử lý.]"
+        )
+        try:
+            note_path.write_text(existing + note, encoding="utf-8")
+        except OSError:
+            pass  # best-effort note only — the cancel itself already succeeded
+    return count
+
+
 def restore_to_pending(task_id: str, **fields_to_update) -> ScheduledTask | None:
     """The admin-review resolution for a MISSED task (/admin/schedule's
     "⚠️ Task quá hạn" section, added 2026-09-14) — "Đặt lịch" (pick a new

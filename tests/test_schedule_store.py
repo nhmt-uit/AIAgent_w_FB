@@ -183,3 +183,63 @@ def test_due_tasks_unaffected_by_missed(isolated_store):
     task = _make_task(isolated_store, now - timedelta(hours=1))
     isolated_store.mark_missed(task.task_id, "test")
     assert isolated_store.due_tasks(now) == []
+
+
+# --- missed_overdue_days() / cancel_stale_missed() (2026-09-24, owner
+# request: /admin/schedule's "⚠️ Task quá hạn" tab had no age filter and
+# no auto-cleanup at all — a task nobody reviewed just sat in MISSED_DIR
+# forever) ------------------------------------------------------------
+
+def test_missed_overdue_days_measures_from_original_scheduled_at():
+    now = datetime(2026, 9, 24, 12, 0, tzinfo=timezone.utc)
+    task = schedule_store.ScheduledTask(
+        task_id="x", action="post_to_group", account_id="acc-a",
+        scheduled_at=(now - timedelta(days=5, hours=1)).isoformat(),
+    )
+    assert schedule_store.missed_overdue_days(task, now) == 5
+
+
+def test_cancel_stale_missed_only_cancels_past_the_threshold(isolated_store):
+    """A missed task 40 days overdue gets auto-cancelled at the 30-day
+    default; one only 10 days overdue is left alone for the admin to
+    still review."""
+    now = datetime.now(timezone.utc)
+    stale = _make_task(isolated_store, now - timedelta(days=40), content="stale")
+    recent = _make_task(isolated_store, now - timedelta(days=10), content="recent")
+    isolated_store.mark_missed(stale.task_id, "server was down")
+    isolated_store.mark_missed(recent.task_id, "server was down")
+
+    count = isolated_store.cancel_stale_missed(max_age_days=30, now=now)
+
+    assert count == 1
+    assert isolated_store.get_missed(stale.task_id) is None  # moved out
+    assert isolated_store.get_missed(recent.task_id) is not None  # untouched
+    cancelled = [t.content for t in isolated_store.list_pending()]  # sanity: not silently rescheduled
+    assert cancelled == []
+    cancelled_files = list(isolated_store.CANCELLED_DIR.glob("*.json"))
+    assert len(cancelled_files) == 1
+
+
+def test_cancel_stale_missed_leaves_a_note_on_the_orphaned_result_file(isolated_store):
+    """cancel_missed() (reused internally) deliberately leaves the
+    ORIGINAL .result.txt behind in MISSED_DIR as history — this appends
+    a short note there so a later look at that history doesn't read as
+    "an admin decided this" when nobody did."""
+    now = datetime.now(timezone.utc)
+    task = _make_task(isolated_store, now - timedelta(days=40))
+    isolated_store.mark_missed(task.task_id, "Đã quá giờ đăng dự kiến — cần admin duyệt lại.")
+
+    isolated_store.cancel_stale_missed(max_age_days=30, now=now)
+
+    note_path = (isolated_store.MISSED_DIR / task.task_id).with_suffix(".result.txt")
+    text = note_path.read_text(encoding="utf-8")
+    assert "Đã quá giờ đăng dự kiến" in text  # original reason preserved
+    assert "Tự động huỷ" in text  # new note appended, not overwritten
+
+
+def test_cancel_stale_missed_returns_zero_when_nothing_is_stale(isolated_store):
+    now = datetime.now(timezone.utc)
+    task = _make_task(isolated_store, now - timedelta(days=2))
+    isolated_store.mark_missed(task.task_id, "test")
+    assert isolated_store.cancel_stale_missed(max_age_days=30, now=now) == 0
+    assert isolated_store.get_missed(task.task_id) is not None
