@@ -259,6 +259,36 @@ qua việc quan sát dữ liệu thật hằng ngày.
   cuối cùng có thể vẫn bị đẩy lố thêm. Đã sửa để cả 2 bước cùng neo vào đúng 1
   mốc ngày cố định, kèm bài test riêng. Chưa chạy thử trên hệ thống thật để xác
   nhận 100%.
+- **Điều tra thêm sau 6 ngày server tắt (18/9 → 24/9)**: kiểm tra lại toàn bộ dữ
+  liệu thì phát hiện service từng tắt hoàn toàn suốt 6 ngày. Tin vui: đúng cơ chế
+  an toàn đã làm từ trước ("không tự đăng bài quá hạn sau khi server tắt/mở lại")
+  hoạt động đúng như thiết kế — 54 bài lẽ ra đã tới giờ đăng trong lúc server tắt
+  đều được giữ lại chờ duyệt, không hề tự động đăng dồn. Chủ dự án đã tự vào duyệt
+  và huỷ hết 54 bài đó ngay khi mở server lại — nên phần backlog cũ của `tu_iizuki`
+  từng nhắc ở trên coi như đã được xử lý, không cần làm gì thêm.
+- **Thêm tính năng mới cho khu vực "⚠️ Task quá hạn"**: trước đây bài quá hạn nằm
+  chờ duyệt mãi mãi nếu không ai đụng tới, không có cách lọc theo mức độ quá hạn.
+  Đã thêm: (1) bộ lọc xem bài quá hạn TỪ 3/5/7/30 ngày TRỞ LÊN (chọn "30 ngày" là
+  xem đúng nhóm bài sắp/đang bị hệ thống tự dọn ở mục (2) — bàn qua lại 2 lần với
+  chủ dự án mới chốt đúng chiều này: ban đầu định làm ngược lại (xem bài còn
+  mới), nhưng nhóm này vốn đã hiện đầu danh sách sẵn rồi; quan trọng hơn là trang
+  này có nút "chọn tất cả rồi xoá" — lọc "từ N ngày trở lên" đảm bảo chọn-tất-cả
+  không bao giờ dính nhầm bài mới), và (2) cơ chế TỰ ĐỘNG dọn bài nào quá hạn HƠN
+  30 ngày mà chưa ai xử lý — nhưng không xoá mất, chỉ chuyển sang mục "đã huỷ" để
+  vẫn xem lại lịch sử được khi cần. Đã thêm dữ liệu giả để tự kiểm tra trên giao
+  diện thật trước khi báo hoàn thành.
+- **Sửa lỗi thật: chọn bộ lọc "Quá hạn" ra kết quả rỗng thì cả ô lọc biến mất
+  luôn, phải bấm F5 mới lấy lại được.** Chủ dự án tự phát hiện khi thử lọc "≥30
+  ngày" lúc đó không có bài nào khớp. Nguyên nhân: trước đây khi không có kết
+  quả, trang chỉ hiện mỗi dòng "không có gì" mà bỏ luôn cả ô chọn bộ lọc phía
+  trên — mất luôn cách đổi lại bộ lọc mà không tải lại trang. Đã sửa để ô lọc
+  (và nút "Chọn tất cả"/"Xoá đã chọn") luôn hiển thị, chỉ phần danh sách bên
+  dưới đổi thành dòng thông báo khi không có kết quả.
+- **Sửa tiếp lỗi liên quan: chọn "Tất cả" ở ô lọc "Quá hạn" không quay về đúng
+  danh sách đầy đủ.** Nguyên nhân kỹ thuật: hệ thống hiểu nhầm lựa chọn "Tất cả"
+  là một con số, trong khi "Tất cả" thực ra là "không chọn số nào cả" — dẫn tới
+  bị từ chối ngay từ đầu, trang không cập nhật lại được. Đã sửa để "Tất cả" được
+  xử lý đúng là "bỏ lọc", không còn bị từ chối.
 
 ---
 
@@ -304,8 +334,9 @@ Một vài lựa chọn thiết kế đáng chú ý, được cân nhắc kỹ c
   hoạt động đúng trên hệ thống thật (mới test bằng dữ liệu giả lập, chưa chạy
   sống) — lần này `nhtu00` nên chỉ lấy về đúng khoảng 9 tin thay vì 35, và không
   còn bài nào lố qua khỏi đúng mốc "hôm nay + 2 ngày".
-- Quyết định có dọn 13 tin backlog cũ (lấy dư từ trước khi sửa) của `tu_iizuki`
-  không — hiện đang tới tận 24/9, tương tự tình huống đã dọn cho `nhtu00`.
+- Xem thử giao diện "⚠️ Task quá hạn" trên trình duyệt thật để xác nhận bộ lọc
+  và cơ chế tự huỷ sau 30 ngày hiển thị/hoạt động đúng như mong muốn (mới test
+  bằng code, chưa xem qua trình duyệt thật).
 - Điều tra tiếp lỗi mức lương "5.000.000 JPY/giờ" — xác định lỗi nằm ở bên B hay
   ở bước AI trích xuất, trước khi quyết định sửa chỗ nào.
 - Nối toàn bộ hệ thống vào quy trình tự động hoàn chỉnh (chạy theo lịch/tín hiệu

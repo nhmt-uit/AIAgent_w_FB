@@ -67,6 +67,12 @@
 - [18/09: [Chưa xử lý] Job 542 lương sai đơn vị "5tr JPY/giờ"](#phát-hiện-không-phải-bug-human_bot-job-542-có-mức-lương-đọc-sai-đơn-vị-5000000-jpygiờ-2026-09-18-chưa-xử-lý)
 - [18/09: Bug lịch đăng vẫn lố 1 ngày — neo tràn-ngày vào mốc cố định](#bug-thật-lịch-đăng-vẫn-lố-1-ngày-qua-khỏi-today-max_overflow_business_days-dù-đã-có-_max_jobs_over_window-2026-09-18)
 
+**24/09**
+- [Điều tra: service tắt 6 ngày, backlog cũ tự được xử lý](#điều-tra-thực-tế-249-service-tắt-6-ngày-backlog-cũ-tự-được-xử-lý-qua-đúng-cơ-chế-sẵn-có)
+- [Tính năng mới: lọc + tự huỷ "Task quá hạn" sau 30 ngày](#tính-năng-mới-bộ-lọc-quá-hạn-n-ngày-tự-huỷ-task-quá-hạn-30-ngày-ở-task-quá-hạn-2026-09-24)
+- [Bug: bộ lọc "Quá hạn" biến mất khi không có task khớp](#bug-thật-bộ-lọc-quá-hạn-biến-mất-hoàn-toàn-khi-không-có-task-nào-khớp-2026-09-24)
+- [Bug: chọn "Tất cả" ở filter Quá hạn không quay lại đúng (422)](#bug-thật-thứ-2-cùng-tính-năng-chọn-tất-cả-ở-filter-quá-hạn-không-quay-lại-đúng-2026-09-24)
+
 ---
 
 ## Giai đoạn khởi tạo (02/09 – 04/09)
@@ -3443,3 +3449,202 @@ nhận không còn job nào lố qua khỏi đúng mốc `today + 2` nữa.
 **Còn để mở** (owner chưa quyết định, hỏi riêng): có dọn luôn 13 job
 backlog cũ của `tu_iizuki` (tới 24/9) giống cách đã dọn `nhtu00` hôm
 17/9 không?
+
+## Điều tra thực tế 24/9: service tắt 6 ngày, backlog cũ tự được xử lý qua đúng cơ chế sẵn có
+
+Owner yêu cầu kiểm tra lại dữ liệu thật trước khi quyết định dọn backlog
+`tu_iizuki` (mục ngay trên). Điều tra `logs/human_bot.log` +
+`scheduled/*` phát hiện:
+
+1. **Service tắt hoàn toàn từ 2026-09-18 22:36 UTC tới 2026-09-24 11:12
+   UTC** (~6 ngày) — khớp đúng với việc `action_log` của cả `nhtu00` lẫn
+   `tu_iizuki` không có dòng nào trong suốt khoảng đó.
+2. **Lúc restart, cơ chế `sweep_overdue_on_startup()` (có từ 2026-09-14)
+   hoạt động đúng thiết kế**: log ghi "moved 54 pending task(s) to
+   missed/ for admin review" — 54 task quá hạn (gồm cả phần backlog
+   `tu_iizuki` đang hỏi) bị chuyển sang `missed/`, KHÔNG tự đăng.
+3. **Owner xác nhận: chính owner đã vào `/admin/schedule` huỷ tay cả 54
+   task đó** (dùng "🗑️ Xoá đã chọn" hàng loạt) ngay sau khi restart —
+   không phải bug/cơ chế tự động nào khác. Đối chiếu file xác nhận
+   đúng: `scheduled/missed/*.result.txt` (60 file, gồm cả 6 file cũ từ
+   14-15/9) đều có `.json` tương ứng nằm ở `scheduled/cancelled/` —
+   đúng hành vi thiết kế của `cancel_missed()` (cố ý để lại
+   `.result.txt` làm lịch sử, không phải mất dữ liệu).
+4. Kết luận: **không cần dọn gì thêm** — backlog `tu_iizuki` từng hỏi ở
+   mục trên đã được owner tự xử lý trước khi tôi kịp làm. `scheduled/
+   pending/` hiện chỉ còn 3 task hợp lệ (tạo từ 16/9, giờ đăng vẫn ở
+   tương lai nên không bị sweep) + `nhtu00` còn 0 task pending.
+
+## Tính năng mới: bộ lọc "quá hạn ≥ N ngày" + tự huỷ task quá hạn 30 ngày ở "⚠️ Task quá hạn" (2026-09-24)
+
+Từ điều tra trên, owner hỏi thêm cơ chế hiện tại nếu KHÔNG tự lên lịch
+lại/xoá task quá hạn thì sao — trả lời: task nằm vĩnh viễn trong
+`missed/`, không tự đăng, không tự hết hạn, không tự xoá (chỉ có 2 lối
+thoát, cả 2 đều cần bấm tay). Owner yêu cầu thêm:
+
+1. **Bộ lọc theo số ngày quá hạn** (3/5/7/30 ngày) ở tab "⚠️ Task quá
+   hạn" của `/admin/schedule`.
+2. **Tự động huỷ** (giữ lại lịch sử, không xoá cứng) task quá hạn hơn
+   1 ngưỡng nào đó — chốt qua 2 câu hỏi xác nhận với owner:
+   - Mốc tính "quá hạn N ngày": từ `scheduled_at` GỐC (hiện tại −
+     scheduled_at), không phải từ lúc bị sweep vào `missed/`.
+   - Ngưỡng tự huỷ: **30 ngày** (hardcode, khớp bậc lọc dài nhất, không
+     thêm setting riêng ở `/admin/config`).
+
+**Sửa** (`human_bot/schedule_store.py`):
+- `missed_overdue_days(task, now=None)` — số ngày quá hạn tính từ
+  `scheduled_at` gốc, dùng chung cho cả bộ lọc UI lẫn ngưỡng tự huỷ (2
+  chỗ này LUÔN khớp nhau vì dùng chung 1 hàm).
+- `STALE_MISSED_MAX_AGE_DAYS = 30` + `cancel_stale_missed(max_age_days=30,
+  now=None)` — quét `list_missed()`, task nào ≥ ngưỡng thì gọi
+  `cancel_missed()` (TÁI DÙNG nguyên hàm huỷ tay sẵn có — y hệt bấm nút
+  "🗑️ Xoá", không phải đường xoá riêng khắc nghiệt hơn), rồi ghi thêm 1
+  dòng chú thích vào đúng `.result.txt` mồ côi để lại trong `missed/`
+  ("[Tự động huỷ lúc ... — quá hạn hơn 30 ngày mà chưa được xử lý.]") —
+  để sau này nhìn lại lịch sử biết đây là hệ thống tự làm, không phải
+  owner quyết định.
+
+**Nối vào `human_bot/service.py`'s `_schedule_cleanup_loop()`** (vòng
+lặp dọn dẹp có sẵn, chạy lúc khởi động rồi mỗi ngày 1 lần — đúng nhịp
+độ cho ngưỡng 30 ngày, không cần vòng lặp riêng) — gọi thêm
+`cancel_stale_missed()` ngay cạnh `cleanup_old()` đã có.
+
+**Sửa `human_bot/admin.py`** (`_missed_tasks_section_html` và các route
+liên quan): thêm dropdown "Quá hạn: — Tất cả — / ≥3 / ≥5 / ≥7 / ≥30
+ngày" (auto-submit qua htmx, cùng kiểu với filter Hành động/Ngày đăng
+của tab pending), lọc TRƯỚC khi phân trang; mỗi task hiện thêm "quá hạn
+N ngày" ngay dưới giờ dự kiến ban đầu. Tham số `missed_min_days` được
+nối xuyên suốt: `_schedule_form_filter()` (thêm vào cuối tuple trả về,
+8 chỗ unpack phải sửa theo), `_schedule_content_html()`, route GET
+`/admin/schedule`, cả 4 route POST của tab missed (reschedule, suggest,
+reschedule-confirm, cancel, bulk-cancel) và `_missed_pagination_html()`/
+`_missed_page_link()` — để bộ lọc không bị mất khi chuyển trang hoặc
+thao tác xong quay lại danh sách. Mô tả đầu trang thêm câu giải thích
+ngưỡng 30 ngày tự huỷ.
+
+**4 test mới** (`missed_overdue_days` tính đúng; `cancel_stale_missed`
+chỉ huỷ task ≥ ngưỡng, giữ nguyên task chưa tới ngưỡng; có ghi chú vào
+`.result.txt` mà không mất nội dung gốc; trả về 0 khi không có gì quá
+hạn) — **212 test passed** (208 trước đó + 4 mới). Đã render thử
+`_missed_tasks_section_html()` trực tiếp (không qua HTTP) xác nhận
+filter lọc đúng, không lỗi runtime.
+
+**Chưa live-confirm qua trình duyệt thật** (chỉ test qua code + render
+trực tiếp) — cần xác nhận UI thật ở `/admin/schedule` tab "⚠️ Task quá
+hạn" hoạt động đúng, và theo dõi lần chạy `_schedule_cleanup_loop()`
+tiếp theo (24h sau khi service khởi động) để xác nhận tự huỷ đúng task
+quá hạn 30 ngày.
+
+**Cập nhật cùng ngày — thêm 5 task giả để owner test UI thật**
+(`account_id="nhtu00"`, content bắt đầu bằng `[TEST DATA]`, target_url
+giả `.../test-data-do-not-post`), quá hạn 2/4/6/8/35 ngày — đủ phủ cả 4
+bậc lọc lẫn ngưỡng tự huỷ 30 ngày. Owner sẽ báo lại khi test xong để
+xoá.
+
+**Sửa ngay sau đó — owner chỉ ra bộ lọc bị SAI CHIỀU**: ban đầu code
+lọc `quá hạn ≥ N ngày` (hiểu nhầm là "lọc backlog càng cũ càng tốt,
+giống hướng ngưỡng tự huỷ"), owner sửa lại đúng ý: phải là `quá hạn ≤ N
+ngày` — tức "1, 2, 3 ngày" (bucket xem CÁC TASK CÒN MỚI, đáng xử lý
+ngay), không phải lọc ra các task cũ. Đây là 2 chiều nhìn KHÁC NHAU của
+cùng 1 danh sách — bộ lọc giúp tìm cái còn đáng cứu, ngưỡng tự huỷ (vẫn
+giữ nguyên `≥ 30 ngày`, không đổi) dọn cái đã quá cũ — không mâu thuẫn
+nhau.
+
+Sửa `human_bot/admin.py`: đổi so sánh `>=` → `<=` trong
+`_missed_tasks_section_html()`; đổi tên tham số `missed_min_days` →
+`missed_max_days` xuyên suốt (48 chỗ, dùng `sed`) và
+`_MISSED_MIN_DAYS_CHOICES` → `_MISSED_MAX_DAYS_CHOICES` cho khớp đúng
+ngữ nghĩa mới — tên biến cũ nói "min" trong khi hành vi lại là "max" sẽ
+gây hiểu nhầm cho người đọc code sau này. Đổi nhãn dropdown "≥ N ngày"
+→ "≤ N ngày", thông báo "Không có task nào" cũng đổi theo. Xác nhận lại
+bằng đúng 5 task test vừa tạo: lọc "≤3" chỉ hiện task 2 ngày; lọc "≤7"
+hiện đúng 3 task (2/4/6 ngày), loại đúng 2 task (8/35 ngày). 212 test
+vẫn pass (logic so sánh không có unit test riêng cho hướng bug này vì
+chỉ phát hiện qua đọc lại yêu cầu, không phải qua test tự động — nên
+đã verify thủ công bằng dữ liệu test thật thay vì chỉ tin vào test cũ).
+
+**Cập nhật cùng ngày — đảo NGƯỢC LẠI về `≥ N ngày` sau khi thảo luận
+thêm.** Owner tự đặt câu hỏi "nên `>=` hay `<=` thì hợp lý hơn?" — tôi
+nghiêng về `>=` (danh sách đã sort sớm nhất lên đầu sẵn nên không cần
+lọc để thấy task mới; `>=` mới thật sự hữu ích để chủ động bắt các task
+sắp bị ngưỡng tự huỷ 30 ngày dọn mất). Owner chốt đúng lý do quyết định
+— **an toàn thao tác hàng loạt**: trang này có sẵn nút "Chọn tất cả" +
+"🗑️ Xoá đã chọn". Nếu lọc `≤ N` (vd `≤30`), tập hiển thị/chọn được LẪN
+CẢ task rất mới (1-3 ngày) — bấm "chọn tất cả rồi xoá" sẽ xoá nhầm luôn
+task mới. Lọc `≥ N` thì tập hiển thị KHÔNG BAO GIỜ có task mới hơn N
+ngày — chọn tất cả rồi xoá luôn an toàn.
+
+Đảo ngược lại toàn bộ: `sed` đổi `missed_max_days` → `missed_min_days`,
+`_MISSED_MAX_DAYS_CHOICES` → `_MISSED_MIN_DAYS_CHOICES`, so sánh `<=` →
+`>=`, nhãn "≤ N ngày" → "≥ N ngày", viết lại docstring
+`_missed_tasks_section_html()` ghi rõ cả 2 lần đổi hướng + lý do cuối
+cùng (tránh người đọc sau này thấy code rồi lại tưởng nên đổi về `<=`
+lần nữa). Verify lại bằng đúng 5 task test: `≥30` chỉ còn task 35 ngày;
+`≥7` gồm đúng 2 task (8 và 35 ngày), loại đúng 3 task mới hơn (2/4/6
+ngày) — khớp ngược hoàn toàn với lần verify `≤` trước đó, đúng như kỳ
+vọng. 212 test vẫn pass.
+
+**Cập nhật cùng ngày — chỉnh layout theo yêu cầu owner**: dropdown "Quá
+hạn" và cụm "Chọn tất cả" + "🗑️ Xoá đã chọn" trước đó nằm 2 hàng riêng
+(`page-desc` + checkbox/nút ở hàng 1, dropdown lọc ở hàng 2 ngay dưới).
+Owner yêu cầu gộp lại đúng 1 hàng: lọc bên trái, checkbox+nút bên phải.
+Sửa `_missed_tasks_section_html()`: tách `missed_bulk_controls_html`
+thành khối HTML riêng (y hệt nội dung checkbox+nút cũ), đưa `page-desc`
+ra thành đoạn văn riêng phía trên, rồi gộp `missed_filter_html` +
+`missed_bulk_controls_html` vào chung 1 `<div style="display:flex;
+justify-content:space-between">` — tái dùng đúng kiểu flex
+space-between đã dùng cho hàng filter Account/Page-size ở tab pending.
+Xác nhận qua render trực tiếp: đúng thứ tự trái-phải trong 1 hàng.
+
+## Bug thật: bộ lọc "Quá hạn" biến mất hoàn toàn khi không có task nào khớp (2026-09-24)
+
+Owner báo: lọc `≥30 ngày` lúc không còn task nào khớp thì MẤT LUÔN cả
+dropdown lọc — phải bấm F5 mới lấy lại được, không có cách nào tự đổi
+lại bộ lọc trên UI. Đúng là bug thật: code cũ, khi `filtered` (sau khi
+áp bộ lọc) rỗng, `return` thẳng 1 `<div class="empty-state">` ĐƠN LẺ,
+thay thế toàn bộ nội dung tab — bao gồm luôn cả dropdown lọc và cụm
+"Chọn tất cả"/"Xoá đã chọn" nằm phía trên, y hệt lỗi class "trả về sớm
+làm mất UI điều khiển" — vì tab body được htmx swap nguyên khối, không
+còn dropdown để đổi lại lọc, chỉ F5 (quay về mặc định "Tất cả") mới
+thoát được.
+
+**Sửa** (`_missed_tasks_section_html()`): không `return` sớm nữa khi
+`filtered` rỗng — thay vào đó để `total`/`total_pages`/`missed` tính ra
+0/1/[] một cách an toàn (tránh chia cho 0 khi paginate), rồi chèn 1
+dòng "Không có task nào quá hạn ≥ N ngày... đổi bộ lọc ở trên để xem
+lại" vào ĐÚNG vị trí `items_html` (nơi danh sách task đáng lẽ hiện ra),
+còn dropdown lọc + cụm bulk-action luôn render bình thường phía trên
+bất kể có kết quả hay không — chỉ tắt hẳn khi `all_missed` gốc rỗng
+(không có task quá hạn nào cả, trường hợp đó thật sự không cần dropdown
+lọc). Xác nhận bằng render trực tiếp với `missed_min_days=1000` (chắc
+chắn rỗng): dropdown + "Chọn tất cả" vẫn hiện, kèm đúng thông báo rỗng.
+212 test vẫn pass (không thêm unit test HTML riêng — khớp quy ước dự án
+không unit-test từng permutation HTML, đã có từ trước; verify bằng
+render trực tiếp thay thế).
+
+## Bug thật thứ 2 cùng tính năng: chọn "— Tất cả —" ở filter Quá hạn không quay lại đúng (2026-09-24)
+
+Owner báo: chọn "Tất cả" ở dropdown "Quá hạn" không trả về đúng danh
+sách đầy đủ. Test trực tiếp qua `TestClient` xác nhận nguyên nhân:
+route `GET /admin/schedule`'s tham số `missed_min_days: int | None`
+khai kiểu `int` — option "— Tất cả —" có `value=""`, nên khi chọn nó,
+htmx gửi `?missed_min_days=` (chuỗi rỗng). FastAPI/pydantic KHÔNG ép
+được `""` thành `int` trước cả khi vào tới thân hàm, trả về **422
+Unprocessable Entity** thẳng — htmx nhận lỗi JSON thay vì HTML mới,
+nội dung tab không được cập nhật, giữ nguyên bộ lọc cũ trên màn hình
+(trông như "không quay lại Tất cả").
+
+**Sửa** (`schedule_list()` route): đổi khai báo tham số thành
+`missed_min_days: str | None = None` (chấp nhận chuỗi bất kỳ, kể cả
+rỗng, không bị FastAPI chặn ở tầng validation), rồi tự ép kiểu bên
+trong thân hàm bằng `try: int(missed_min_days) if missed_min_days else
+None; except ValueError: None` — đúng y hệt cách `_schedule_form_filter()`
+(dùng cho các route POST) đã xử lý an toàn cho field này từ đầu, chỉ
+route GET này bị bỏ sót vì khai type hint trực tiếp thay vì qua hàm
+dùng chung. Xác nhận bằng `TestClient`: `GET
+/admin/schedule?tab=missed&missed_min_days=` trước đây trả 422, sau
+fix không còn lỗi 422 nữa (dừng ở 401 do thiếu auth trong môi trường
+test — đúng luồng bình thường, không phải lỗi mới). 212 test vẫn pass
+(không có test HTTP-level cho `admin.py` từ trước tới giờ trong dự án
+— khớp đúng ranh giới test hiện có, verify bằng `TestClient` thủ công
+thay vì thêm test mới).
