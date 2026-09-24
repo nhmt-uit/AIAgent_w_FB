@@ -1,0 +1,26 @@
+# CI for this project's unit test suite (tests/) only — see tasks.md,
+# "Không có CI" finding, 2026-09-24. Deliberately minimal: the test
+# suite needs no secrets/API keys and no real Playwright browser (every
+# test isolates real project state via tmp_path/monkeypatch — confirmed
+# live by running `pytest` with a completely clean environment before
+# adding this file), so this is just "install deps, run pytest" with no
+# env vars to configure here or in GitLab's CI/CD settings.
+
+stages:
+  - test
+
+test:
+  stage: test
+  image: python:3.11
+  cache:
+    key: "$CI_COMMIT_REF_SLUG-pip"
+    paths:
+      - .cache/pip
+  variables:
+    PIP_CACHE_DIR: "$CI_PROJECT_DIR/.cache/pip"
+  script:
+    - pip install -r requirements.txt -r requirements-dev.txt
+    - pytest tests/
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "push"'
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
