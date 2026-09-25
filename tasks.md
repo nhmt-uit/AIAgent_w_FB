@@ -4444,7 +4444,8 @@ khi đang viết test" đã áp dụng từ Phase 1.
 ổn định. `accounts/`/`runtime_config.json`/`human_bot.db` thật xác nhận
 sạch. Đây là phase cuối cùng của kế hoạch test `admin.py` — 4/4 phase
 đã xong (schedule, reports, accounts, groups/config/post), tổng cộng
-133 test mới thêm cho `admin.py` qua cả kế hoạch (239 → 372).
+134 test mới thêm cho `admin.py` qua cả kế hoạch (239 → 373, tính cả
+1 test thêm ở lần sửa lỗi "Cấu hình AI" ngay sau đó).
 
 ### Owner làm rõ thiết kế + quyết định sửa bug AI-provider-key (2026-09-25)
 
@@ -4556,4 +4557,4 @@ rõ ràng, cần hỏi owner xác nhận ý đồ trước khi kết luận "đ�
 đặc biệt khi 2 cách hiểu đều có vẻ hợp lý về mặt code.
 
 **Kết quả**: 373/373 test pass (số lượng test không đổi, chỉ đổi nội
-dung 1 test). Chưa commit — cần push đợt sửa ngược này.
+dung 1 test). Đã commit (`9f76fe1`) và push.

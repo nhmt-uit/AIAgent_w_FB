@@ -302,8 +302,9 @@ qua việc quan sát dữ liệu thật hằng ngày.
   duyệt** — bàn kỹ qua nhiều bước với chủ dự án trước khi làm (đọc kỹ toàn bộ code
   liên quan trước, xác nhận lại 3 điểm còn mơ hồ trước khi viết dòng code nào).
   Kết quả: có 1 trang đăng nhập riêng do mình thiết kế; 2 loại tài khoản — **ADMIN**
-  (đúng 1, vẫn cấu hình trong file `.env` như trước) và **MOD** (tối đa 4 tài
-  khoản phụ, do ADMIN tự thêm/xoá/đổi mật khẩu qua 1 trang quản lý riêng). Cả
+  (đúng 1, vẫn cấu hình trong file `.env` như trước) và **MOD** (ban đầu giới hạn
+  tối đa 4 tài khoản phụ, sau đó bỏ hẳn giới hạn này — xem mục 24/9 bên dưới), do
+  ADMIN tự thêm/xoá/đổi mật khẩu qua 1 trang quản lý riêng. Cả
   ADMIN và MOD đều dùng được mọi chức năng như nhau, chỉ riêng trang quản lý tài
   khoản MOD đó là chỉ ADMIN mở được. Vẫn bật/tắt được y hệt trước (để trống thông
   tin trong `.env` là tắt hoàn toàn, vào thẳng không cần đăng nhập). Mật khẩu MOD
@@ -424,7 +425,7 @@ Một vài lựa chọn thiết kế đáng chú ý, được cân nhắc kỹ c
 - **[Quan trọng, chủ dự án tự làm được ngay]** Chuyển giao diện Facebook của
   `nhtu00` sang tiếng Anh theo đúng quy định (mục 5) — vẫn là hướng xử lý chính,
   phần "hiểu cả tiếng Việt" chỉ là lưới an toàn phụ.
-- **[ĐANG LÀM DẦN, Phase 2/4 xong 2026-09-25]** Viết test tự động cho trang
+- **[ĐÃ XONG 4/4 PHASE, 2026-09-25]** Viết test tự động cho trang
   quản trị (~5949 dòng, trước đó chỉ phần đăng nhập có test). Đã lên kế hoạch
   4 giai đoạn theo mức độ rủi ro, ưu tiên khu vực hay đổi nhất trước.
   - Phase 1 (`/admin/schedule`, đúng khu vực từng dính 2 lỗi thật tuần này)
@@ -458,7 +459,8 @@ Một vài lựa chọn thiết kế đáng chú ý, được cân nhắc kỹ c
     đã sửa 7/9 — ép sai kiểu số làm crash), `/admin/post` (form soạn bài
     thủ công). Phát hiện 1 lỗi thật, đã hỏi rõ thiết kế và sửa xong cùng
     ngày — xem mục ngay dưới. 4/4 phase kế hoạch test cho trang quản trị
-    đã xong, tổng 133 bài test mới thêm riêng cho phần này.
+    đã xong, tổng 134 bài test mới thêm riêng cho phần này (239 → 373,
+    tính cả bài test thêm cho lần sửa lỗi "Cấu hình AI" ở mục dưới).
 - **[ĐÃ SỬA, 2026-09-25]** Card "Cấu hình AI" ở `/admin/config`: để trống
   ô key của nhà cung cấp đang chọn rồi bấm Lưu từng âm thầm XOÁ MẤT key
   đó (dòng chú thích cũ ghi sai "để trống = giữ nguyên key hiện tại").
