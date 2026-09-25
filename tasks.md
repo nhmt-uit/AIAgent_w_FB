@@ -4217,3 +4217,60 @@ muốn, không còn xfail). **284/284 test pass** (không tăng thêm số test,
 chỉ đổi 2 test riêng thành 1 test tham số hoá). Đã cập nhật lại
 `FB_Post_Assistant.md` phản ánh đã sửa xong, không còn "cần owner quyết
 định". Vẫn chưa commit.
+
+### Rà soát lại Phase 1 trước khi làm Phase 2 (2026-09-25) — 1 bug thật + 1 điểm tài liệu sai
+
+Owner yêu cầu kiểm tra lại Phase 1 trước khi sang Phase 2. Không chỉ đọc
+lại code — tự viết thêm test/script "smoke test" tạm thời (xoá ngay sau
+khi dùng, không đưa vào bộ test chính) để tự tay xác nhận 3 fixture MỚI
+chưa được Phase 1 thật sự dùng qua (`isolated_db`, `isolated_accounts_dir`,
+`isolated_screenshots_root`, `no_real_bootstrap_login`, và cơ chế
+`results` queue của `no_real_run_task`) — vì các fixture này được viết ra
+theo kế hoạch nhưng KHÔNG có test nào trong Phase 1 thực sự gọi tới,
+nên rất có thể có lỗi im lặng chờ tới tận Phase 2/3 mới lộ ra. Đúng là
+lộ ra 2 vấn đề:
+
+1. **Bug thật: rò rỉ trạng thái giữa các test** (`tests/test_admin_schedule.py`'s
+   `account_with_rate_limits` fixture). Fixture này gán
+   `acc.__class__.action_log_path = property(...)` để giả lập đường dẫn
+   log riêng cho tài khoản test — nhưng gán trực tiếp vào **class**
+   `AccountConfig` (không qua `monkeypatch.setattr`), nên sau khi 1 test
+   dùng fixture này chạy xong, MỌI đối tượng `AccountConfig` khác được
+   tạo ra sau đó trong suốt phiên chạy test (kể cả ở file test khác,
+   test không liên quan) đều bị dính chung đường dẫn log của lần fixture
+   gần nhất — không tự phục hồi. Xác nhận thật bằng cách viết 1 test tối
+   giản: tạo `AccountConfig` mới ở 1 test riêng SAU KHI 1 test dùng
+   fixture trên đã chạy — `action_log_path` của tài khoản mới vẫn trỏ
+   nhầm sang file tạm của tài khoản cũ. **Sửa**: đổi thành
+   `monkeypatch.setattr(AccountConfig, "action_log_path", property(...))`
+   — `monkeypatch` tự phục hồi lại giá trị gốc sau mỗi test, kể cả khi
+   patch vào thuộc tính của cả class. Viết lại đúng bài test tối giản đó
+   để xác nhận hết rò rỉ, sau đó xoá (không đưa vào bộ test chính, chỉ
+   dùng để tự kiểm chứng).
+2. **Tài liệu (docstring) sai, không phải lỗi chức năng**: fixture
+   `isolated_accounts_dir` viết ban đầu ngụ ý sẽ cho "danh sách tài
+   khoản sạch", nhưng thật ra `config.ACCOUNTS_DIR` chỉ quyết định 2
+   đường dẫn dẫn xuất (`storage_state_path`/`action_log_path`), KHÔNG
+   quyết định `get_all_accounts()` trả về những tài khoản nào — danh
+   sách đó đến từ hằng số code-level `ACCOUNTS` (hiện chỉ có
+   `tu_iizuki`) hợp nhất với `runtime_config.get_registered_accounts()`
+   (đã được `isolated_runtime_config` cô lập riêng). Nghĩa là dùng một
+   mình `isolated_accounts_dir` KHÔNG loại được tài khoản
+   `tu_iizuki` (hardcode) khỏi kết quả — phải dùng CHUNG với
+   `isolated_runtime_config` mới có danh sách sạch thật sự. Không ảnh
+   hưởng gì tới Phase 1 (chưa test nào dùng fixture này), nhưng nếu để
+   nguyên docstring sai sẽ gây hiểu nhầm khi làm Phase 3
+   (`/admin/accounts`). **Sửa**: viết lại docstring cho đúng, ghi rõ
+   giới hạn thật của fixture.
+
+3 fixture còn lại (`isolated_db`, `isolated_screenshots_root`,
+`no_real_bootstrap_login`) và cơ chế `results` queue của
+`no_real_run_task` — smoke-test xác nhận hoạt động đúng như thiết kế,
+không có vấn đề gì.
+
+**Kiểm tra thêm để chắc chắn**: chạy toàn bộ test suite 2 lần liên tiếp,
+và chạy các file test liên quan (`test_admin_schedule.py`,
+`test_admin.py`, `test_schedule_store.py`, `test_admin_login.py`) theo
+cả 2 thứ tự xuôi/ngược — đều pass ổn định, không còn rò rỉ nào khác.
+Xác nhận `runtime_config.json` thật không đổi (vẫn 18 khoá, `mod_users`
+vẫn rỗng). **284/284 test pass sau khi sửa cả 2 điểm trên.** Chưa commit.

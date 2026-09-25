@@ -434,6 +434,15 @@ Một vài lựa chọn thiết kế đáng chú ý, được cân nhắc kỹ c
   đăng") — owner chọn sửa luôn, đã sửa xong cùng ngày (xem mục dưới). Còn 3
   phase nữa (`/admin/reports`, `/admin/accounts`, phần còn lại) — làm dần,
   không vội.
+- **Rà soát lại Phase 1 trước khi làm Phase 2 (owner yêu cầu)** — phát hiện
+  1 lỗi thật: 1 trong các đoạn code test tự viết ra vô tình làm rò rỉ trạng
+  thái giữa các bài test với nhau (test A chạy xong làm ảnh hưởng sai tới
+  kết quả của test B không liên quan) — đã sửa, xác nhận hết rò rỉ bằng cách
+  cố tình tái hiện lại lỗi trước rồi sau khi sửa. Cộng 1 chỗ ghi chú
+  (docstring) trong code test bị sai — không ảnh hưởng gì tới kết quả test
+  hiện tại, nhưng nếu để nguyên sẽ dễ gây hiểu nhầm khi làm tiếp Phase 3 —
+  đã viết lại cho đúng. Chạy lại toàn bộ test 2 lần + đổi thứ tự chạy các
+  file để chắc chắn không còn rò rỉ nào khác — ổn định.
 - **[ĐÃ SỬA, 2026-09-25]** Nút "🚀 Đăng ngay" gốc ở tab "Chờ đăng" (dùng từ
   2026-09-09) có cùng kẽ hở đã tìm và sửa cho bản tab "Task quá hạn" hôm nay:
   nếu ai đó gửi lại `force=1` mà không qua đúng nút bấm trên giao diện, có

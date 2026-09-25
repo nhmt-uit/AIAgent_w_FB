@@ -233,14 +233,27 @@ def account_with_rate_limits(monkeypatch, tmp_path):
     """Registers a fake account via human_bot.admin.get_all_accounts()
     (monkeypatched directly, same as the manual live-verification script
     used during development) — avoids needing a real accounts/ directory
-    on disk just to exercise the rate-limit branches."""
+    on disk just to exercise the rate-limit branches.
+
+    2026-09-25 fix (found during a post-Phase-1 audit, not caught when
+    this was first written): action_log_path MUST be patched via
+    `monkeypatch.setattr(AccountConfig, ...)`, never a raw
+    `acc.__class__.action_log_path = ...` assignment — the raw form
+    replaces the property on the AccountConfig CLASS itself with no
+    teardown, so it silently leaked into every OTHER AccountConfig
+    instance (including real ones) constructed anywhere in the test
+    session afterward, for as long as the process stayed up. Confirmed
+    live: a second, unrelated test creating its own AccountConfig after
+    this fixture ran still got THIS fixture's tmp_path action_log back.
+    monkeypatch.setattr on a class attribute restores the original
+    property automatically at test teardown, closing that leak."""
     import human_bot.admin as admin_module
 
     def _make(**rate_limit_kwargs):
         action_log = tmp_path / "action_log.jsonl"
         action_log.write_text("")
         acc = AccountConfig(account_id="acc-a", display_name="Acc A", rate_limits=RateLimits(**rate_limit_kwargs))
-        acc.__class__.action_log_path = property(lambda self: action_log)
+        monkeypatch.setattr(AccountConfig, "action_log_path", property(lambda self: action_log))
         monkeypatch.setattr(admin_module, "get_all_accounts", lambda: {"acc-a": acc})
         return acc, action_log
 

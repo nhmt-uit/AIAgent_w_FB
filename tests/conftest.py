@@ -53,9 +53,20 @@ def isolated_db(tmp_path, monkeypatch):
 
 @pytest.fixture
 def isolated_accounts_dir(tmp_path, monkeypatch):
-    """Redirects human_bot.config.ACCOUNTS_DIR to a throwaway tmp_path dir,
-    for tests that need at least one real registered account (accounts,
-    groups, post composer) without touching the real accounts/ directory."""
+    """Redirects human_bot.config.ACCOUNTS_DIR to a throwaway tmp_path dir.
+    ACCOUNTS_DIR only feeds 2 derived per-account paths
+    (AccountConfig.storage_state_path/action_log_path, both computed as
+    ACCOUNTS_DIR/<account_id>/... at access time) — so this fixture stops
+    ANY account (real or fake) from reading/writing those 2 real files on
+    disk, e.g. a real account's actual login session or action log.
+
+    2026-09-25, confirmed while auditing Phase 1: it does NOT hide which
+    accounts get_all_accounts() returns. That dict is code-level ACCOUNTS
+    (config.py — currently just "tu_iizuki", a hardcoded test account)
+    merged with runtime_config.get_registered_accounts() — the latter
+    needs isolated_runtime_config to keep a REAL registered account (e.g.
+    "nhtu00") from leaking into a test. Use both fixtures together for a
+    genuinely clean account list; this one alone only stops file I/O."""
     from human_bot import config
     fake_dir = tmp_path / "accounts"
     fake_dir.mkdir()
@@ -79,9 +90,11 @@ def no_real_run_task(monkeypatch):
     """Replaces human_bot.admin.run_task with a fake async that never
     touches the real Playwright browser pool — the 3 routes that call it
     directly (schedule_fire_now, schedule_missed_fire_now, reports_repost)
-    must never dispatch a real browser action from a test. Returns a list
-    that records every TaskRequest passed in, and a mutable dict the test
-    can use to control the next call's TaskResult via `result_queue`."""
+    must never dispatch a real browser action from a test. Returns
+    (calls, results): `calls` records every TaskRequest passed in (in
+    order), `results` is an initially-empty list a test can push
+    TaskResult objects onto (FIFO — .pop(0) each call) to control what a
+    specific call returns; with nothing queued, every call succeeds."""
     from human_bot import admin as admin_module
     from human_bot.agent import TaskResult
 
