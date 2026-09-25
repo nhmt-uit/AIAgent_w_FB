@@ -171,21 +171,27 @@ def test_ai_provider_clear_key_removes_it(client):
     client.post("/admin/config/ai-provider", data={"ai_provider": "anthropic", "anthropic_api_key": "sk-ant-original"})
     resp = client.post("/admin/config/ai-provider/clear-key", data={"provider": "anthropic"})
     assert resp.status_code == 200
-    assert get_secrets_overrides()["anthropic_api_key"] == ""
+    assert get_secrets_overrides().get("anthropic_api_key", "") == ""
     assert "sk-ant-original" not in resp.text
 
 
-def test_ai_provider_clear_key_preserves_provider_and_model(client):
-    """2026-09-25 fix (real bug, found in a final review pass): clear-key
-    used to call save_secrets_overrides() with ONLY the key field, which
-    (being a REPLACE not a merge) silently wiped ai_provider and the
-    active provider's model/base_url too. Now a proper read-merge-write —
-    only the key field itself should change."""
+def test_ai_provider_clear_key_reverts_the_whole_bundle_to_default(client):
+    """Owner-confirmed design (2026-09-25, after I initially "fixed" this
+    the other way and had to reverse it): provider + model + key travel
+    together as ONE bundle — clearing the key means abandoning that whole
+    custom bundle and going back to the default/.env state (ai_provider
+    back to its "anthropic" dataclass default, model blank), not just
+    blanking the key while keeping a half-custom provider/model
+    selection around. Confirmed with a concrete scenario: switch to
+    OpenAI with its own key+model, clear the key, provider must fall
+    back to "anthropic" — not stay on "openai" with no key."""
     client.post("/admin/config/ai-provider", data={
-        "ai_provider": "anthropic", "anthropic_api_key": "sk-ant-original", "anthropic_model": "claude-opus-4-5",
+        "ai_provider": "openai", "openai_api_key": "sk-openai-original", "openai_model": "gpt-4o",
     })
-    client.post("/admin/config/ai-provider/clear-key", data={"provider": "anthropic"})
+    client.post("/admin/config/ai-provider/clear-key", data={"provider": "openai"})
     overrides = get_secrets_overrides()
-    assert overrides["anthropic_api_key"] == ""
-    assert overrides["ai_provider"] == "anthropic"
-    assert overrides["anthropic_model"] == "claude-opus-4-5"
+    assert overrides == {}
+    from human_bot.runtime_config import get_active_ai_provider_config
+    active = get_active_ai_provider_config()
+    assert active.provider == "anthropic"
+    assert active.model == ""

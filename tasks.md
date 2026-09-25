@@ -4513,4 +4513,47 @@ validate đủ toàn bộ field bắt buộc (không có khái niệm "để tr�
 field" như bên AI-provider), nên an toàn.
 
 **Kết quả**: 373/373 test pass, ổn định qua nhiều thứ tự file.
-`accounts/`/`runtime_config.json` thật vẫn sạch. Sẵn sàng push.
+`accounts/`/`runtime_config.json` thật vẫn sạch. Đã commit (`8bb4a02`),
+đã push.
+
+### Đảo ngược lại fix "Xoá key" — hiểu sai thiết kế, owner sửa lại đúng ý (2026-09-25)
+
+Sau khi push, owner hỏi kỹ lại cách hoạt động thực tế của nút "Xoá key"
+(hỏi qua vài lượt: bấm Lưu khi để trống ô key thì sao, không bấm Lưu
+thì Provider/Model hiện gì, bấm "Xoá key" thì Model nào được dùng) — từ
+đó lộ ra: **tôi đã hiểu sai thiết kế** khi sửa bug ở mục trên. Owner
+giải thích rõ: **Provider + Model + Key đi cùng nhau thành 1 cụm**.
+Mặc định dùng key+model của `.env`; khi lưu 1 bộ mới thì dùng bộ mới
+đó; bấm "Xoá key" nghĩa là bỏ hẳn cả cụm vừa lưu, quay lại dùng cấu
+hình `.env` — KHÔNG PHẢI chỉ xoá đúng ô key rồi giữ nguyên Provider/
+Model đang chọn như tôi đã "sửa" trước đó.
+
+Xác nhận lại bằng câu hỏi cụ thể qua `AskUserQuestion`: đang ở OpenAI
+(đã lưu key+model riêng), bấm "Xoá key" thì Provider có nên nhảy về lại
+"Anthropic" (mặc định) không — owner xác nhận **có**, đúng ý "cả cụm đi
+cùng nhau".
+
+**Sửa ngược lại `config_ai_provider_clear_key()`**: bỏ hẳn cách đọc-
+merge-ghi vừa làm ở mục trên, quay về gọi `save_secrets_overrides({})`
+— xoá SẠCH toàn bộ section "secrets" (đưa `ai_provider` về mặc định
+dataclass "anthropic", model về rỗng, key rơi về `.env` nếu có) — cùng
+kiểu "reset có chủ đích bằng dict rỗng" mà nút "Khôi phục mặc định" ở
+rate-limits (`/admin/accounts`) đã dùng, không phải bug. Xoá import
+`get_secrets_overrides` không còn dùng tới. Viết lại test
+`test_ai_provider_clear_key_reverts_the_whole_bundle_to_default` (thay
+cho test `_preserves_provider_and_model` đã xoá) — tình huống cụ thể:
+đang ở OpenAI (key+model riêng), xoá key → `get_secrets_overrides()`
+rỗng hoàn toàn, `get_active_ai_provider_config().provider ==
+"anthropic"`. Render trực tiếp xác nhận dropdown Provider tự nhảy về
+"anthropic" sau khi xoá.
+
+**Bài học**: bug "config_ai_provider_save() xoá mất key khi để trống"
+(mục trên) là đúng, đã sửa đúng và owner đồng ý. Nhưng bug thứ 2 tôi tự
+tìm ra ("Xoá key cũng xoá mất Provider/Model") **không phải là bug** —
+đó là hành vi ĐÚNG THIẾT KẾ mà tôi tự suy luận sai rồi tự sửa mà không
+hỏi kỹ trước. Lần sau với hành vi không có test/tài liệu nào khẳng định
+rõ ràng, cần hỏi owner xác nhận ý đồ trước khi kết luận "đây là bug",
+đặc biệt khi 2 cách hiểu đều có vẻ hợp lý về mặt code.
+
+**Kết quả**: 373/373 test pass (số lượng test không đổi, chỉ đổi nội
+dung 1 test). Chưa commit — cần push đợt sửa ngược này.

@@ -469,11 +469,15 @@ Một vài lựa chọn thiết kế đáng chú ý, được cân nhắc kỹ c
   trống ô key giờ bị chặn lại, báo "Cần nhập API key...", không lưu gì
   cả (key cũ nếu có vẫn giữ nguyên) — muốn xoá hẳn key thì bấm đúng nút
   "Xoá key" riêng. Cập nhật lại dòng chú thích trên giao diện cho khớp.
-- **[ĐÃ SỬA, 2026-09-25]** Rà soát lần cuối trước khi push phát hiện thêm
-  đúng nút "Xoá key" riêng (nói ở mục trên) cũng dính lỗi tương tự: bấm
-  xoá key xong thì mất luôn cả nhà cung cấp AI đang chọn và tên model đã
-  gõ, chứ không riêng gì key. Owner xác nhận sửa luôn — giờ bấm "Xoá
-  key" chỉ xoá đúng key, mọi lựa chọn khác giữ nguyên.
+- **[ĐÃ SỬA LẠI CHO ĐÚNG, 2026-09-25]** Nút "Xoá key" ở card "Cấu hình
+  AI": lúc đầu tưởng nhầm là lỗi ("xoá key mà mất luôn cả nhà cung cấp
+  đang chọn và model đã gõ"), tự sửa thành "chỉ xoá đúng key, giữ nguyên
+  Provider/Model". Sau khi owner giải thích rõ hơn mới biết đó là **hiểu
+  sai thiết kế** — Provider + Model + Key là 1 cụm đi cùng nhau: mặc
+  định dùng bộ trong `.env`, lưu bộ mới thì dùng bộ mới, và "Xoá key"
+  nghĩa là **bỏ hẳn cả cụm vừa lưu, quay lại dùng `.env`** — không phải
+  chỉ xoá mỗi ô key. Đã sửa lại đúng theo ý này: bấm "Xoá key" giờ đưa
+  cả Provider/Model/Key về lại mặc định gốc.
 - **Rà soát lại Phase 1 trước khi làm Phase 2 (owner yêu cầu)** — phát hiện
   1 lỗi thật: 1 trong các đoạn code test tự viết ra vô tình làm rò rỉ trạng
   thái giữa các bài test với nhau (test A chạy xong làm ảnh hưởng sai tới
