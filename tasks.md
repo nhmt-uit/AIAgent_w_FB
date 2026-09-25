@@ -4273,4 +4273,40 @@ và chạy các file test liên quan (`test_admin_schedule.py`,
 `test_admin.py`, `test_schedule_store.py`, `test_admin_login.py`) theo
 cả 2 thứ tự xuôi/ngược — đều pass ổn định, không còn rò rỉ nào khác.
 Xác nhận `runtime_config.json` thật không đổi (vẫn 18 khoá, `mod_users`
-vẫn rỗng). **284/284 test pass sau khi sửa cả 2 điểm trên.** Chưa commit.
+vẫn rỗng). **284/284 test pass sau khi sửa cả 2 điểm trên.** Đã commit
+(`c1d7da7`), chưa push.
+
+## Kế hoạch viết test cho `admin.py` — Phase 2: `/admin/reports` (2026-09-25)
+
+**`tests/test_admin.py`** — thêm 12 test thuần cho: `_expandable_text`
+(rút gọn/không rút gọn, escape HTML, input rỗng), `_clamp_reports_tab`,
+`_clamp_reports_page_size`, `_reports_since` (rỗng/hỏng → không lọc,
+hợp lệ → đúng mốc cắt ISO), `_attrs_summary_html` (title + nhãn đã dịch
+qua `_ATTR_LABELS`, `confidence` format % , field rỗng bị bỏ qua nhưng
+`0` vẫn giữ, key lạ dùng thẳng tên key làm nhãn).
+
+**`tests/test_admin_reports.py`** (mới) — 17 test HTTP, dùng thêm
+fixture `isolated_db` (lần đầu Phase 1 các fixture này được dùng thật,
+đã smoke-test riêng trước khi tin dùng — xem mục rà soát Phase 1):
+- `reports_page`: render cơ bản khi rỗng dữ liệu, tab "tables"/"recent",
+  lọc theo `account_id`, tab lạ rơi về "tables".
+- **Bắt lỗi ngay khi viết test** (không phải bug, do em tự đoán sai chỗ
+  hiển thị): 2 test đầu viết cho tab "recent" kỳ vọng thấy được
+  `content` (nội dung bài đăng) trong bảng — chạy thử FAIL, đọc lại
+  code `admin.py` (dòng ~5501-5522) mới biết bảng "Hoạt động gần đây"
+  chỉ hiện cột `message` (kết quả chạy), không hiện `content` — sửa lại
+  test cho đúng thực tế thay vì đổi code.
+- `reports_repost`: thiếu/sai `log_id`, từ chối bản ghi đã thành công
+  hoặc hành động không cho phép đăng lại (`_REPOSTABLE_ACTIONS`), đăng
+  lại thành công gọi đúng `run_task()` với `retry_of_log_id` đúng, dính
+  rate-limit hiện CẢNH BÁO (không phải lỗi đỏ — đúng yêu cầu owner
+  11/9), lỗi thật khác hiện lỗi đỏ.
+- `reports_reschedule_suggest`/`_confirm`: log_id không tồn tại trả
+  rỗng, tài khoản không tồn tại hiện modal lỗi, tài khoản hợp lệ hiện
+  đúng giờ gợi ý, xác nhận tạo đúng 1 task pending với đúng nội dung,
+  từ chối bản ghi đã thành công.
+
+**Kết quả**: 314/314 test pass (từ 284). Chạy theo 2 thứ tự file khác
+nhau — ổn định, không rò rỉ. Không đụng `runtime_config.json`/
+`human_bot.db` thật (dùng `isolated_db`, xác nhận qua `git status`).
+Chưa commit.

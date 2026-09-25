@@ -13,11 +13,16 @@ import pytest
 
 import human_bot.schedule_store as schedule_store
 from human_bot.admin import (
+    _attrs_summary_html,
     _clamp_missed_min_days,
+    _clamp_reports_page_size,
+    _clamp_reports_tab,
     _clamp_schedule_page_size,
+    _expandable_text,
     _fmt_jst,
     _local_dt_html,
     _localize_iso_timestamps_html,
+    _reports_since,
     _safe_next_path,
     _schedule_form_filter,
     _sponsor_badge_html,
@@ -305,3 +310,84 @@ def test_schedule_form_filter_parses_valid_values():
 
 def test_schedule_form_filter_empty_account_id_becomes_none():
     assert _schedule_form_filter({"account_id": "   "})[0] is None
+
+
+# --- Phase 2 (2026-09-25 test-coverage plan): /admin/reports pure functions ---
+
+def test_expandable_text_short_text_renders_plain():
+    out = _expandable_text("short", limit=80)
+    assert out == "short"
+    assert "<details" not in out
+
+
+def test_expandable_text_long_text_wraps_in_details():
+    text = "x" * 100
+    out = _expandable_text(text, limit=80)
+    assert out.startswith('<details class="expandable-text"><summary>')
+    assert text in out
+
+
+def test_expandable_text_escapes_html():
+    out = _expandable_text("<script>alert(1)</script>")
+    assert "<script>" not in out
+    assert "&lt;script&gt;" in out
+
+
+def test_expandable_text_blank_input():
+    assert _expandable_text(None) == '<span class="muted">—</span>'
+    assert _expandable_text("") == '<span class="muted">—</span>'
+
+
+def test_clamp_reports_tab_allowlist():
+    assert _clamp_reports_tab("jobs") == "jobs"
+    assert _clamp_reports_tab("not-a-tab") == "tables"
+    assert _clamp_reports_tab(None) == "tables"
+
+
+def test_clamp_reports_page_size_allowlist():
+    assert _clamp_reports_page_size(50) == 50
+    assert _clamp_reports_page_size(7) == 15  # not in the allowlist -> default
+    assert _clamp_reports_page_size(-1) == 15
+
+
+def test_reports_since_none_or_blank_means_no_cutoff():
+    assert _reports_since(None) is None
+    assert _reports_since("") is None
+
+
+def test_reports_since_garbage_falls_back_to_no_cutoff():
+    assert _reports_since("not-a-number") is None
+
+
+def test_reports_since_valid_days_returns_past_iso_cutoff():
+    before = datetime.now(timezone.utc) - timedelta(days=30)
+    cutoff = _reports_since("30")
+    cutoff_dt = datetime.fromisoformat(cutoff)
+    assert abs((cutoff_dt - before).total_seconds()) < 5
+
+
+def test_attrs_summary_html_formats_title_and_attrs():
+    out = _attrs_summary_html("Kỹ sư", {"jobField": "IT", "confidence": 0.87})
+    assert "Tiêu đề" in out
+    assert "Kỹ sư" in out
+    assert "Ngành nghề" in out  # _ATTR_LABELS["jobField"]
+    assert "IT" in out
+    assert "87%" in out  # confidence formatted as a percentage
+
+
+def test_attrs_summary_html_skips_empty_values_but_keeps_zero():
+    out = _attrs_summary_html(None, {"jobField": "", "confidence": 0})
+    # jobField is empty -> skipped entirely
+    assert "Ngành nghề" not in out
+    # confidence=0 is falsy but explicitly kept (see "value != 0" check)
+    assert "Độ tin cậy" in out
+    assert "0%" in out
+
+
+def test_attrs_summary_html_unknown_key_uses_key_itself_as_label():
+    out = _attrs_summary_html(None, {"someNewField": "x"})
+    assert "someNewField" in out
+
+
+def test_attrs_summary_html_empty_everything():
+    assert _attrs_summary_html(None, {}) == '<span class="muted">—</span>'

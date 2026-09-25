@@ -424,16 +424,20 @@ Một vài lựa chọn thiết kế đáng chú ý, được cân nhắc kỹ c
 - **[Quan trọng, chủ dự án tự làm được ngay]** Chuyển giao diện Facebook của
   `nhtu00` sang tiếng Anh theo đúng quy định (mục 5) — vẫn là hướng xử lý chính,
   phần "hiểu cả tiếng Việt" chỉ là lưới an toàn phụ.
-- **[ĐANG LÀM DẦN, Phase 1/4 xong 2026-09-25]** Viết test tự động cho trang
+- **[ĐANG LÀM DẦN, Phase 2/4 xong 2026-09-25]** Viết test tự động cho trang
   quản trị (~5949 dòng, trước đó chỉ phần đăng nhập có test). Đã lên kế hoạch
-  4 giai đoạn theo mức độ rủi ro, ưu tiên khu vực hay đổi nhất trước — Phase 1
-  (`/admin/schedule`, đúng khu vực từng dính 2 lỗi thật tuần này) đã xong: 22
-  bài test HTTP mới + 17 bài test hàm thuần, gồm cả test hồi quy riêng cho 2
-  lỗi cũ đó. Trong lúc viết test còn phát hiện thêm 1 lỗi tiềm ẩn (chưa xảy ra
-  thật, chỉ là kẽ hở lý thuyết) ở nút "Đăng ngay" phiên bản gốc (tab "Chờ
-  đăng") — owner chọn sửa luôn, đã sửa xong cùng ngày (xem mục dưới). Còn 3
-  phase nữa (`/admin/reports`, `/admin/accounts`, phần còn lại) — làm dần,
-  không vội.
+  4 giai đoạn theo mức độ rủi ro, ưu tiên khu vực hay đổi nhất trước.
+  - Phase 1 (`/admin/schedule`, đúng khu vực từng dính 2 lỗi thật tuần này)
+    xong: 22 bài test HTTP + 17 bài test hàm thuần, gồm test hồi quy riêng
+    cho 2 lỗi cũ. Phát hiện thêm 1 lỗi tiềm ẩn (chưa xảy ra thật) ở nút
+    "Đăng ngay" phiên bản gốc — owner chọn sửa luôn.
+  - Phase 2 (`/admin/reports`) xong: 17 bài test HTTP + 12 bài test hàm
+    thuần cho phần thống kê/đăng lại/lên lịch lại. Không phát hiện lỗi thật
+    mới, chỉ có 2 test viết sai giả định ban đầu (tưởng bảng "Hoạt động gần
+    đây" hiện nội dung bài đăng, thực ra chỉ hiện kết quả chạy) — tự phát
+    hiện qua chạy thử fail, sửa lại test cho đúng thay vì đổi code.
+  - Còn 2 phase nữa (`/admin/accounts`, phần còn lại: groups/config/post) —
+    làm dần, không vội.
 - **Rà soát lại Phase 1 trước khi làm Phase 2 (owner yêu cầu)** — phát hiện
   1 lỗi thật: 1 trong các đoạn code test tự viết ra vô tình làm rò rỉ trạng
   thái giữa các bài test với nhau (test A chạy xong làm ảnh hưởng sai tới
