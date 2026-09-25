@@ -382,10 +382,14 @@ Một vài lựa chọn thiết kế đáng chú ý, được cân nhắc kỹ c
 - Theo dõi lần đăng lên tường cá nhân đầu tiên của `nhtu00` để xác nhận nút mở
   khung soạn bài (vá trước bằng chữ owner cho, chưa có lỗi thật để đối chiếu)
   hoạt động đúng trên thực tế.
-- Theo dõi lần đồng bộ dữ liệu kế tiếp để xác nhận sửa lỗi "lấy quá nhiều tin"
-  hoạt động đúng trên hệ thống thật (mới test bằng dữ liệu giả lập, chưa chạy
-  sống) — lần này `nhtu00` nên chỉ lấy về đúng khoảng 9 tin thay vì 35, và không
-  còn bài nào lố qua khỏi đúng mốc "hôm nay + 2 ngày".
+- **[ĐÃ XÁC NHẬN SỐNG, 2026-09-25]** Sửa lỗi "lấy quá nhiều tin" của `nhtu00`
+  hoạt động đúng trên hệ thống thật — lần sync thật lúc 08:42 sáng 25/9 chỉ lấy
+  về 4 tin mới (không phải 35 như lỗi cũ), đúng trong hạn mức tính ra tại thời
+  điểm đó (tối đa 5, lấy 4 vì bên B không có đủ tin phù hợp, không phải lỗi
+  tính toán). Toàn bộ tin đang chờ đăng của `nhtu00` đều nằm gọn trong đúng
+  "hôm nay + 2 ngày" như thiết kế, không còn tin nào lố ra ngày thứ 4. Kiểm tra
+  bằng cách gọi thẳng lại công thức tính hạn mức với đúng dữ liệu tồn kho tại
+  thời điểm sync, không chỉ nhìn số lượng rồi đoán.
 - Xem thử giao diện "⚠️ Task quá hạn" trên trình duyệt thật để xác nhận bộ lọc
   và cơ chế tự huỷ sau 30 ngày hiển thị/hoạt động đúng như mong muốn (mới test
   bằng code, chưa xem qua trình duyệt thật).
@@ -398,12 +402,9 @@ Một vài lựa chọn thiết kế đáng chú ý, được cân nhắc kỹ c
 
 **Từ đợt rà soát tổng thể (2026-09-24), chưa làm — xếp theo mức độ ưu tiên:**
 
-- **[Quan trọng, chủ dự án tự làm được ngay — CÒN CẦN LÀM]** Trang quản trị
-  (`/admin`) và API nhận task đang KHÔNG yêu cầu đăng nhập — vì file cấu hình
-  `.env` chưa điền tên đăng nhập/mật khẩu. Đã làm xong hẳn 1 trang đăng nhập
-  thật (xem mục ngay trên) nhưng vẫn CHƯA CÓ HIỆU LỰC cho tới khi bạn tự điền
-  `ADMIN_USERNAME`/`ADMIN_PASSWORD` vào `.env` rồi khởi động lại — không cần
-  sửa code, chỉ cần bạn làm bước đó.
+- **[ĐÃ LÀM, 2026-09-25]** Bật đăng nhập thật cho `/admin` — owner đã tự điền
+  `ADMIN_USERNAME`/`ADMIN_PASSWORD` vào `.env` và khởi động lại, đăng nhập đã
+  có hiệu lực.
 - **[Quan trọng, chủ dự án tự làm được ngay]** Chuyển giao diện Facebook của
   `nhtu00` sang tiếng Anh theo đúng quy định (mục 5) — vẫn là hướng xử lý chính,
   phần "hiểu cả tiếng Việt" chỉ là lưới an toàn phụ.
@@ -412,17 +413,24 @@ Một vài lựa chọn thiết kế đáng chú ý, được cân nhắc kỹ c
   tuần này ở phần "Task quá hạn" (mất bộ lọc, lỗi chọn "Tất cả") đáng lẽ 1 bài
   test đơn giản đã bắt được sớm hơn. Cần làm dần cho các phần còn lại, ưu tiên
   khu vực hay thay đổi nhất trước.
-- Chưa tự tay thử trang đăng nhập mới trên trình duyệt thật — mới xác nhận bằng
-  test tự động. Cần bạn tự bật lên và bấm thử theo đúng các bước đã đề ra trước
-  khi tin tưởng hoàn toàn.
+- **[ĐÃ LÀM, 2026-09-25]** Owner đã tự tay thử trang đăng nhập mới trên trình
+  duyệt thật, xác nhận ổn.
 - Cơ sở dữ liệu báo cáo (`human_bot.db`) chưa có cơ chế dọn định kỳ như các nơi
   khác — hiện còn nhỏ nên chưa gấp, nhưng sẽ phình to dần theo thời gian.
 - Nút "Chọn tất cả" ở tab "Task quá hạn" hiện chỉ chọn được task đang hiển thị
   trên trang, không phải toàn bộ kết quả đang lọc qua nhiều trang — chưa quyết
   định có cần sửa thành "chọn thật sự tất cả" hay không.
-- Dọn vài file rác nhỏ còn sót lại từ các đợt sửa lỗi trước (không ảnh hưởng gì,
-  chỉ chiếm chỗ) và 5 bài dữ liệu giả dùng để test giao diện — chờ xác nhận xong
-  việc test để xoá.
+- **[ĐÃ DỌN, 2026-09-25]** 5 bài dữ liệu giả dùng để test giao diện "Task quá
+  hạn" — owner xác nhận test xong, đã xoá sạch cả 5 (kèm file `.result.txt` đi
+  kèm).
+- **Phát hiện thêm khi điều tra "Task quá hạn" hôm nay**: service từng tắt liên
+  tục ~14 tiếng 37 phút (18:05 tối 24/9 → 08:42 sáng 25/9), khiến 23 task thật
+  (comment/đăng bài đã lên lịch trong lúc tắt) bị dồn vào "Task quá hạn" cùng
+  lúc khi bật lại — không phải lỗi hệ thống, chỉ vì service không chạy đủ lâu.
+  Owner đã tự xem và xoá 23 task này. Đáng cân nhắc (chưa làm, chỉ nêu ý): một
+  cảnh báo khi service downtime quá lâu (VD >1 tiếng) có thể giúp phát hiện sớm
+  hơn lần sau, tránh dồn backlog lớn — nằm cùng nhóm với mục "thêm kênh báo
+  động Slack/email" đã ghi ở trên.
 
 ---
 

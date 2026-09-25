@@ -3995,5 +3995,67 @@ giờ test sống ghi vào `runtime_config.json` thật, luôn cô lập qua
    bằng ảnh chụp Playwright thực tế.
 
 **Kết quả**: 239/239 test pass sau cả 2 việc trên (không có test mới nào
-liên quan tới CSS, chỉ 1 test đổi cho việc bỏ giới hạn MOD). Vẫn chưa
-commit.
+liên quan tới CSS, chỉ 1 test đổi cho việc bỏ giới hạn MOD). Đã commit
+(`d4ea69b`), owner đã push lên remote.
+
+### Điều tra "Task quá hạn" thật của `nhtu00` sau khi owner bật lại server (2026-09-25)
+
+Owner báo bật lại server lúc 08:42 sáng 25/9 (giờ Nhật) thì thấy hàng
+loạt task rơi vào "⚠️ Task quá hạn", hỏi khi nào các task đó được đồng
+bộ về. Đọc thẳng `logs/human_bot.log` (không đoán) xác nhận:
+
+- **18:05 tối 24/9** — lần `data_sync` cuối cùng trước khi service tắt,
+  tạo ra toàn bộ số task rải lịch đăng suốt đêm đó.
+- Ngay sau đó service **tắt liên tục ~14 tiếng 37 phút** — log không có
+  bất kỳ lệnh gọi nào tới side B cho tới đúng **08:42:19-08:42:28 sáng
+  25/9**, khi service khởi động lại.
+- Vì mọi task được tạo lúc 18:05 đều đã quá giờ đăng dự kiến tại thời
+  điểm service sống lại, `sweep_overdue_on_startup()` (chỉ chạy đúng 1
+  lần lúc khởi động, xem docstring `schedule_store.py`) gom hết **23
+  task thật** (`comment_on_group_post`/`post_to_group`, nguồn
+  candidate/job thật từ bên B, không phải rác) vào `scheduled/missed/`
+  cùng lúc — đúng là log ghi: `sweep_overdue_on_startup: moved 23
+  pending task(s) to missed/`.
+- Kết luận: không phải lỗi đồng bộ/lỗi lịch — chỉ vì server tắt hơn nửa
+  ngày ngay sau khi vừa nhận dữ liệu mới, nên mọi task nhận trong lần
+  sync đó đều bị lỡ giờ. Owner đã tự xem và xoá 23 task quá hạn này qua
+  `/admin/schedule`.
+
+**Nhân tiện dọn luôn 5 task test cũ còn sót** (tasks.md mục "Cập nhật
+cùng ngày — thêm 5 task giả để owner test UI thật", tạo hôm 14/9 để
+test bộ lọc "Task quá hạn", owner báo đã test xong lúc đầu hội thoại
+này): tìm đúng 5 file bằng dấu hiệu `[TEST DATA]`/`test-data-do-not-post`
+(4 file còn trong `scheduled/missed/`, 1 file — bản 35 ngày quá hạn — đã
+tự động bị `cancel_stale_missed()` chuyển sang `scheduled/cancelled/`
+từ trước, kèm 1 file `.result.txt` mồ côi còn sót lại đúng-thiết-kế
+trong `missed/`). Xoá cả `.json` lẫn `.result.txt` của cả 5, `grep`
+xác nhận không còn dấu vết `[TEST DATA]`/`test-data-do-not-post` nào
+trong `scheduled/`.
+
+### Live-confirm fix "lấy quá nhiều tin" của `job_capacities` — dùng đúng dữ liệu sync thật lúc 08:42:28 sáng nay (2026-09-25)
+
+Đây là mục theo dõi còn treo từ đợt sửa `_max_jobs_over_window()`
+(17/9) — owner hỏi thẳng lần sync vừa rồi (08:42:28) có đúng không.
+Không chỉ đếm số job quan sát được mà **gọi thẳng hàm thật
+`data_sync._max_jobs_over_window()`** với đúng trạng thái tồn kho
+tái dựng lại tại đúng thời điểm sync đó (đọc `created_at` để tách
+task nào có trước/sau lần sync này), để so khớp số job THỰC LẤY với
+số job CHO PHÉP LẤY theo công thức, chứ không chỉ nhìn con số rồi
+đoán đúng/sai:
+
+- `nhtu00` chỉ lấy thêm **4 job mới** (`581/585/589/592`, 12 task
+  `post_to_group`) — so với hạn mức tính đúng theo công thức tại thời
+  điểm đó: 25/9 còn 2 slot + 26/9 còn 0 (đã đầy) + 27/9 còn nguyên 12 =
+  14 slot ÷ `max_groups_per_post=3` = **tối đa 5 job**. Lấy 4/5 (dưới
+  trần, không vượt) — đúng, chênh lệch 1 chỉ vì bên B không có đủ 5 job
+  mới phù hợp cho tài khoản này ở đúng lần poll đó, không phải lỗi tính
+  toán (trần chỉ là giới hạn TRÊN, không phải số phải lấy đủ).
+- Xác nhận thêm điều quan trọng hơn cả con số cụ thể: toàn bộ 34 task
+  `post_to_group` đang chờ của `nhtu00` hiện chỉ nằm trong đúng 3 ngày
+  nghiệp vụ **25/9, 26/9, 27/9** ("hôm nay + 2 ngày", đúng
+  `max_overflow_business_days=2` mặc định) — không có task nào rớt
+  sang ngày thứ 4 như lỗi cũ.
+
+**Kết luận: fix hoạt động đúng trên dữ liệu thật, có thể đóng mục theo
+dõi này.** Không sửa code gì trong lần kiểm tra này, chỉ đọc/tính toán
+lại từ dữ liệu sống.
