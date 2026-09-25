@@ -385,8 +385,9 @@ Một vài lựa chọn thiết kế đáng chú ý, được cân nhắc kỹ c
 
 # 6. Việc cần làm tiếp theo
 
-- Theo dõi thêm để chắc chắn các lỗi mới sửa (đặc biệt: tin trùng dữ liệu, đăng
-  đúng giờ, cơ chế hạ nhiệt) chạy ổn định lâu dài với dữ liệu thật.
+- **[ĐANG THEO DÕI]** Theo dõi thêm để chắc chắn các lỗi mới sửa (đặc biệt:
+  tin trùng dữ liệu, đăng đúng giờ, cơ chế hạ nhiệt) chạy ổn định lâu dài với
+  dữ liệu thật.
 - Chạy thử ưu tiên "tin trả tiền" với dữ liệu thật ngay khi bên B triển khai xong
   phần của họ.
 - Thêm kênh báo động (Slack/email) khi có tài khoản bị Facebook khoá, thay vì phải
@@ -395,9 +396,8 @@ Một vài lựa chọn thiết kế đáng chú ý, được cân nhắc kỹ c
 - Chuyển giao diện Facebook của tài khoản `nhtu00` sang tiếng Anh theo đúng quy
   định (mục 5) — đây vẫn là hướng xử lý chính; phần "hiểu cả tiếng Việt" vừa thêm
   chỉ là lưới an toàn dự phòng, không thay thế việc này.
-- Theo dõi lần đăng lên tường cá nhân đầu tiên của `nhtu00` để xác nhận nút mở
-  khung soạn bài (vá trước bằng chữ owner cho, chưa có lỗi thật để đối chiếu)
-  hoạt động đúng trên thực tế.
+- **[ĐÃ XÁC NHẬN SỐNG, 2026-09-25]** Lần đăng lên tường cá nhân đầu tiên của
+  `nhtu00` — owner xác nhận nút mở khung soạn bài hoạt động đúng.
 - **[ĐÃ XÁC NHẬN SỐNG, 2026-09-25]** Sửa lỗi "lấy quá nhiều tin" của `nhtu00`
   hoạt động đúng trên hệ thống thật — lần sync thật lúc 08:42 sáng 25/9 chỉ lấy
   về 4 tin mới (không phải 35 như lỗi cũ), đúng trong hạn mức tính ra tại thời
@@ -406,9 +406,9 @@ Một vài lựa chọn thiết kế đáng chú ý, được cân nhắc kỹ c
   "hôm nay + 2 ngày" như thiết kế, không còn tin nào lố ra ngày thứ 4. Kiểm tra
   bằng cách gọi thẳng lại công thức tính hạn mức với đúng dữ liệu tồn kho tại
   thời điểm sync, không chỉ nhìn số lượng rồi đoán.
-- Xem thử giao diện "⚠️ Task quá hạn" trên trình duyệt thật để xác nhận bộ lọc
-  và cơ chế tự huỷ sau 30 ngày hiển thị/hoạt động đúng như mong muốn (mới test
-  bằng code, chưa xem qua trình duyệt thật).
+- **[ĐÃ XEM, 2026-09-25]** Giao diện "⚠️ Task quá hạn" trên trình duyệt thật —
+  owner đã xem qua (nhân dịp này còn thêm nút "🚀 Đăng ngay" thẳng trong tab
+  này, xem mục ngay trên).
 - Lỗi mức lương "5.000.000 JPY/giờ" — **đã xác định là lỗi dữ liệu phía bên B**,
   không cần hệ thống này sửa gì, chỉ ghi nhận.
 - Nối toàn bộ hệ thống vào quy trình tự động hoàn chỉnh (chạy theo lịch/tín hiệu
@@ -424,11 +424,23 @@ Một vài lựa chọn thiết kế đáng chú ý, được cân nhắc kỹ c
 - **[Quan trọng, chủ dự án tự làm được ngay]** Chuyển giao diện Facebook của
   `nhtu00` sang tiếng Anh theo đúng quy định (mục 5) — vẫn là hướng xử lý chính,
   phần "hiểu cả tiếng Việt" chỉ là lưới an toàn phụ.
-- Trang quản trị (~4000 dòng) hầu như chưa có bài kiểm tra tự động (đã làm riêng
-  cho phần đăng nhập, xem mục trên, vì đây là phần nhạy cảm nhất) — 2 lỗi thật
-  tuần này ở phần "Task quá hạn" (mất bộ lọc, lỗi chọn "Tất cả") đáng lẽ 1 bài
-  test đơn giản đã bắt được sớm hơn. Cần làm dần cho các phần còn lại, ưu tiên
-  khu vực hay thay đổi nhất trước.
+- **[ĐANG LÀM DẦN, Phase 1/4 xong 2026-09-25]** Viết test tự động cho trang
+  quản trị (~5949 dòng, trước đó chỉ phần đăng nhập có test). Đã lên kế hoạch
+  4 giai đoạn theo mức độ rủi ro, ưu tiên khu vực hay đổi nhất trước — Phase 1
+  (`/admin/schedule`, đúng khu vực từng dính 2 lỗi thật tuần này) đã xong: 22
+  bài test HTTP mới + 17 bài test hàm thuần, gồm cả test hồi quy riêng cho 2
+  lỗi cũ đó. Trong lúc viết test còn phát hiện thêm 1 lỗi tiềm ẩn (chưa xảy ra
+  thật, chỉ là kẽ hở lý thuyết) ở nút "Đăng ngay" phiên bản gốc (tab "Chờ
+  đăng") — owner chọn sửa luôn, đã sửa xong cùng ngày (xem mục dưới). Còn 3
+  phase nữa (`/admin/reports`, `/admin/accounts`, phần còn lại) — làm dần,
+  không vội.
+- **[ĐÃ SỬA, 2026-09-25]** Nút "🚀 Đăng ngay" gốc ở tab "Chờ đăng" (dùng từ
+  2026-09-09) có cùng kẽ hở đã tìm và sửa cho bản tab "Task quá hạn" hôm nay:
+  nếu ai đó gửi lại `force=1` mà không qua đúng nút bấm trên giao diện, có
+  thể vô tình bỏ qua luôn cả kiểm tra hạn mức số lượng, không chỉ khoảng
+  cách tối thiểu như đã cam kết. Không xảy ra được trong điều kiện dùng bình
+  thường (chỉ bấm nút trên UI) — chỉ là kẽ hở lý thuyết, nhưng owner chọn sửa
+  luôn cho chắc. Đã sửa xong, đồng bộ với bản kia, test tự động xác nhận đúng.
 - **[ĐÃ LÀM, 2026-09-25]** Owner đã tự tay thử trang đăng nhập mới trên trình
   duyệt thật, xác nhận ổn.
 - Cơ sở dữ liệu báo cáo (`human_bot.db`) chưa có cơ chế dọn định kỳ như các nơi

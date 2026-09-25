@@ -4134,4 +4134,86 @@ hay `runtime_config.json` thật) xác nhận đúng cả 4 nhánh: đủ slot+g
 vẫn ở `missed/`; dính gap không force → hiện modal, không đăng; dính gap
 + force=1 → đăng được, đúng `force_ignore_gap=True`. Chụp ảnh Playwright
 xác nhận giao diện: nút "Đăng ngay" + tag "💰 Sponsor" hiện đúng vị trí.
-**246/246 test tự động pass.** Chưa commit.
+**246/246 test tự động pass.** Đã commit (`de1505b`), chưa push.
+
+Owner gắn thử `sponsored_by` cho 1 task pending thật
+(`20260925T015629Z_ab8b6765`, job 643) để xem UI — xác nhận đúng, giữ
+nguyên (owner đồng ý không cần trả về `null`).
+
+### Cập nhật trạng thái các mục theo dõi còn treo (2026-09-25)
+
+- Lần đăng lên tường cá nhân đầu tiên của `nhtu00` — **owner xác nhận nút
+  mở khung soạn bài hoạt động đúng.**
+- Giao diện "⚠️ Task quá hạn" trên trình duyệt thật — **owner đã xem.**
+- Theo dõi ổn định lâu dài các lỗi mới sửa (tin trùng, đăng đúng giờ, hạ
+  nhiệt) — **đang theo dõi**, chưa kết luận.
+
+## Kế hoạch viết test cho phần còn lại của `admin.py` — Phase 1: `/admin/schedule` (2026-09-25)
+
+Owner yêu cầu lên kế hoạch viết test tự động cho ~5949 dòng còn lại của
+`admin.py` (chỉ phần đăng nhập có test). Dùng Plan Mode: 1 Explore agent
+khảo sát toàn bộ cấu trúc file + khuôn mẫu test đã có, viết kế hoạch 4
+phase theo mức độ rủi ro (ưu tiên khu vực churn cao nhất trước —
+`/admin/schedule` rồi `/admin/reports` rồi `/admin/accounts` rồi phần
+còn lại), owner duyệt kế hoạch. Đã làm xong **Phase 1**.
+
+**Fixture mới trong `tests/conftest.py`** (dùng chung cho mọi phase sau):
+`isolated_schedule_dirs` (dời từ `test_admin.py` sang), `isolated_db`
+(cô lập `human_bot.db.DB_PATH`), `isolated_accounts_dir` (cô lập
+`config.ACCOUNTS_DIR`), `isolated_screenshots_root` (cô lập
+`screenshots.SCREENSHOTS_ROOT`), `no_real_run_task` (chặn
+`human_bot.admin.run_task` — 3 route duy nhất gọi thẳng nó:
+`schedule_fire_now`, `schedule_missed_fire_now`, `reports_repost`),
+`no_real_bootstrap_login` (chặn 4 hàm `bootstrap_login_sessions`, nơi
+duy nhất khác mở Playwright thật ngoài `run_task()`).
+
+**`tests/test_admin.py`** — thêm 17 test thuần cho: `_safe_next_path`,
+`_fmt_jst`, `_local_dt_html`, `_localize_iso_timestamps_html` (kể cả xác
+nhận không cho injection qua phần text không phải timestamp),
+`_clamp_schedule_page_size`, `_clamp_missed_min_days`, `_task_local_date`,
+`_schedule_form_filter` (bảng test input hỏng → rơi về mặc định đúng,
+không crash).
+
+**`tests/test_admin_schedule.py`** (mới) — 22 test HTTP, dùng đúng khuôn
+`_make_test_app()` của `test_admin_login.py`:
+- **Test hồi quy cho đúng 2 lỗi thật đã sửa hôm 24/9** (trước đó chỉ
+  verify tay bằng script, không có test tự động): (1) bộ lọc "Quá hạn"
+  không được biến mất khi lọc ra 0 kết quả; (2) chọn "— Tất cả —"
+  (`missed_min_days=`) không còn 422.
+- Bộ lọc tab "Chờ đăng" (account/action), bulk-cancel tab quá hạn chỉ
+  xoá đúng id được chọn, đặt lịch lại/huỷ task quá hạn.
+- 4 nhánh rate-limit của cả `schedule_fire_now` (tab chờ đăng) lẫn
+  `schedule_missed_fire_now` (tab quá hạn, mới thêm hôm 25/9) — đóng
+  thành test tự động thay cho script live-test thủ công trước đó.
+
+**Phát hiện thêm 1 lỗi tiềm ẩn khi viết test cho `schedule_fire_now`
+(bản gốc, KHÔNG PHẢI bản `missed` mới sửa)**: cùng đúng kẽ hở đã tìm và
+sửa cho `schedule_missed_fire_now` hôm qua — `if account and bucket and
+not force:` khiến `force=1` bỏ qua LUÔN CẢ kiểm tra hạn mức cứng, không
+chỉ mỗi khoảng cách tối thiểu. Route này tồn tại từ 2026-09-09, chưa ai
+phát hiện vì bình thường `force=1` chỉ được gửi từ đúng modal xác nhận
+gap-only. Đúng theo kế hoạch đã duyệt ("viết test trước, lộ ra thì báo
+lại xin ý kiến, không tự ý sửa kèm") — viết 1 test `xfail(strict=True)`
+ghi lại rõ hiện trạng thay vì tự sửa. **Cần hỏi owner có muốn sửa luôn
+route này giống bản `missed` không** (sửa rất nhỏ — đổi
+`can_proceed(account, bucket)` trong khối `if ... and not force` thành
+gọi `can_proceed(account, bucket, ignore_gap=force)` vô điều kiện, y hệt
+cách đã sửa cho bản `missed`).
+
+**Kết quả**: 283 test pass + 1 xfail (dự kiến) = 284 tổng, tăng từ 246.
+Không đụng `runtime_config.json`/`human_bot.db`/`accounts/`/`scheduled/`
+thật (xác nhận qua `git status` sau khi chạy — các thư mục này đều
+gitignore nên không hiện trong `git status`, đã tự kiểm tra riêng nội
+dung `runtime_config.json` thật không đổi). Chưa commit.
+
+**Owner chọn sửa luôn kẽ hở ở `schedule_fire_now()`** (hỏi qua
+`AskUserQuestion`, chọn "Sửa luôn"). Sửa `human_bot/admin.py`: đổi khối
+`if account and bucket and not force:` gọi `can_proceed(account,
+bucket)` thành `if account and bucket:` gọi `can_proceed(account,
+bucket, ignore_gap=force)` vô điều kiện — y hệt cách đã sửa cho
+`schedule_missed_fire_now()`. Gộp lại test `xfail` thành 1 test
+`@pytest.mark.parametrize` chung cho cả 2 route (đúng hành vi mong
+muốn, không còn xfail). **284/284 test pass** (không tăng thêm số test,
+chỉ đổi 2 test riêng thành 1 test tham số hoá). Đã cập nhật lại
+`FB_Post_Assistant.md` phản ánh đã sửa xong, không còn "cần owner quyết
+định". Vẫn chưa commit.

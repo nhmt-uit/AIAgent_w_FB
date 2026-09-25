@@ -12,7 +12,18 @@ from pathlib import Path
 import pytest
 
 import human_bot.schedule_store as schedule_store
-from human_bot.admin import _sponsor_badge_html, _suggest_reschedule_at
+from human_bot.admin import (
+    _clamp_missed_min_days,
+    _clamp_schedule_page_size,
+    _fmt_jst,
+    _local_dt_html,
+    _localize_iso_timestamps_html,
+    _safe_next_path,
+    _schedule_form_filter,
+    _sponsor_badge_html,
+    _suggest_reschedule_at,
+    _task_local_date,
+)
 from human_bot.config import RateLimits
 from human_bot.data_sync_config import DataSyncConfig
 from human_bot import daily_limits
@@ -23,16 +34,6 @@ class _FakeAccount:
     account_id: str
     rate_limits: RateLimits
     action_log_path: Path
-
-
-@pytest.fixture
-def isolated_schedule_dirs(tmp_path, monkeypatch):
-    monkeypatch.setattr(schedule_store, "PENDING_DIR", tmp_path / "pending")
-    monkeypatch.setattr(schedule_store, "POSTED_DIR", tmp_path / "posted")
-    monkeypatch.setattr(schedule_store, "FAILED_DIR", tmp_path / "failed")
-    monkeypatch.setattr(schedule_store, "CANCELLED_DIR", tmp_path / "cancelled")
-    monkeypatch.setattr(schedule_store, "MISSED_DIR", tmp_path / "missed")
-    return schedule_store
 
 
 @pytest.fixture
@@ -164,3 +165,143 @@ def test_sponsor_badge_empty_for_candidate_sourced_task():
 def test_sponsor_badge_empty_when_no_job_or_candidate_data():
     task = _fake_task()
     assert _sponsor_badge_html(task) == ""
+
+
+# --- Phase 1 (2026-09-25 test-coverage plan): more admin.py pure functions ---
+
+def test_safe_next_path_accepts_bare_admin_and_admin_subpaths():
+    assert _safe_next_path("/admin") == "/admin"
+    assert _safe_next_path("/admin/schedule") == "/admin/schedule"
+    assert _safe_next_path("/admin/schedule?tab=missed") == "/admin/schedule?tab=missed"
+
+
+def test_safe_next_path_rejects_protocol_relative_and_absolute_urls():
+    assert _safe_next_path("//evil.example") == "/admin"
+    assert _safe_next_path("https://evil.example/admin") == "/admin"
+    assert _safe_next_path("/admin/../https://evil.example") == "/admin"
+
+
+def test_safe_next_path_rejects_blank_or_unrelated_path():
+    assert _safe_next_path(None) == "/admin"
+    assert _safe_next_path("") == "/admin"
+    assert _safe_next_path("/other-page") == "/admin"
+
+
+def test_fmt_jst_adds_nine_hours():
+    assert _fmt_jst("2026-01-01T00:00:00+00:00") == "09:00 01-01-2026"
+
+
+def test_fmt_jst_blank_or_malformed_input():
+    assert _fmt_jst(None) == "—"
+    assert _fmt_jst("") == "—"
+    assert _fmt_jst("not-a-date") == "not-a-date"
+
+
+def test_local_dt_html_embeds_utc_and_jst_fallback():
+    out = _local_dt_html("2026-01-01T00:00:00+00:00")
+    assert 'data-utc="2026-01-01T00:00:00+00:00"' in out
+    assert "09:00 01-01-2026" in out
+
+
+def test_local_dt_html_blank_input():
+    assert _local_dt_html(None) == "—"
+
+
+def test_localize_iso_timestamps_html_replaces_only_the_timestamp():
+    text = "Đã quá giờ đăng dự kiến (2026-09-24T10:17:38.337289+00:00) lúc service khởi động lại."
+    out = _localize_iso_timestamps_html(text)
+    assert "Đã quá giờ đăng dự kiến (" in out
+    assert 'data-utc="2026-09-24T10:17:38.337289+00:00"' in out
+    assert ") lúc service khởi động lại." in out
+
+
+def test_localize_iso_timestamps_html_escapes_surrounding_text():
+    """The surrounding free text is NOT a trusted timestamp — must still
+    be html.escape()'d so it can't inject markup."""
+    out = _localize_iso_timestamps_html("<script>alert(1)</script>")
+    assert "<script>" not in out
+    assert "&lt;script&gt;" in out
+
+
+def test_localize_iso_timestamps_html_no_timestamp_present():
+    assert _localize_iso_timestamps_html("plain text, no dates here") == "plain text, no dates here"
+
+
+def test_clamp_schedule_page_size_allowlist():
+    assert _clamp_schedule_page_size(50) == 50
+    assert _clamp_schedule_page_size(7) == 20  # not in the allowlist -> default
+    assert _clamp_schedule_page_size(-1) == 20
+    assert _clamp_schedule_page_size(0) == 20
+
+
+def test_clamp_missed_min_days_allowlist():
+    assert _clamp_missed_min_days(7) == 7
+    assert _clamp_missed_min_days(None) is None
+    assert _clamp_missed_min_days(4) is None  # not one of (3, 5, 7, 30)
+    assert _clamp_missed_min_days(-5) is None
+
+
+def test_task_local_date_applies_tz_offset():
+    # 2026-01-01T23:30:00Z + 9h (JST) = 2026-01-02
+    assert _task_local_date("2026-01-01T23:30:00+00:00", 540) == "2026-01-02"
+    # Same instant with no offset stays on the UTC calendar day.
+    assert _task_local_date("2026-01-01T23:30:00+00:00", 0) == "2026-01-01"
+
+
+def test_task_local_date_blank_or_malformed_input():
+    assert _task_local_date(None, 540) is None
+    assert _task_local_date("not-a-date", 540) is None
+
+
+def test_schedule_form_filter_defaults_on_malformed_input():
+    """Every numeric field falls back to its documented default instead
+    of raising when the form value can't be parsed as an int."""
+    form = {
+        "account_id": "  acc-a  ",
+        "page": "not-a-number",
+        "page_size": "not-a-number",
+        "missed_page": "not-a-number",
+        "action": "not-a-real-action",
+        "date": "  2026-01-01  ",
+        "tz_offset": "not-a-number",
+        "missed_min_days": "not-a-number",
+    }
+    account_id, page, page_size, missed_page, action_filter, date_filter, tz_offset, missed_min_days = (
+        _schedule_form_filter(form)
+    )
+    assert account_id == "acc-a"
+    assert page == 1
+    assert page_size == 20
+    assert missed_page == 1
+    assert action_filter is None  # not in the allowlist
+    assert date_filter == "2026-01-01"
+    assert tz_offset == 0
+    assert missed_min_days is None
+
+
+def test_schedule_form_filter_parses_valid_values():
+    form = {
+        "account_id": "acc-b",
+        "page": "3",
+        "page_size": "50",
+        "missed_page": "2",
+        "action": "post_to_group",
+        "date": "",
+        "tz_offset": "540",
+        "missed_min_days": "7",
+    }
+    account_id, page, page_size, missed_page, action_filter, date_filter, tz_offset, missed_min_days = (
+        _schedule_form_filter(form)
+    )
+    assert account_id == "acc-b"
+    assert page == 3
+    assert page_size == 50
+    assert missed_page == 2
+    assert action_filter == "post_to_group"
+    assert date_filter is None
+    assert tz_offset == 540
+    assert missed_min_days == 7
+
+
+def test_schedule_form_filter_empty_account_id_becomes_none():
+    assert _schedule_form_filter({"account_id": "   "})[0] is None

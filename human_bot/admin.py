@@ -4186,11 +4186,25 @@ async def schedule_fire_now(request: Request, _: None = Depends(_require_login))
     from human_bot.safety import is_gap_reason, rate_limit_wait_message
     account = get_all_accounts().get(task.account_id)
     bucket = rate_limit_bucket_for(task.action)
-    if account and bucket and not force:
+    if account and bucket:
         # daily_limits.can_proceed() (2026-09-11), not RateLimiter.can_proceed()
         # directly — see human_bot/daily_limits.py's module docstring.
-        allowed, reason = daily_limits.can_proceed(account, bucket)
-        if not allowed and is_gap_reason(reason):
+        #
+        # 2026-09-25 fix (found while writing tests/test_admin_schedule.py
+        # for this route's copy, schedule_missed_fire_now() — see that
+        # function's own fix note from the same day for the full story):
+        # calling can_proceed(..., ignore_gap=force) UNCONDITIONALLY,
+        # rather than skipping this whole call when force is set, is what
+        # guarantees the hard per-day/per-hour cap is still checked on a
+        # forced resubmit — ignore_gap=True only ever skips can_proceed()'s
+        # OWN internal soft-gap check, never the hard-cap branches below
+        # it. The old `and not force` guard let a forced resubmit skip
+        # BOTH checks, not just the gap one — never surfaced in normal
+        # use (force=1 is only ever sent from the gap-only confirmation
+        # modal below), but a stale/direct force=1 after the day's slot
+        # filled up in between would have wrongly gone through.
+        allowed, reason = daily_limits.can_proceed(account, bucket, ignore_gap=force)
+        if not allowed and not force and is_gap_reason(reason):
             # Soft pacing gap only — offer the override modal instead of
             # failing outright. Doesn't record an attempt (can_proceed()
             # is read-only).
