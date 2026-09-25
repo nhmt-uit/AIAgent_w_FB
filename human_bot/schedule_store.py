@@ -411,14 +411,20 @@ def cancel_missed(task_id: str) -> bool:
     return _move_to(task_id, CANCELLED_DIR, source_dir=MISSED_DIR) is not None
 
 
-def mark_posted(task_id: str, message: str) -> None:
-    dest = _move_to(task_id, POSTED_DIR)
+def mark_posted(task_id: str, message: str, source_dir: Path | None = None) -> None:
+    """`source_dir` (2026-09-25, owner request: a "🚀 Đăng ngay" button
+    directly on MISSED_DIR items) lets this fire straight from
+    MISSED_DIR too, same as cancel_missed() already does for cancel() —
+    default None keeps the original PENDING_DIR behavior for every
+    existing caller."""
+    dest = _move_to(task_id, POSTED_DIR, source_dir=source_dir)
     if dest is not None:
         dest.with_suffix(".result.txt").write_text(message, encoding="utf-8")
 
 
-def mark_failed(task_id: str, reason: str) -> None:
-    dest = _move_to(task_id, FAILED_DIR)
+def mark_failed(task_id: str, reason: str, source_dir: Path | None = None) -> None:
+    """See mark_posted()'s `source_dir` docstring above — same reasoning."""
+    dest = _move_to(task_id, FAILED_DIR, source_dir=source_dir)
     if dest is not None:
         dest.with_suffix(".result.txt").write_text(reason, encoding="utf-8")
 

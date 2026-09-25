@@ -109,6 +109,45 @@ def test_cancel_missed_false_when_absent(isolated_store):
     assert isolated_store.cancel_missed("nonexistent") is False
 
 
+def test_mark_posted_from_missed_dir(isolated_store):
+    """2026-09-25: mark_posted()/mark_failed() gained an optional
+    source_dir so /admin/schedule's "⚠️ Task quá hạn" tab can get its own
+    "🚀 Đăng ngay" button — firing a task straight out of MISSED_DIR
+    without first bouncing it through pending/ via restore_to_pending()."""
+    now = datetime.now(timezone.utc)
+    task = _make_task(isolated_store, now - timedelta(hours=1))
+    isolated_store.mark_missed(task.task_id, "quá hạn")
+    isolated_store.mark_posted(task.task_id, "posted ok", source_dir=isolated_store.MISSED_DIR)
+    assert isolated_store.get_missed(task.task_id) is None
+    posted_files = list(isolated_store.POSTED_DIR.glob("*.json"))
+    assert len(posted_files) == 1
+    result_txt = isolated_store.POSTED_DIR / f"{task.task_id}.result.txt"
+    assert result_txt.read_text(encoding="utf-8") == "posted ok"
+    # The original miss-reason .result.txt is left behind in MISSED_DIR,
+    # same "leave audit note behind" convention as cancel_missed().
+    assert (isolated_store.MISSED_DIR / f"{task.task_id}.result.txt").read_text(encoding="utf-8") == "quá hạn"
+
+
+def test_mark_failed_from_missed_dir(isolated_store):
+    now = datetime.now(timezone.utc)
+    task = _make_task(isolated_store, now - timedelta(hours=1))
+    isolated_store.mark_missed(task.task_id, "quá hạn")
+    isolated_store.mark_failed(task.task_id, "lỗi thật", source_dir=isolated_store.MISSED_DIR)
+    assert isolated_store.get_missed(task.task_id) is None
+    failed_files = list(isolated_store.FAILED_DIR.glob("*.json"))
+    assert len(failed_files) == 1
+
+
+def test_mark_posted_default_source_dir_still_pending(isolated_store):
+    """Regression guard: the new source_dir param must default to the
+    original PENDING_DIR behavior for every pre-existing caller."""
+    now = datetime.now(timezone.utc)
+    task = _make_task(isolated_store, now - timedelta(hours=1))
+    isolated_store.mark_posted(task.task_id, "posted ok")
+    assert isolated_store.get(task.task_id) is None
+    assert len(list(isolated_store.POSTED_DIR.glob("*.json"))) == 1
+
+
 def test_list_pending_sorts_by_current_scheduled_at_not_stale_task_id(isolated_store):
     """Regression test for a real production report, 2026-09-16: a missed
     (overdue) post originally due 2026-09-15 was rescheduled forward to

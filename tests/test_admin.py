@@ -12,7 +12,7 @@ from pathlib import Path
 import pytest
 
 import human_bot.schedule_store as schedule_store
-from human_bot.admin import _suggest_reschedule_at
+from human_bot.admin import _sponsor_badge_html, _suggest_reschedule_at
 from human_bot.config import RateLimits
 from human_bot.data_sync_config import DataSyncConfig
 from human_bot import daily_limits
@@ -133,3 +133,34 @@ def test_suggestion_with_no_history_or_pending_tasks_is_close_to_now(isolated_sc
     # either way, well within the same business day, not days away.
     assert suggested - before < timedelta(hours=12)
     assert suggested >= before - timedelta(seconds=1)
+
+
+def _fake_task(job_data=None, candidate_data=None) -> schedule_store.ScheduledTask:
+    return schedule_store.ScheduledTask(
+        task_id="t1", action="post_to_group", account_id="acc-a",
+        scheduled_at=datetime.now(timezone.utc).isoformat(),
+        job_data=job_data, candidate_data=candidate_data,
+    )
+
+
+def test_sponsor_badge_shown_when_job_has_sponsored_by():
+    """2026-09-25 owner request: a job-sourced task whose job carried a
+    sponsored_by value should show a "Sponsor" tag next to the action
+    badge in both /admin/schedule's "Chờ đăng" and "Task quá hạn" tabs."""
+    task = _fake_task(job_data={"title": "x", "sponsored_by": "AcmeCorp"})
+    assert "Sponsor" in _sponsor_badge_html(task)
+
+
+def test_sponsor_badge_empty_when_job_data_missing_sponsored_by():
+    task = _fake_task(job_data={"title": "x", "sponsored_by": None})
+    assert _sponsor_badge_html(task) == ""
+
+
+def test_sponsor_badge_empty_for_candidate_sourced_task():
+    task = _fake_task(candidate_data={"attributes": {}})
+    assert _sponsor_badge_html(task) == ""
+
+
+def test_sponsor_badge_empty_when_no_job_or_candidate_data():
+    task = _fake_task()
+    assert _sponsor_badge_html(task) == ""

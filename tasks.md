@@ -4059,3 +4059,79 @@ số job CHO PHÉP LẤY theo công thức, chứ không chỉ nhìn con số r�
 **Kết luận: fix hoạt động đúng trên dữ liệu thật, có thể đóng mục theo
 dõi này.** Không sửa code gì trong lần kiểm tra này, chỉ đọc/tính toán
 lại từ dữ liệu sống.
+
+## Tính năng mới: "🚀 Đăng ngay" trực tiếp ở tab "Task quá hạn" + tag "💰 Sponsor" (2026-09-25)
+
+Owner yêu cầu 2 việc sau khi tìm hiểu về cơ chế slot/khoảng cách:
+1. Nút "Đăng ngay" ngay trong tab "⚠️ Task quá hạn" (trước đây phải qua
+   "📅 Đặt lịch"/"🔄 Lên lịch lại" đưa về `pending/` trước mới đăng
+   được) — bấm vẫn phải kiểm tra đủ slot ngày hôm đó không (không đủ
+   → không cho đăng, không có cách nào bỏ qua), và nếu chỉ dính khoảng
+   cách tối thiểu giữa 2 hành động thì phải cảnh báo trước, ADMIN xác
+   nhận vẫn muốn đăng thì mới bỏ qua đúng phần đó.
+2. Thêm tag "💰 Sponsor" ngay cạnh badge hành động ("Đăng vào nhóm" /
+   "Comment bài trong nhóm") cho task nào có `sponsored_by`.
+
+**Thiết kế**: tái dùng đúng `daily_limits.can_proceed()` đã có sẵn (cùng
+hàm `schedule_fire_now()` — nút "Đăng ngay" của tab "Chờ đăng" — và
+`data_sync.fire_due_tasks()` đang dùng) thay vì viết lại luật riêng —
+đảm bảo tự động đồng nhất với mọi nơi khác đang enforce đúng luật này,
+không có 2 bản luật lệch nhau: hard cap (posts_per_day/comments_per_hour/
+comments_per_day/likes_per_hour) không bao giờ bỏ qua được; soft gap
+(khoảng cách tối thiểu min_delay_seconds) thì hiện modal "Vẫn đăng ngay"
+để ADMIN tự quyết.
+
+**Thay đổi**:
+- `human_bot/schedule_store.py`: `mark_posted()`/`mark_failed()` thêm
+  tham số `source_dir` (mặc định `None` = `PENDING_DIR`, giữ nguyên hành
+  vi cũ cho mọi chỗ gọi hiện có) để có thể đăng thẳng từ `MISSED_DIR`
+  không cần `restore_to_pending()` trước — cùng kiểu `source_dir` mà
+  `cancel_missed()` đã dùng từ trước.
+- `human_bot/admin.py`:
+  - `_sponsor_badge_html(task)` — đọc `task.job_data["sponsored_by"]`
+    (data_sync.py đã stash sẵn từ 16/9, "chỉ để truy vết, không phục vụ
+    logic lên lịch" — giờ dùng thêm cho UI). Gắn vào cả 2 chỗ dùng
+    `_action_badge_html()`: danh sách "Chờ đăng" và "Task quá hạn".
+  - Route mới `POST /admin/schedule/missed/fire-now` +
+    `_missed_fire_now_confirm_modal_html()` — bản sao gần như y hệt
+    `schedule_fire_now()`/`_fire_now_confirm_modal_html()` của tab "Chờ
+    đăng", chỉ khác nguồn đọc (`get_missed()` thay vì `get()`) và đích
+    ghi khi thành công/thất bại (`mark_posted/mark_failed(...,
+    source_dir=MISSED_DIR)` thay vì mặc định `PENDING_DIR`). Thêm nhãn
+    nguồn `"schedule_missed_manual"` vào `_SOURCE_LABELS` để /admin/reports
+    phân biệt được với "Đăng ngay" bình thường.
+  - Nút "🚀 Đăng ngay" thêm vào hàng nút của mỗi task quá hạn, cùng hàng
+    với "🔄 Lên lịch lại"/"🗑️ Xoá".
+
+**Bug tự bắt được lúc live-test (trước khi báo cáo xong)**: bản đầu viết
+y hệt logic gốc của `schedule_fire_now()` — `if account and bucket and
+not force:` — nghĩa là khi `force=1` (bấm "Vẫn đăng ngay" từ modal) thì
+BỎ QUA TOÀN BỘ kiểm tra, kể cả hard cap, không chỉ mỗi khoảng cách tối
+thiểu như tài liệu `can_proceed(ignore_gap=...)` đã cam kết ("không bao
+giờ bỏ qua được, kể cả bằng force"). Bình thường không lộ ra (vì `force=1`
+chỉ được gửi từ modal, mà modal chỉ hiện đúng lúc lý do chặn là gap-only),
+nhưng vẫn là kẽ hở thật nếu trạng thái đổi giữa lúc bấm lần đầu và lúc
+xác nhận (VD slot vừa đầy trong lúc admin đang đọc cảnh báo), hoặc ai đó
+gửi thẳng `force=1` không qua UI. **Sửa**: gọi `can_proceed(account,
+bucket, ignore_gap=force)` VÔ ĐIỀU KIỆN thay vì bọc cả lệnh gọi trong
+`if ... and not force` — `ignore_gap=True` bên trong `can_proceed()` chỉ
+bỏ qua đúng phần gap, hard cap phía dưới luôn luôn chạy bất kể
+`ignore_gap`. Cách này ĐÚNG HƠN bản gốc `schedule_fire_now()` đang dùng
+cho tab "Chờ đăng" — bản đó vẫn còn giữ nguyên kẽ hở `and not force` này,
+CHƯA sửa trong lần này (ngoài phạm vi yêu cầu, cần hỏi owner có muốn áp
+dụng luôn bên đó không).
+
+**Test mới**: `tests/test_schedule_store.py` (3 test: `mark_posted`/
+`mark_failed` từ `MISSED_DIR`, giữ nguyên hành vi mặc định `PENDING_DIR`
+cho caller cũ), `tests/test_admin.py` (4 test cho `_sponsor_badge_html`:
+có `sponsored_by` → hiện tag; `sponsored_by=None`/không có job_data/chỉ
+có candidate_data → rỗng). Route HTTP mới KHÔNG có test tự động đi kèm
+(giữ đúng quy ước "admin.py không test HTTP" của dự án — trừ phần đăng
+nhập), thay vào đó live-test bằng script cô lập hoàn toàn (tự dựng
+`TestClient` + mock `run_task`/tài khoản/log, không đụng browser thật
+hay `runtime_config.json` thật) xác nhận đúng cả 4 nhánh: đủ slot+gap ok
+→ đăng, chuyển sang `posted/`; hết slot (kể cả force=1) → chặn, task
+vẫn ở `missed/`; dính gap không force → hiện modal, không đăng; dính gap
++ force=1 → đăng được, đúng `force_ignore_gap=True`. Chụp ảnh Playwright
+xác nhận giao diện: nút "Đăng ngay" + tag "💰 Sponsor" hiện đúng vị trí.
+**246/246 test tự động pass.** Chưa commit.

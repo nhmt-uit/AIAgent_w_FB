@@ -341,6 +341,22 @@ qua việc quan sát dữ liệu thật hằng ngày.
   ở mọi kích thước màn hình đã thử — lỗi này ảnh hưởng chung cho MỌI trang
   `/admin`, không chỉ riêng trang quản lý MOD, chỉ là trang đó có nhiều mục
   trong menu nhất nên lộ ra rõ nhất.
+- **Thêm nút "🚀 Đăng ngay" thẳng trong tab "⚠️ Task quá hạn"** — trước đây
+  muốn đăng 1 task quá hạn phải đưa nó về hàng chờ bình thường trước
+  ("Đặt lịch"/"Lên lịch lại"), giờ bấm thẳng được. Bấm vẫn kiểm tra đúng
+  2 lớp như mọi nơi khác trong hệ thống: (1) hạn mức số lượng bài/ngày —
+  hết hạn mức thì **không cho đăng, không có cách nào bỏ qua**; (2)
+  khoảng cách tối thiểu giữa 2 lần đăng — nếu chỉ vướng mỗi cái này thì
+  hiện cảnh báo cho xem trước, xác nhận "Vẫn đăng ngay" thì mới bỏ qua
+  riêng phần đó. Trong lúc tự kiểm tra kỹ trước khi báo hoàn thành, phát
+  hiện và sửa luôn 1 kẽ hở thật: bản viết đầu tiên, nếu bấm "Vẫn đăng
+  ngay", vô tình bỏ qua LUÔN CẢ kiểm tra hạn mức số lượng (không chỉ mỗi
+  khoảng cách) trong một số tình huống hiếm — đã sửa để hạn mức số lượng
+  luôn được kiểm tra lại, không có ngoại lệ, y hệt như đã cam kết.
+- **Thêm tag "💰 Sponsor"** ngay cạnh nhãn loại hành động ("Đăng vào
+  nhóm"/"Comment bài trong nhóm") cho bài nào tới từ tin tuyển dụng trả
+  phí (sponsored) — giúp nhận ra ngay từ danh sách, không cần bấm vào
+  xem chi tiết.
 
 ---
 

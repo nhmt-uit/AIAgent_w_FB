@@ -171,6 +171,24 @@ def _action_badge_html(action: str) -> str:
     )
 
 
+def _sponsor_badge_html(task) -> str:
+    """Extra tag next to _action_badge_html() for a job-sourced task whose
+    job carried a sponsored_by value — data_sync.py stashes it in
+    task.job_data (see that field's own docstring: "stashed purely for
+    /admin/schedule + reports traceability... not read by any scheduling
+    logic itself"). Owner request 2026-09-25: make a sponsored (paid) post
+    visually distinguishable at a glance from an ordinary one, right next
+    to the action badge, in both "Chờ đăng" and "Task quá hạn". Empty
+    string for anything else (candidate-sourced comment tasks only ever
+    carry candidate_data, never job_data)."""
+    if not (task.job_data and task.job_data.get("sponsored_by")):
+        return ""
+    return (
+        ' <span class="inline-flex items-center gap-1 text-xs font-semibold '
+        'px-2.5 py-0.5 rounded-full bg-amber-100 text-amber-700">💰 Sponsor</span>'
+    )
+
+
 def _account_label(account_id: str, accounts: dict | None = None) -> str:
     """"<Tên hiển thị> (<account_id>)" for a known account, or the bare
     id if it's somehow not registered — never crashes a page render over
@@ -3455,7 +3473,7 @@ def _missed_tasks_section_html(
 <div class="queue-item" style="border-left:3px solid #f59e0b;">
   <label style="display:flex; align-items:center; gap:8px; cursor:pointer;">
     <input type="checkbox" name="task_ids" value="{html.escape(t.task_id)}" form="missed-bulk-form">
-    <span class="queue-filename">{_action_badge_html(t.action)} · {html.escape(_account_label(t.account_id, accounts))}</span>
+    <span class="queue-filename">{_action_badge_html(t.action)}{_sponsor_badge_html(t)} · {html.escape(_account_label(t.account_id, accounts))}</span>
   </label>
   <div class="field-key">id: {html.escape(t.task_id)}</div>
   <div class="field-key">Giờ dự kiến ban đầu: {_local_dt_html(t.scheduled_at)} — quá hạn {overdue_days_by_id[t.task_id]} ngày</div>
@@ -3471,6 +3489,13 @@ def _missed_tasks_section_html(
     <button type="submit" class="btn-small">📅 Đặt lịch</button>
   </form>
   <div style="margin-top:8px; display:flex; gap:8px;">
+    <form method="post" action="/admin/schedule/missed/fire-now"
+          hx-post="/admin/schedule/missed/fire-now" hx-target="#schedule-content" hx-swap="outerHTML"
+          style="display:inline;">
+      <input type="hidden" name="task_id" value="{html.escape(t.task_id)}">
+      {filter_fields}
+      <button type="submit" class="btn-small">🚀 Đăng ngay</button>
+    </form>
     <button type="button" class="btn-small"
             hx-get="/admin/schedule/missed/suggest?{reschedule_qs}" hx-target="#modal-root" hx-swap="innerHTML">🔄 Lên lịch lại</button>
     <form method="post" action="/admin/schedule/missed/cancel"
@@ -3725,7 +3750,7 @@ def _schedule_content_html(
                 warning_html = f'<div class="warning-inline">{html.escape(t.last_warning)}</div>'
             items_html.append(f"""
 <div class="queue-item">
-  <div class="queue-filename">{_action_badge_html(t.action)} · {html.escape(_account_label(t.account_id, accounts))}</div>
+  <div class="queue-filename">{_action_badge_html(t.action)}{_sponsor_badge_html(t)} · {html.escape(_account_label(t.account_id, accounts))}</div>
   <div class="field-key">id: {html.escape(t.task_id)}</div>
   <div class="field-key">Ngày giờ thực hiện: {_local_dt_html(t.scheduled_at)}</div>
   {url_row_html}
@@ -4238,6 +4263,148 @@ async def schedule_fire_now(request: Request, _: None = Depends(_require_login))
     return _schedule_redirect(account_id, page, page_size=page_size, action=action_filter, date=date_filter, tz_offset=tz_offset, error=f"Đăng thất bại: {result.message}")
 
 
+def _missed_fire_now_confirm_modal_html(
+    task_id: str, account_id: str | None, page: int, page_size: int, missed_page: int,
+    missed_min_days: int | None, warning: str,
+) -> str:
+    """"⚠️ Task quá hạn"'s own "🚀 Đăng ngay" rate-limit confirmation —
+    same idea and same restriction as _fire_now_confirm_modal_html() right
+    above (only ever offered for the soft min-gap pacing check, never a
+    hard per-day/per-hour count cap — see that function's docstring for
+    why), just carrying this tab's own filter fields (tab=missed,
+    missed_page, missed_min_days) instead of the "Chờ đăng" tab's
+    (action/date/tz_offset) so re-rendering after either choice lands
+    back on the missed list, not the pending one."""
+    filter_fields = (
+        f'<input type="hidden" name="account_id" value="{html.escape(account_id or "")}">'
+        f'<input type="hidden" name="page" value="{page}">'
+        f'<input type="hidden" name="page_size" value="{page_size}">'
+        f'<input type="hidden" name="tab" value="missed">'
+        f'<input type="hidden" name="missed_page" value="{missed_page}">'
+        f'<input type="hidden" name="missed_min_days" value="{missed_min_days if missed_min_days is not None else ""}">'
+    )
+    return f"""
+<div class="modal-backdrop" onclick="if(event.target===this) this.remove()">
+  <div class="modal-box">
+    <div class="modal-header">
+      <h2>⚠️ Đang bị rate-limit</h2>
+      <button type="button" class="modal-close" onclick="this.closest('.modal-backdrop').remove()">✕</button>
+    </div>
+    <p>{html.escape(warning)}</p>
+    <p class="muted">Bạn có thể đợi đến thời gian gợi ý ở trên, hoặc đăng ngay bây giờ — chỉ bỏ qua khoảng nghỉ tối thiểu giữa 2 hành động, các giới hạn số lượng/ngày và /giờ vẫn được giữ nguyên.</p>
+    <div class="form-actions">
+      <button type="button" class="btn-secondary" style="margin-right:8px;" onclick="this.closest('.modal-backdrop').remove()">Đợi đến giờ gợi ý</button>
+      <form method="post" action="/admin/schedule/missed/fire-now"
+            hx-post="/admin/schedule/missed/fire-now" hx-target="#schedule-content" hx-swap="outerHTML"
+            style="display:inline;">
+        <input type="hidden" name="task_id" value="{html.escape(task_id)}">
+        {filter_fields}
+        <input type="hidden" name="force" value="1">
+        <button type="submit">🚀 Vẫn đăng ngay</button>
+      </form>
+    </div>
+  </div>
+</div>"""
+
+
+@router.post("/schedule/missed/fire-now")
+async def schedule_missed_fire_now(request: Request, _: None = Depends(_require_login)):
+    """"🚀 Đăng ngay" directly on a MISSED_DIR item (owner request
+    2026-09-25) — post it right now without first going through "📅 Đặt
+    lịch"/"🔄 Lên lịch lại" to move it back to pending/ first. Exactly the
+    same two-layer check as schedule_fire_now() above, just sourced from
+    get_missed() instead of get(): a hard per-day/per-hour count cap
+    ("đủ slot hôm nay không") is never overridable and blocks outright
+    with a plain error; the soft min-gap pacing check offers the same
+    "Vẫn đăng ngay" confirmation modal. See daily_limits.can_proceed()'s
+    module docstring for why the two are treated differently — reusing
+    that exact function is what makes the slot check here automatically
+    agree with every other place capacity is enforced (data_sync.py's
+    fire_due_tasks() pre-check, schedule_fire_now() above), rather than a
+    second, possibly-drifting copy of the same rule."""
+    form = await request.form()
+    account_id, page, page_size, missed_page, _action_filter, _date_filter, _tz_offset, missed_min_days = _schedule_form_filter(form)
+    task_id = str(form.get("task_id", ""))
+    force = str(form.get("force", "")) == "1"
+    task = schedule_store.get_missed(task_id)
+    if task is None:
+        err = "Không tìm thấy mục này (có thể đã được xử lý ở tab khác)"
+        if _is_htmx(request):
+            return HTMLResponse(_schedule_content_html(account_id=account_id, page=page, page_size=page_size, tab="missed", missed_page=missed_page, missed_min_days=missed_min_days, error=err) + _MODAL_CLOSE_OOB)
+        return _schedule_redirect(account_id, page, page_size=page_size, tab="missed", missed_page=missed_page, missed_min_days=missed_min_days, error=err)
+
+    from human_bot import daily_limits
+    from human_bot.agent import rate_limit_bucket_for
+    from human_bot.safety import is_gap_reason, rate_limit_wait_message
+    account = get_all_accounts().get(task.account_id)
+    bucket = rate_limit_bucket_for(task.action)
+    if account and bucket:
+        # ignore_gap=force (NOT skipping this whole can_proceed() call when
+        # force is set) — 2026-09-25, caught live while testing this route:
+        # can_proceed(account, bucket, ignore_gap=True) only ever skips its
+        # OWN internal soft min-gap check, the hard posts_per_day/
+        # comments_per_day/etc. count cap below it always still runs
+        # regardless of ignore_gap (see that function's own body). Calling
+        # it unconditionally like this is what guarantees the hard cap
+        # ("đủ slot hôm nay không") is checked on EVERY submit, including a
+        # forced retry sent straight from "Vẫn đăng ngay" — a state change
+        # between the first check and that resubmit (a slot filling up
+        # in between) must still be caught, not just skipped past because
+        # `force=1` was set on the form.
+        allowed, reason = daily_limits.can_proceed(account, bucket, ignore_gap=force)
+        if not allowed and not force and is_gap_reason(reason):
+            warning = rate_limit_wait_message(account, bucket) or reason
+            if _is_htmx(request):
+                modal_oob = f'<div id="modal-root" hx-swap-oob="true">{_missed_fire_now_confirm_modal_html(task_id, account_id, page, page_size, missed_page, missed_min_days, warning)}</div>'
+                return HTMLResponse(_schedule_content_html(account_id=account_id, page=page, page_size=page_size, tab="missed", missed_page=missed_page, missed_min_days=missed_min_days) + modal_oob)
+            return _schedule_redirect(account_id, page, page_size=page_size, tab="missed", missed_page=missed_page, missed_min_days=missed_min_days, error=warning)
+        if not allowed:
+            # Hard count cap — "không đủ slot hôm nay", never overridable
+            # even by `force` — no modal, just a flat refusal, task stays
+            # in missed/ exactly where it was.
+            warning = daily_limits.hard_cap_message(account, bucket) or reason
+            if _is_htmx(request):
+                return HTMLResponse(_schedule_content_html(account_id=account_id, page=page, page_size=page_size, tab="missed", missed_page=missed_page, missed_min_days=missed_min_days, error=warning) + _MODAL_CLOSE_OOB)
+            return _schedule_redirect(account_id, page, page_size=page_size, tab="missed", missed_page=missed_page, missed_min_days=missed_min_days, error=warning)
+
+    result = await run_task(TaskRequest(
+        action=task.action,
+        account_id=task.account_id,
+        target_url=task.target_url,
+        content=task.content,
+        media_path=task.media_path,
+        audience=task.audience,
+        reasoning=task.reasoning,
+        source="schedule_missed_manual",
+        source_kind=task.source_kind,
+        source_id=task.source_id,
+        job_data=task.job_data or task.candidate_data,
+        retry_of_log_id=task.retry_of_log_id,
+        force_ignore_gap=force,
+    ))
+    if result.success:
+        schedule_store.mark_posted(task_id, result.message, source_dir=schedule_store.MISSED_DIR)
+        if _is_htmx(request):
+            return HTMLResponse(_schedule_content_html(account_id=account_id, page=page, page_size=page_size, tab="missed", missed_page=missed_page, missed_min_days=missed_min_days, saved=True) + _MODAL_CLOSE_OOB)
+        return _schedule_redirect(account_id, page, page_size=page_size, tab="missed", missed_page=missed_page, missed_min_days=missed_min_days, saved=1)
+    if result.message.startswith("rate_limited:"):
+        # Race condition only (we already checked can_proceed() above) —
+        # e.g. another admin/action fired in between. Leave the task in
+        # missed/ untouched (schedule_store.update() only knows how to
+        # edit a PENDING task) and just surface the message; admin can
+        # click again.
+        warning = None
+        if account and bucket:
+            warning = rate_limit_wait_message(account, bucket) or daily_limits.hard_cap_message(account, bucket)
+        if _is_htmx(request):
+            return HTMLResponse(_schedule_content_html(account_id=account_id, page=page, page_size=page_size, tab="missed", missed_page=missed_page, missed_min_days=missed_min_days, error=warning or result.message) + _MODAL_CLOSE_OOB)
+        return _schedule_redirect(account_id, page, page_size=page_size, tab="missed", missed_page=missed_page, missed_min_days=missed_min_days, error=warning or result.message)
+    schedule_store.mark_failed(task_id, result.message, source_dir=schedule_store.MISSED_DIR)
+    if _is_htmx(request):
+        return HTMLResponse(_schedule_content_html(account_id=account_id, page=page, page_size=page_size, tab="missed", missed_page=missed_page, missed_min_days=missed_min_days, error=f"Đăng thất bại: {result.message}") + _MODAL_CLOSE_OOB)
+    return _schedule_redirect(account_id, page, page_size=page_size, tab="missed", missed_page=missed_page, missed_min_days=missed_min_days, error=f"Đăng thất bại: {result.message}")
+
+
 # --- Joined group URLs (per-account, used by the data-sync poller) ---------
 #
 # Fully htmx-driven CRUD: the account filter and every add/edit/delete
@@ -4490,6 +4657,7 @@ _SOURCE_LABELS: dict[str, str] = {
     "manual": "Đăng trực tiếp (/admin/post)",
     "queue": "Từ hàng đợi (content_queue)",
     "schedule_manual": "Đăng ngay (/admin/schedule)",
+    "schedule_missed_manual": "Đăng ngay từ Task quá hạn (/admin/schedule)",
     "schedule_auto": "Tự động (bộ đồng bộ bên B)",
     "api": "Gọi API /tasks trực tiếp (VD: n8n)",
 }
