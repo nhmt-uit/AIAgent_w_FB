@@ -11,6 +11,8 @@ stages:
 
 test:
   stage: test
+  tags:
+    - fb-post-assistant
   image: python:3.11
   cache:
     key: "$CI_COMMIT_REF_SLUG-pip"
