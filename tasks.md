@@ -4345,3 +4345,53 @@ Owner yêu cầu kiểm tra lại Phase 2 trước khi push. Phát hiện:
 **Kết quả sau khi sửa**: 314/314 test pass, chạy ổn định qua nhiều thứ
 tự file. `accounts/`/`runtime_config.json`/`human_bot.db` thật xác nhận
 sạch (không đổi). Sẵn sàng push.
+
+## Kế hoạch viết test cho `admin.py` — Phase 3: `/admin/accounts` (2026-09-25)
+
+**`tests/test_admin_accounts.py`** (mới) — 24 test HTTP: `accounts_page`
+(rỗng, có tài khoản, tab đồng bộ), `accounts_add` (đăng ký đúng, từ chối
+id sai định dạng/trùng, áp đúng tier mặc định "under_1_month" — kiểm
+tra đúng giá trị `posts_per_day=5`/`comments_per_day=7`, không chỉ
+truthy), pause/resume, bật/tắt sync, bật/tắt sponsored-only, xoá tài
+khoản (xác nhận dọn sạch: pause status, rate-limit override, cooldown,
+age tier, joined groups, VÀ huỷ hết task đang chờ của tài khoản đó —
+đúng docstring `accounts_delete()` liệt kê), sửa/khôi phục rate-limit
+override (từ chối giá trị âm, từ chối min>max), và toàn bộ luồng
+"Đăng nhập & lưu phiên" (bootstrap-login) dùng `no_real_bootstrap_login`.
+
+**Phát hiện 2 vấn đề trong lúc viết** (đúng tinh thần rà soát đã áp
+dụng từ Phase 1/2 — không đợi owner nhắc mới kiểm, làm ngay trong lúc
+viết):
+
+1. **Bug thật trong fixture `no_real_bootstrap_login`** (viết từ Phase 1,
+   chưa ai dùng thật tới Phase 3 này): giá trị mặc định
+   `state["status"] = "waiting"` không khớp với BẤT KỲ state thật nào
+   của `bootstrap_login_sessions.py` (chỉ có đúng 5 giá trị: "none",
+   "opening", "waiting_confirm", "saved", "error") — nếu dùng nguyên
+   fixture này, `admin.py`'s `_bootstrap_login_status_html()` sẽ rơi
+   nhầm vào nhánh "error" ngay từ lần gọi status() đầu tiên. Phase 1
+   chỉ smoke-test việc GỌI ĐƯỢC hàm, chưa test qua đúng hàm render thật
+   của `admin.py` nên không bắt được. **Sửa**: đổi mặc định thành
+   `"none"` — đúng giá trị thật `status()` trả về khi chưa từng
+   `start()` cho tài khoản đó.
+2. **Xác nhận qua thực nghiệm**: nút "🌐 Mở trình duyệt đăng nhập" gọi
+   `asyncio.create_task(bootstrap_login_sessions.start(...))` kiểu bắn-
+   rồi-quên — thử viết 1 test giả định task này CHẮC CHẮN chạy xong
+   trước khi response trả về (`assert calls["start"] == [...]` ngay sau
+   `client.post(...)`) thì **test đó FAIL thật** — xác nhận: không được
+   tin tưởng thứ tự này. Xoá test sai giả định đó, giữ nguyên cách viết
+   ban đầu (test polling route status riêng bằng cách tự set state,
+   không phụ thuộc task nền đã chạy xong hay chưa) — đây là thiết kế
+   đúng ngay từ đầu, việc thử nghiệm chỉ để CHỨNG MINH nó đúng, không
+   phải để sửa gì thêm.
+
+**Kiểm tra an toàn dữ liệu thật** (rút kinh nghiệm từ sự cố Phase 2):
+`client` fixture của file này CHỦ ĐỘNG dùng cả `isolated_accounts_dir`
+lẫn `isolated_runtime_config` ngay từ đầu (không đợi lỗi xảy ra rồi mới
+thêm) — vì `_accounts_content_html()` tự kiểm tra `storage_state_path
+.exists()` cho MỌI tài khoản mỗi lần render trang, có thể đụng thư mục
+thật nếu không cô lập.
+
+**Kết quả**: 338/338 test pass (từ 314). Chạy theo nhiều thứ tự file —
+ổn định. `accounts/`/`runtime_config.json` thật xác nhận sạch. Chưa
+commit.

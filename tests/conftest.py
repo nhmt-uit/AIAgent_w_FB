@@ -119,11 +119,21 @@ def no_real_bootstrap_login(monkeypatch):
     run_task(). Matches the real module's exact shapes
     (bootstrap_login_sessions.py): start()/confirm()/cancel() are async,
     status() is sync; status() and confirm() return (value, error) tuples,
-    start() and cancel() return nothing."""
+    start() and cancel() return nothing.
+
+    2026-09-25 fix (found once Phase 3 actually exercised this fixture for
+    the first time — Phase 1 only smoke-tested the raw function calls, not
+    admin.py's rendering off their result): default `state["status"]` was
+    "waiting", which isn't one of the real module's 5 states ("none" |
+    "opening" | "waiting_confirm" | "saved" | "error" — see
+    _LoginSession.status's own type comment) — admin.py's
+    _bootstrap_login_status_html() would have silently fallen into its
+    "error" branch by default. "none" (nothing started yet) is the real
+    module's own default when nothing has been started for an account_id."""
     from human_bot import bootstrap_login_sessions as bls
 
     calls = {"start": [], "status": [], "confirm": [], "cancel": []}
-    state = {"status": "waiting", "error": None, "confirm_ok": True, "confirm_error": None}
+    state = {"status": "none", "error": None, "confirm_ok": True, "confirm_error": None}
 
     async def fake_start(account_id):
         calls["start"].append(account_id)

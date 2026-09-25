@@ -444,8 +444,17 @@ Một vài lựa chọn thiết kế đáng chú ý, được cân nhắc kỹ c
     dọn sạch ngay, sửa lại test để không lặp lại. Cũng củng cố thêm vài
     chỗ kiểm tra trong test cho chắc chắn hơn, không phát hiện thêm vấn đề
     nào khác sau khi chạy lại toàn bộ nhiều lần.
-  - Còn 2 phase nữa (`/admin/accounts`, phần còn lại: groups/config/post) —
-    làm dần, không vội.
+  - Phase 3 (`/admin/accounts`) xong: 24 bài test HTTP cho đăng ký/xoá tài
+    khoản, tạm dừng/kích hoạt lại, bật/tắt đồng bộ, giới hạn số lượng/ngày,
+    và luồng "Đăng nhập & lưu phiên" (mở trình duyệt Facebook). Tự phát
+    hiện và sửa 2 vấn đề trong lúc viết (không đợi owner nhắc): 1 giá trị
+    mặc định sai trong công cụ test dùng chung (viết từ Phase 1, chưa ai
+    dùng thật tới giờ) khiến 1 trạng thái hiển thị sai; và xác nhận qua
+    thử nghiệm thật rằng nút "Mở trình duyệt đăng nhập" chạy nền không
+    đảm bảo xong kịp lúc — cách viết test ban đầu (không phụ thuộc vào
+    việc đó) hoá ra đã đúng ngay từ đầu.
+  - Còn 1 phase nữa (phần còn lại: groups/config/post) — làm dần, không
+    vội.
 - **Rà soát lại Phase 1 trước khi làm Phase 2 (owner yêu cầu)** — phát hiện
   1 lỗi thật: 1 trong các đoạn code test tự viết ra vô tình làm rò rỉ trạng
   thái giữa các bài test với nhau (test A chạy xong làm ảnh hưởng sai tới
