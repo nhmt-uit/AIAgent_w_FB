@@ -76,6 +76,21 @@
 - [Rà soát toàn diện + thêm CI cho GitLab](#rà-soát-toàn-diện-dự-án-theo-yêu-cầu-owner-còn-gì-cần-cải-thiện-thêm-ci-cho-gitlab-2026-09-24)
 - [Thay popup xác nhận mặc định bằng modal tự làm](#thay-popup-xác-nhận-mặc-định-của-trình-duyệt-bằng-modal-tự-làm-2026-09-24)
 
+**25/09**
+- [Điều tra "Task quá hạn" thật của `nhtu00` sau khi bật lại server](#điều-tra-task-quá-hạn-thật-của-nhtu00-sau-khi-owner-bật-lại-server-2026-09-25)
+- [Live-confirm fix "lấy quá nhiều tin" trên dữ liệu sync thật](#live-confirm-fix-lấy-quá-nhiều-tin-của-job_capacities-dùng-đúng-dữ-liệu-sync-thật-lúc-084228-sáng-nay-2026-09-25)
+- [Tính năng mới: "Đăng ngay" ở tab Task quá hạn + tag Sponsor](#tính-năng-mới-đăng-ngay-trực-tiếp-ở-tab-task-quá-hạn-tag-sponsor-2026-09-25)
+- [Cập nhật trạng thái các mục theo dõi còn treo](#cập-nhật-trạng-thái-các-mục-theo-dõi-còn-treo-2026-09-25)
+- [Kế hoạch test `admin.py` — Phase 1: `/admin/schedule`](#kế-hoạch-viết-test-cho-phần-còn-lại-của-adminpy-phase-1-adminschedule-2026-09-25)
+- [Rà soát lại Phase 1 trước khi làm Phase 2](#rà-soát-lại-phase-1-trước-khi-làm-phase-2-2026-09-25-1-bug-thật-1-điểm-tài-liệu-sai)
+- [Kế hoạch test `admin.py` — Phase 2: `/admin/reports`](#kế-hoạch-viết-test-cho-adminpy-phase-2-adminreports-2026-09-25)
+- [Rà soát lại Phase 2 trước khi push](#rà-soát-lại-phase-2-trước-khi-push-2026-09-25-1-sự-cố-thật-đã-dọn-sạch)
+- [Kế hoạch test `admin.py` — Phase 3: `/admin/accounts`](#kế-hoạch-viết-test-cho-adminpy-phase-3-adminaccounts-2026-09-25)
+- [Kế hoạch test `admin.py` — Phase 4 (cuối): groups/config/post](#kế-hoạch-viết-test-cho-adminpy-phase-4-cuối-groupsconfigpost-2026-09-25)
+- [Owner làm rõ thiết kế + sửa bug AI-provider-key](#owner-làm-rõ-thiết-kế-quyết-định-sửa-bug-ai-provider-key-2026-09-25)
+- [Rà soát lần cuối trước khi push — bug thứ 2 cùng gốc](#rà-soát-lần-cuối-trước-khi-push-2026-09-25-phát-hiện-thêm-1-bug-thật-cùng-gốc)
+- [Đảo ngược lại fix "Xoá key" — hiểu sai thiết kế](#đảo-ngược-lại-fix-xoá-key-hiểu-sai-thiết-kế-owner-sửa-lại-đúng-ý-2026-09-25)
+
 ---
 
 ## Giai đoạn khởi tạo (02/09 – 04/09)
