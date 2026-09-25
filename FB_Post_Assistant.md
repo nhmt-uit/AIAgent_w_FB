@@ -146,7 +146,7 @@ năng.
 - Cải thiện trang quản trị: phân trang gọn hơn, báo cáo tách theo từng tin tuyển
   dụng / từng ứng viên, thêm nút "Đăng lại" khi có bài lỡ bị lỗi.
 
-## Tuần 3 (14/09 – nay): Ưu tiên tin trả tiền + dọn hàng loạt lỗi thật
+## Tuần 3 (14/09 – 23/09): Ưu tiên tin trả tiền + dọn hàng loạt lỗi thật
 
 Đây là tuần tập trung rất nhiều vào việc rà soát kỹ và sửa các lỗi thật phát sinh
 khi hệ thống đã chạy được một thời gian — chủ dự án trực tiếp phát hiện phần lớn
@@ -259,6 +259,12 @@ qua việc quan sát dữ liệu thật hằng ngày.
   cuối cùng có thể vẫn bị đẩy lố thêm. Đã sửa để cả 2 bước cùng neo vào đúng 1
   mốc ngày cố định, kèm bài test riêng. Chưa chạy thử trên hệ thống thật để xác
   nhận 100%.
+
+## Tuần 4 (24/09 – 25/09): Hệ thống đăng nhập cho `/admin` + hoàn thiện tab "Task quá hạn"
+
+Chỉ 2 ngày nhưng khối lượng việc lớn — chủ yếu do owner trực tiếp rà soát kỹ dữ
+liệu thật hằng ngày và yêu cầu kiểm tra chéo lại mọi thứ trước khi xác nhận xong.
+
 - **Điều tra thêm sau 6 ngày server tắt (18/9 → 24/9)**: kiểm tra lại toàn bộ dữ
   liệu thì phát hiện service từng tắt hoàn toàn suốt 6 ngày. Tin vui: đúng cơ chế
   an toàn đã làm từ trước ("không tự đăng bài quá hạn sau khi server tắt/mở lại")
