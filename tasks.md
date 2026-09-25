@@ -4395,3 +4395,87 @@ thật nếu không cô lập.
 **Kết quả**: 338/338 test pass (từ 314). Chạy theo nhiều thứ tự file —
 ổn định. `accounts/`/`runtime_config.json` thật xác nhận sạch. Chưa
 commit.
+
+## Kế hoạch viết test cho `admin.py` — Phase 4 (cuối): groups/config/post (2026-09-25)
+
+**`tests/test_admin_groups.py`** (mới, 8 test) — CRUD nhóm theo tài
+khoản: thêm/sửa (giữ nguyên id)/xoá đúng 1 mục, từ chối URL rỗng/mục
+không tồn tại, dữ liệu 2 tài khoản độc lập nhau.
+
+**`tests/test_admin_config.py`** (mới, 11 test) — `config_save`: test
+hồi quy đúng lỗi thật 7/9 đã ghi trong docstring của route (ép kiểu số
+theo đúng `int`/`float` khai trong dataclass thay vì ép cứng về
+`float`, tránh lặp lại lỗi `HumanMouseConfig.min_steps` 8 → 8.0 làm
+crash `range()`), field bool bật/tắt đúng (kể cả khi checkbox không
+tick thì form không gửi field đó — phải hiểu là `False`, không phải bỏ
+qua), field số để trống không crash/không ép về 0. Card AI provider:
+lưu key không lộ key thật ra HTML (chỉ hiện dạng che `sk-ant-...1234`),
+từ chối provider lạ.
+
+**`tests/test_admin_post.py`** (mới, 15 test) — 3 form soạn bài
+(profile/groups/comment) đều tạo đúng `ScheduledTask` với field đúng:
+audience hợp lệ/rơi về "public", giờ trống = "ngay bây giờ", giờ hỏng
+bị từ chối, đăng nhiều nhóm tạo đúng số task VÀ giãn cách thời gian
+tăng dần (không dồn cục), suy luận đúng action comment nhóm/bạn bè theo
+URL, xâu chuỗi đúng `retry_of_log_id`.
+
+**Phát hiện 1 bug thật (chưa sửa, cần owner quyết định)** trong lúc
+viết test cho card AI provider ở `/admin/config`:
+
+**`config_ai_provider_save()` xoá mất key đã lưu, vi phạm đúng lời hứa
+ngay trên giao diện.** Mỗi ô nhập key trong card AI đều có dòng chú
+thích "để trống = giữ nguyên key hiện tại" — nhưng thực tế:
+`config_ai_provider_save()` chỉ đưa key vào `updates` khi form gửi
+KHÔNG rỗng, rồi gọi `save_secrets_overrides(updates)` — hàm này
+(`_save_overrides()`) THAY THẾ TOÀN BỘ section "secrets", đúng luật
+"REPLACES, không merge" đã áp dụng xuyên suốt dự án. Hậu quả: để trống
+ô key rồi lưu → mất luôn key đó (không phải "giữ nguyên" như đã hứa);
+lưu key của 1 provider khác → xoá luôn key của MỌI provider còn lại
+(vì cả 4 provider dùng chung 1 section "secrets", 1 form, 1 nút Lưu).
+Xác nhận bằng test tái hiện cả 2 tình huống. Đây LÀ đúng kiểu lỗi mà
+quy tắc dự án "read-merge-write, không bao giờ pass partial dict" vốn
+sinh ra để chặn — riêng route AI-provider dùng sai. Chưa sửa, viết 2
+test khẳng định ĐÚNG hành vi lỗi hiện tại (không phải hành vi mong
+muốn) kèm ghi chú rõ để bài test tự fail ngay khi ai đó sửa đúng, nhắc
+cập nhật lại test — theo đúng tinh thần "báo cáo trước, không tự ý sửa
+khi đang viết test" đã áp dụng từ Phase 1.
+
+**Kết quả**: 372/372 test pass (từ 338). Chạy theo nhiều thứ tự file —
+ổn định. `accounts/`/`runtime_config.json`/`human_bot.db` thật xác nhận
+sạch. Đây là phase cuối cùng của kế hoạch test `admin.py` — 4/4 phase
+đã xong (schedule, reports, accounts, groups/config/post), tổng cộng
+133 test mới thêm cho `admin.py` qua cả kế hoạch (239 → 372).
+
+### Owner làm rõ thiết kế + quyết định sửa bug AI-provider-key (2026-09-25)
+
+Hỏi owner qua `AskUserQuestion` để hiểu đúng thiết kế ban đầu trước khi
+sửa (không đoán). Owner giải thích: thiết kế gốc chỉ có **1 key đang
+dùng tại 1 thời điểm** (thay thế key trong `.env`), xoá thì quay lại
+dùng key `.env`. Từ đó chốt 2 quyết định:
+
+1. **Đổi sang provider khác làm mất key provider cũ — ĐÚNG Ý THIẾT KẾ,
+   không phải bug.** Vì chỉ có 1 key "đang dùng" tại 1 thời điểm, việc
+   lưu đè toàn bộ khi đổi provider là hợp lý. Không sửa gì phần này.
+2. **Để trống ô key của provider ĐANG CHỌN rồi bấm Lưu — owner muốn báo
+   lỗi, không cho lưu** (thay vì âm thầm xoá mất như trước, hay âm thầm
+   giữ nguyên). Đúng tinh thần "mỗi lần Lưu phải đủ Provider + Model +
+   Key" owner nêu ra.
+
+**Sửa** `config_ai_provider_save()` (`human_bot/admin.py`): xác định
+`provider_info` của provider đang chọn NGAY ĐẦU hàm, kiểm tra ô key của
+đúng provider đó — rỗng thì trả lỗi `"⚠️ Cần nhập API key cho <tên
+provider> khi lưu."` và **không gọi `save_secrets_overrides()` gì cả**
+(key cũ đang lưu giữ nguyên, vì không có gì được ghi). Chỉ khi có key
+mới thực thi tiếp luồng lưu như cũ. Sửa luôn dòng chú thích UI cạnh mỗi
+ô key (trước đó ghi sai "để trống = giữ nguyên key hiện tại") thành
+"bắt buộc phải nhập khi lưu... muốn xoá hẳn, dùng nút Xoá key bên
+cạnh" — khớp đúng hành vi mới.
+
+**Cập nhật lại 2 test đã viết để "tài liệu hoá bug"** thành test xác
+nhận đúng hành vi mới: để trống key → bị chặn, báo lỗi, key cũ (nếu có)
+vẫn còn nguyên; đổi provider khác → key provider cũ mất (ghi rõ "đúng ý
+thiết kế, không phải bug" trong docstring, tránh người đọc sau hiểu
+nhầm lại là lỗi). Render trực tiếp xác nhận thông báo lỗi + dòng chú
+thích mới hiển thị đúng, key cũ không bị mất khi bị chặn lưu.
+
+**Kết quả**: 372/372 test pass. Chưa commit.

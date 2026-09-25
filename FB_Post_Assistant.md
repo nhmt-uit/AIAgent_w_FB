@@ -453,8 +453,22 @@ Một vài lựa chọn thiết kế đáng chú ý, được cân nhắc kỹ c
     thử nghiệm thật rằng nút "Mở trình duyệt đăng nhập" chạy nền không
     đảm bảo xong kịp lúc — cách viết test ban đầu (không phụ thuộc vào
     việc đó) hoá ra đã đúng ngay từ đầu.
-  - Còn 1 phase nữa (phần còn lại: groups/config/post) — làm dần, không
-    vội.
+  - Phase 4 (cuối) xong: `/admin/groups` (CRUD nhóm theo tài khoản),
+    `/admin/config` (lưu cấu hình, có test hồi quy riêng cho 1 lỗi thật cũ
+    đã sửa 7/9 — ép sai kiểu số làm crash), `/admin/post` (form soạn bài
+    thủ công). Phát hiện 1 lỗi thật, đã hỏi rõ thiết kế và sửa xong cùng
+    ngày — xem mục ngay dưới. 4/4 phase kế hoạch test cho trang quản trị
+    đã xong, tổng 133 bài test mới thêm riêng cho phần này.
+- **[ĐÃ SỬA, 2026-09-25]** Card "Cấu hình AI" ở `/admin/config`: để trống
+  ô key của nhà cung cấp đang chọn rồi bấm Lưu từng âm thầm XOÁ MẤT key
+  đó (dòng chú thích cũ ghi sai "để trống = giữ nguyên key hiện tại").
+  Hỏi lại owner mới rõ thiết kế ban đầu: chỉ có đúng 1 key "đang dùng"
+  tại 1 thời điểm (đổi qua nhà cung cấp khác thì mất key cũ là ĐÚNG Ý,
+  không phải lỗi) — riêng việc để trống ô key rồi lưu, owner muốn **báo
+  lỗi, không cho lưu** thay vì âm thầm xoá. Đã sửa đúng theo đó: để
+  trống ô key giờ bị chặn lại, báo "Cần nhập API key...", không lưu gì
+  cả (key cũ nếu có vẫn giữ nguyên) — muốn xoá hẳn key thì bấm đúng nút
+  "Xoá key" riêng. Cập nhật lại dòng chú thích trên giao diện cho khớp.
 - **Rà soát lại Phase 1 trước khi làm Phase 2 (owner yêu cầu)** — phát hiện
   1 lỗi thật: 1 trong các đoạn code test tự viết ra vô tình làm rò rỉ trạng
   thái giữa các bài test với nhau (test A chạy xong làm ảnh hưởng sai tới

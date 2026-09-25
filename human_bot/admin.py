@@ -489,7 +489,7 @@ def _ai_provider_card_html(flash: str = "") -> str:
         fieldsets_html.append(f"""
   <div data-ai-provider-fields="{p['key']}"{hidden_attr}>
     <div class="field-stack">
-      <div class="field-label">API key ({html.escape(str(p["label"]))})<div class="field-key">để trống = giữ nguyên key hiện tại{env_hint}</div></div>
+      <div class="field-label">API key ({html.escape(str(p["label"]))})<div class="field-key">bắt buộc phải nhập khi lưu cho nhà cung cấp đang chọn — muốn xoá hẳn, dùng nút "Xoá key" bên cạnh{env_hint}</div></div>
       <div class="field-input" style="display:flex;gap:8px;">
         <input type="password" name="{p['key_field']}" placeholder="{p['key_placeholder']}"
           style="flex:1 1 auto;min-width:0;font-family:monospace;">
@@ -1963,21 +1963,38 @@ async def config_save(request: Request, _: None = Depends(_require_login)) -> Re
 
 @router.post("/config/ai-provider", response_class=HTMLResponse)
 async def config_ai_provider_save(request: Request, _: None = Depends(_require_login)) -> str:
+    """2026-09-25 fix (real bug, found while writing tests for this route,
+    owner-confirmed intended design after asking): this card only ever
+    tracks ONE effective override key at a time (switching provider
+    replaces the whole "secrets" section — save_secrets_overrides() is a
+    REPLACE, not a merge, same rule as every other save_*_overrides() in
+    this project) — owner confirmed that losing a DIFFERENT provider's
+    key when you switch to and save another one is correct, intended
+    behavior, not a bug. But saving the CURRENTLY SELECTED provider with
+    its own key field left blank used to silently wipe that key too,
+    contradicting the field hint's old promise ("để trống = giữ nguyên
+    key hiện tại" — leaving it blank keeps the current key). Owner's
+    actual design has no partial-edit mode at all: every save must supply
+    provider + model + key together as a complete set. So a blank key for
+    the active provider is now rejected outright — nothing is saved —
+    rather than either silently wiping it (old bug) or trying to guess
+    and preserve an old value (not the intended design either)."""
     form = await request.form()
     provider_keys = [p["key"] for p in _AI_PROVIDERS]
     provider = str(form.get("ai_provider", "anthropic")).strip().lower()
     if provider not in provider_keys:
         provider = "anthropic"
+    provider_info = next(p for p in _AI_PROVIDERS if p["key"] == provider)
+
+    active_key_raw = str(form.get(provider_info["key_field"], "")).strip()
+    if not active_key_raw:
+        return _ai_provider_card_html(flash=f'<p class="error">⚠️ Cần nhập API key cho {html.escape(str(provider_info["label"]))} khi lưu.</p>')
 
     updates: dict[str, Any] = {"ai_provider": provider}
     for p in _AI_PROVIDERS:
         for field in (p["key_field"], p["model_field"], p["base_url_field"]):
             if not field:
                 continue
-            # Blank means "leave unchanged" (see the card's own field-key
-            # hint) — same semantics the single-provider version of this
-            # route always had; the separate "Xoá key" button is what
-            # actually clears a field.
             raw = str(form.get(field, "")).strip()
             if raw:
                 updates[field] = raw
