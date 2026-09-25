@@ -433,9 +433,17 @@ Một vài lựa chọn thiết kế đáng chú ý, được cân nhắc kỹ c
     "Đăng ngay" phiên bản gốc — owner chọn sửa luôn.
   - Phase 2 (`/admin/reports`) xong: 17 bài test HTTP + 12 bài test hàm
     thuần cho phần thống kê/đăng lại/lên lịch lại. Không phát hiện lỗi thật
-    mới, chỉ có 2 test viết sai giả định ban đầu (tưởng bảng "Hoạt động gần
-    đây" hiện nội dung bài đăng, thực ra chỉ hiện kết quả chạy) — tự phát
-    hiện qua chạy thử fail, sửa lại test cho đúng thay vì đổi code.
+    mới trong CODE, chỉ có 2 test viết sai giả định ban đầu (tưởng bảng
+    "Hoạt động gần đây" hiện nội dung bài đăng, thực ra chỉ hiện kết quả
+    chạy) — tự phát hiện qua chạy thử fail, sửa lại test cho đúng thay vì
+    đổi code.
+  - **Rà soát lại Phase 2 trước khi push (owner yêu cầu)**: phát hiện 1 sự
+    cố thật — 1 bài test (kiểm tra tính năng "Lên lịch lại" từ báo cáo)
+    vô tình tạo ra 1 thư mục thật trong dự án (`accounts/acc-a/`, rỗng,
+    không có dữ liệu gì bên trong) do thiếu 1 bước cô lập. Phát hiện và
+    dọn sạch ngay, sửa lại test để không lặp lại. Cũng củng cố thêm vài
+    chỗ kiểm tra trong test cho chắc chắn hơn, không phát hiện thêm vấn đề
+    nào khác sau khi chạy lại toàn bộ nhiều lần.
   - Còn 2 phase nữa (`/admin/accounts`, phần còn lại: groups/config/post) —
     làm dần, không vội.
 - **Rà soát lại Phase 1 trước khi làm Phase 2 (owner yêu cầu)** — phát hiện

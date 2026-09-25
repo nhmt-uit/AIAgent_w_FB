@@ -114,12 +114,14 @@ def test_reports_page_unknown_tab_falls_back_to_tables(client):
 
 def test_repost_missing_log_id(client):
     resp = client.post("/admin/reports/repost", data={})
-    assert resp.status_code in (200, 303)
+    assert resp.status_code == 303
+    assert "error=" in resp.headers["location"]
 
 
 def test_repost_log_id_not_found(client):
     resp = client.post("/admin/reports/repost", data={"log_id": "999999"})
-    assert resp.status_code in (200, 303)
+    assert resp.status_code == 303
+    assert "error=" in resp.headers["location"]
 
 
 def test_repost_rejects_a_successful_row(client, isolated_db):
@@ -127,24 +129,23 @@ def test_repost_rejects_a_successful_row(client, isolated_db):
     _REPOSTABLE_ACTIONS/success check in reports_repost()."""
     log_id = _log(isolated_db, success=True)
     resp = client.post("/admin/reports/repost", data={"log_id": str(log_id)})
-    assert resp.status_code in (200, 303)
-    if resp.status_code == 303:
-        assert "error=" in resp.headers["location"]
+    assert resp.status_code == 303
+    assert "error=" in resp.headers["location"]
 
 
 def test_repost_rejects_a_non_repostable_action(client, isolated_db):
     log_id = _log(isolated_db, action="like_post", success=False)
     resp = client.post("/admin/reports/repost", data={"log_id": str(log_id)})
-    assert resp.status_code in (200, 303)
-    if resp.status_code == 303:
-        assert "error=" in resp.headers["location"]
+    assert resp.status_code == 303
+    assert "error=" in resp.headers["location"]
 
 
 def test_repost_succeeds_and_calls_run_task(client, isolated_db, no_real_run_task):
     calls, _results = no_real_run_task
     log_id = _log(isolated_db, action="post_to_group", success=False, content="retry me")
     resp = client.post("/admin/reports/repost", data={"log_id": str(log_id)})
-    assert resp.status_code in (200, 303)
+    assert resp.status_code == 303
+    assert "posted=" in resp.headers["location"]
     assert len(calls) == 1
     assert calls[0].retry_of_log_id == log_id
     assert calls[0].content == "retry me"
@@ -159,10 +160,9 @@ def test_repost_rate_limited_shows_warning_not_error(client, isolated_db, no_rea
     log_id = _log(isolated_db, action="post_to_group", success=False, content="retry me")
 
     resp = client.post("/admin/reports/repost", data={"log_id": str(log_id)})
-    assert resp.status_code in (200, 303)
-    if resp.status_code == 303:
-        assert "warning=" in resp.headers["location"]
-        assert "error=" not in resp.headers["location"]
+    assert resp.status_code == 303
+    assert "warning=" in resp.headers["location"]
+    assert "error=" not in resp.headers["location"]
 
 
 def test_repost_real_failure_shows_error(client, isolated_db, no_real_run_task):
@@ -172,9 +172,8 @@ def test_repost_real_failure_shows_error(client, isolated_db, no_real_run_task):
     log_id = _log(isolated_db, action="post_to_group", success=False, content="retry me")
 
     resp = client.post("/admin/reports/repost", data={"log_id": str(log_id)})
-    assert resp.status_code in (200, 303)
-    if resp.status_code == 303:
-        assert "error=" in resp.headers["location"]
+    assert resp.status_code == 303
+    assert "error=" in resp.headers["location"]
 
 
 # --- reports_reschedule_suggest / _confirm ---
@@ -191,7 +190,16 @@ def test_reschedule_suggest_missing_account_shows_error_modal(client, isolated_d
     assert "Không tìm thấy tài khoản" in resp.text
 
 
-def test_reschedule_suggest_with_known_account_shows_suggested_time(client, isolated_db, monkeypatch):
+def test_reschedule_suggest_with_known_account_shows_suggested_time(client, isolated_db, isolated_accounts_dir, monkeypatch):
+    """isolated_accounts_dir is required here (found during a post-Phase-2
+    audit, not when this test was first written): this route calls
+    _suggest_reschedule_at(), which constructs a RateLimiter(account) —
+    RateLimiter.__init__ does `self.log_path.parent.mkdir(parents=True,
+    exist_ok=True)` against account.action_log_path, computed from the
+    REAL human_bot.config.ACCOUNTS_DIR unless patched. Confirmed live:
+    running this test without isolated_accounts_dir created a real
+    accounts/acc-a/ directory in the actual project tree — cleaned up
+    once found, fixed by isolating ACCOUNTS_DIR here."""
     import human_bot.admin as admin_module
     monkeypatch.setattr(admin_module, "get_all_accounts", lambda: {"acc-a": AccountConfig(account_id="acc-a", display_name="A")})
     log_id = _log(isolated_db, account_id="acc-a", success=False, content="x")
@@ -208,7 +216,7 @@ def test_reschedule_confirm_creates_a_pending_task(client, isolated_db, monkeypa
     resp = client.post("/admin/reports/reschedule-confirm", data={
         "log_id": str(log_id), "scheduled_at": "2026-12-01T00:00:00+00:00",
     })
-    assert resp.status_code in (200, 303)
+    assert resp.status_code == 200  # this route always returns HTMLResponse directly, no redirect branch
     pending = schedule_store.list_pending()
     assert len(pending) == 1
     assert pending[0].content == "reschedule me"
@@ -220,5 +228,6 @@ def test_reschedule_confirm_rejects_a_successful_row(client, isolated_db):
     resp = client.post("/admin/reports/reschedule-confirm", data={
         "log_id": str(log_id), "scheduled_at": "2026-12-01T00:00:00+00:00",
     })
-    assert resp.status_code in (200, 303)
+    assert resp.status_code == 200
+    assert "Bản ghi này không thể lên lịch lại" in resp.text
     assert len(schedule_store.list_pending()) == 0

@@ -4309,4 +4309,39 @@ fixture `isolated_db` (lần đầu Phase 1 các fixture này được dùng th�
 **Kết quả**: 314/314 test pass (từ 284). Chạy theo 2 thứ tự file khác
 nhau — ổn định, không rò rỉ. Không đụng `runtime_config.json`/
 `human_bot.db` thật (dùng `isolated_db`, xác nhận qua `git status`).
-Chưa commit.
+Đã commit (`f4e4be2`), chưa push.
+
+### Rà soát lại Phase 2 trước khi push (2026-09-25) — 1 sự cố thật, đã dọn sạch
+
+Owner yêu cầu kiểm tra lại Phase 2 trước khi push. Phát hiện:
+
+1. **Sự cố thật (đã xảy ra, không phải giả định)**: chạy thử lại
+   `test_reschedule_suggest_with_known_account_shows_suggested_time` phát
+   hiện nó đã **tạo thật 1 thư mục `accounts/acc-a/` ngay trong dự án
+   thật** — vi phạm đúng quy tắc cốt lõi "không bao giờ đụng trạng thái
+   thật trên đĩa khi test". Nguyên nhân: route
+   `GET /admin/reports/reschedule-suggest` gọi `_suggest_reschedule_at()`,
+   hàm này tạo `RateLimiter(account)`, mà `RateLimiter.__init__()` gọi
+   `self.log_path.parent.mkdir(parents=True, exist_ok=True)` — và
+   `account.action_log_path` tính từ `human_bot.config.ACCOUNTS_DIR`
+   THẬT vì test này không dùng fixture `isolated_accounts_dir`. Kiểm tra
+   nội dung thư mục trước khi xoá (rỗng, không có file/dữ liệu gì) rồi
+   `rmdir` dọn sạch, xác nhận `accounts/` trở lại đúng 2 thư mục gốc
+   (`nhtu00`, `tu_iizuki`). **Sửa**: thêm `isolated_accounts_dir` vào
+   test đó. Đã kiểm tra chéo: route tương tự bên `/admin/schedule`
+   (`schedule_missed_suggest`, cũng gọi `_suggest_reschedule_at()`) may
+   mắn CHƯA có test nào đụng tới ở Phase 1 nên không bị lỗi tương tự —
+   chỉ là khoảng trống chưa test, không phải bug, sẽ cẩn thận khi test
+   route đó sau này (Phase còn lại).
+2. **Củng cố test yếu**: nhiều test `reports_repost`/`reports_reschedule_confirm`
+   viết dạng `assert status in (200, 303)` rồi `if status == 303: assert
+   ...` — kiểm tra thực tế xác nhận status LUÔN LÀ 303 (hoặc 200 cho
+   riêng `reschedule-confirm`, route này không có nhánh redirect) trong
+   điều kiện test, nên nhánh `if` luôn đúng và test vẫn kiểm tra thật —
+   nhưng viết kiểu có `if` khiến test trông yếu hơn thực tế và dễ vô
+   tình biến thành no-op nếu sau này ai đổi hành vi client. Sửa lại
+   thành assert thẳng không điều kiện, đúng với hành vi đã xác nhận.
+
+**Kết quả sau khi sửa**: 314/314 test pass, chạy ổn định qua nhiều thứ
+tự file. `accounts/`/`runtime_config.json`/`human_bot.db` thật xác nhận
+sạch (không đổi). Sẵn sàng push.
