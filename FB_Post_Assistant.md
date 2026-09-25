@@ -469,6 +469,11 @@ Một vài lựa chọn thiết kế đáng chú ý, được cân nhắc kỹ c
   trống ô key giờ bị chặn lại, báo "Cần nhập API key...", không lưu gì
   cả (key cũ nếu có vẫn giữ nguyên) — muốn xoá hẳn key thì bấm đúng nút
   "Xoá key" riêng. Cập nhật lại dòng chú thích trên giao diện cho khớp.
+- **[ĐÃ SỬA, 2026-09-25]** Rà soát lần cuối trước khi push phát hiện thêm
+  đúng nút "Xoá key" riêng (nói ở mục trên) cũng dính lỗi tương tự: bấm
+  xoá key xong thì mất luôn cả nhà cung cấp AI đang chọn và tên model đã
+  gõ, chứ không riêng gì key. Owner xác nhận sửa luôn — giờ bấm "Xoá
+  key" chỉ xoá đúng key, mọi lựa chọn khác giữ nguyên.
 - **Rà soát lại Phase 1 trước khi làm Phase 2 (owner yêu cầu)** — phát hiện
   1 lỗi thật: 1 trong các đoạn code test tự viết ra vô tình làm rò rỉ trạng
   thái giữa các bài test với nhau (test A chạy xong làm ảnh hưởng sai tới

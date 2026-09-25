@@ -173,3 +173,19 @@ def test_ai_provider_clear_key_removes_it(client):
     assert resp.status_code == 200
     assert get_secrets_overrides()["anthropic_api_key"] == ""
     assert "sk-ant-original" not in resp.text
+
+
+def test_ai_provider_clear_key_preserves_provider_and_model(client):
+    """2026-09-25 fix (real bug, found in a final review pass): clear-key
+    used to call save_secrets_overrides() with ONLY the key field, which
+    (being a REPLACE not a merge) silently wiped ai_provider and the
+    active provider's model/base_url too. Now a proper read-merge-write —
+    only the key field itself should change."""
+    client.post("/admin/config/ai-provider", data={
+        "ai_provider": "anthropic", "anthropic_api_key": "sk-ant-original", "anthropic_model": "claude-opus-4-5",
+    })
+    client.post("/admin/config/ai-provider/clear-key", data={"provider": "anthropic"})
+    overrides = get_secrets_overrides()
+    assert overrides["anthropic_api_key"] == ""
+    assert overrides["ai_provider"] == "anthropic"
+    assert overrides["anthropic_model"] == "claude-opus-4-5"

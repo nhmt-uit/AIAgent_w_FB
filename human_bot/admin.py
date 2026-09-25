@@ -121,6 +121,7 @@ from human_bot.runtime_config import (
     get_sponsored_only_account_ids,
     set_account_sponsored_only,
     get_secrets_config,
+    get_secrets_overrides,
     save_secrets_overrides,
     get_active_ai_provider_config,
     add_mod_user,
@@ -2004,11 +2005,24 @@ async def config_ai_provider_save(request: Request, _: None = Depends(_require_l
 
 @router.post("/config/ai-provider/clear-key", response_class=HTMLResponse)
 async def config_ai_provider_clear_key(request: Request, _: None = Depends(_require_login)) -> str:
+    """2026-09-25 fix (real bug, found in a final review pass right after
+    fixing config_ai_provider_save()'s sibling bug — same root cause):
+    used to call save_secrets_overrides({key_field: ""}) with ONLY that
+    one field — since save_secrets_overrides() (_save_overrides())
+    REPLACES the whole "secrets" section rather than merging, this wiped
+    out ai_provider (silently falling back to SecretsConfig's own
+    dataclass default) and the active provider's model/base_url too, not
+    just its key. Now reads the current overrides first and only blanks
+    the one key field within them — a real read-merge-write, same
+    pattern get_secrets_config()/get_secrets_overrides() callers
+    elsewhere already assume is safe to build on."""
     form = await request.form()
     provider = str(form.get("provider", "")).strip().lower()
     provider_info = next((p for p in _AI_PROVIDERS if p["key"] == provider), None)
     if provider_info:
-        save_secrets_overrides({provider_info["key_field"]: ""})
+        current = get_secrets_overrides()
+        current[provider_info["key_field"]] = ""
+        save_secrets_overrides(current)
     return _ai_provider_card_html(flash='<p class="flash">✅ Đã xoá key — quay lại dùng key trong .env (nếu có) hoặc không dùng AI.</p>')
 
 

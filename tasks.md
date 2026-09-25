@@ -4478,4 +4478,39 @@ thiết kế, không phải bug" trong docstring, tránh người đọc sau hi�
 nhầm lại là lỗi). Render trực tiếp xác nhận thông báo lỗi + dòng chú
 thích mới hiển thị đúng, key cũ không bị mất khi bị chặn lưu.
 
-**Kết quả**: 372/372 test pass. Chưa commit.
+**Kết quả**: 372/372 test pass. Đã commit (`324bed0`), chưa push.
+
+### Rà soát lần cuối trước khi push (2026-09-25) — phát hiện thêm 1 bug thật cùng gốc
+
+Owner yêu cầu rà soát kỹ lần nữa trước khi push. Đọc lại kỹ diff commit
+vừa rồi, kiểm tra thêm biên (form hoàn toàn rỗng), grep lại toàn bộ dự
+án xem còn sót chú thích cũ ở đâu không (sạch) — và tự đặt câu hỏi:
+"route Xoá key riêng có dính đúng lỗi tương tự không?" Kiểm tra trực
+tiếp bằng script — **đúng là dính, bug thật thứ 2 cùng gốc**:
+
+**`config_ai_provider_clear_key()` xoá mất luôn cả provider/model đang
+chọn, không chỉ mỗi key.** Cùng nguyên nhân với bug vừa sửa: gọi
+`save_secrets_overrides({key_field: ""})` — chỉ 1 field — mà hàm này
+THAY THẾ TOÀN BỘ section, nên `ai_provider` (rơi về mặc định code) và
+`anthropic_model`/`base_url` đang chọn biến mất theo. Xác nhận bằng
+script tái hiện: lưu `{ai_provider: anthropic, key: "...", model:
+"claude-opus-4-5"}`, bấm "Xoá key" xong chỉ còn `{anthropic_api_key:
+""}` — mất cả 2 field kia.
+
+Hỏi owner qua `AskUserQuestion`, xác nhận muốn sửa luôn. **Sửa**: đổi
+`config_ai_provider_clear_key()` thành đọc override hiện có
+(`get_secrets_overrides()`, thêm vào import), chỉ set đúng field key về
+rỗng trong dict đó, rồi mới `save_secrets_overrides()` — read-merge-
+write đúng nghĩa thay vì pass dict 1 field. Thêm test
+`test_ai_provider_clear_key_preserves_provider_and_model` xác nhận
+provider/model còn nguyên sau khi xoá key.
+
+**Rà soát mở rộng**: `grep` toàn bộ lệnh gọi `save_*_overrides(` khác
+trong `admin.py` (rate-limits ở `/admin/accounts`) — xác nhận không
+dính lỗi tương tự: các chỗ dùng dict rỗng `{}` đều là chủ đích (nút
+"Khôi phục mặc định"/xoá tài khoản), còn chỗ lưu giá trị thật luôn
+validate đủ toàn bộ field bắt buộc (không có khái niệm "để trống 1
+field" như bên AI-provider), nên an toàn.
+
+**Kết quả**: 373/373 test pass, ổn định qua nhiều thứ tự file.
+`accounts/`/`runtime_config.json` thật vẫn sạch. Sẵn sàng push.
