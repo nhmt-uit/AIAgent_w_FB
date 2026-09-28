@@ -282,3 +282,76 @@ def test_cancel_stale_missed_returns_zero_when_nothing_is_stale(isolated_store):
     isolated_store.mark_missed(task.task_id, "test")
     assert isolated_store.cancel_stale_missed(max_age_days=30, now=now) == 0
     assert isolated_store.get_missed(task.task_id) is not None
+
+
+# --- cleanup_old(): 6-month default + orphaned missed/*.result.txt (2026-09-28) ---
+
+def _age_file(path, days: float) -> None:
+    import os
+    ts = (datetime.now(timezone.utc) - timedelta(days=days)).timestamp()
+    os.utime(path, (ts, ts))
+
+
+def _put(directory, name: str, days_old: float):
+    directory.mkdir(parents=True, exist_ok=True)
+    f = directory / name
+    f.write_text("{}", encoding="utf-8")
+    _age_file(f, days_old)
+    return f
+
+
+def test_cleanup_old_default_keeps_terminal_files_for_six_months(isolated_store, monkeypatch):
+    """Owner's choice 2026-09-28: default retention went 30 -> 180 days."""
+    monkeypatch.delenv("SCHEDULE_RETENTION_DAYS", raising=False)
+    assert isolated_store.DEFAULT_SCHEDULE_RETENTION_DAYS == 180
+    keep = _put(isolated_store.POSTED_DIR, "keep.json", 100)  # >30 days, <180
+    drop = _put(isolated_store.FAILED_DIR, "drop.json", 200)
+    removed = isolated_store.cleanup_old()
+    assert keep.exists()
+    assert not drop.exists()
+    assert removed["failed"] == 1 and removed["posted"] == 0
+
+
+def test_cleanup_old_env_override_still_wins(isolated_store, monkeypatch):
+    monkeypatch.setenv("SCHEDULE_RETENTION_DAYS", "10")
+    old = _put(isolated_store.CANCELLED_DIR, "old.json", 20)
+    isolated_store.cleanup_old()
+    assert not old.exists()
+
+
+def test_cleanup_old_never_touches_pending(isolated_store, monkeypatch):
+    monkeypatch.delenv("SCHEDULE_RETENTION_DAYS", raising=False)
+    pending = _put(isolated_store.PENDING_DIR, "pending.json", 400)
+    isolated_store.cleanup_old()
+    assert pending.exists()
+
+
+def test_cleanup_old_removes_only_old_orphaned_missed_result_txt(isolated_store, monkeypatch):
+    """A missed/*.result.txt whose .json is gone (task was rescheduled/
+    cancelled/fired — only the .json moves) is an orphan and gets pruned
+    after the retention window; one whose .json is still present belongs
+    to a live missed task and must survive no matter how old."""
+    monkeypatch.delenv("SCHEDULE_RETENTION_DAYS", raising=False)
+    missed = isolated_store.MISSED_DIR
+    old_orphan = _put(missed, "a.result.txt", 200)
+    fresh_orphan = _put(missed, "b.result.txt", 5)
+    live_json = _put(missed, "c.json", 200)
+    live_note = _put(missed, "c.result.txt", 200)
+
+    removed = isolated_store.cleanup_old()
+
+    assert not old_orphan.exists()
+    assert fresh_orphan.exists()
+    assert live_json.exists() and live_note.exists()
+    assert removed["missed_orphans"] == 1
+
+
+def test_screenshots_cleanup_default_is_sixty_days(tmp_path, monkeypatch):
+    from human_bot import screenshots
+    monkeypatch.setattr(screenshots, "SCREENSHOTS_ROOT", tmp_path)
+    monkeypatch.delenv("SCREENSHOT_RETENTION_DAYS", raising=False)
+    assert screenshots.DEFAULT_SCREENSHOT_RETENTION_DAYS == 60
+    keep = _put(tmp_path / "acc", "keep.png", 45)  # >30, <60
+    drop = _put(tmp_path / "acc", "drop.png", 70)
+    assert screenshots.cleanup_old() == 1
+    assert keep.exists() and not drop.exists()

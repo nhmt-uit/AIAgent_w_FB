@@ -429,10 +429,17 @@ def mark_failed(task_id: str, reason: str, source_dir: Path | None = None) -> No
         dest.with_suffix(".result.txt").write_text(reason, encoding="utf-8")
 
 
+# Default for cleanup_old() below when SCHEDULE_RETENTION_DAYS isn't set in
+# .env — 180 days (~6 months), owner's explicit choice 2026-09-28 (was 30).
+# Measured cost at the time: ~200 files/month, ~1.2 MB/month, so 6 months is
+# ~8 MB — trivially cheap to keep for a much longer audit trail.
+DEFAULT_SCHEDULE_RETENTION_DAYS = 180
+
+
 def cleanup_old(retention_days: int | None = None) -> dict[str, int]:
     """Permanently delete files from posted/, failed/, cancelled/ older
     than `retention_days` (default: SCHEDULE_RETENTION_DAYS in .env, or
-    30) — these are terminal states nothing reads back from at runtime
+    DEFAULT_SCHEDULE_RETENTION_DAYS = 180) — these are terminal states nothing reads back from at runtime
     (reporting already lives in human_bot.db's action_log, see
     human_bot/db.py, and survives this untouched), so kept on disk only
     as an inspectable audit trail. Bounded here on purpose, mirroring
@@ -444,10 +451,13 @@ def cleanup_old(retention_days: int | None = None) -> dict[str, int]:
     material regardless of age. Returns a per-directory count of files
     removed, for logging/visibility."""
     if retention_days is None:
-        retention_days = int(os.environ.get("SCHEDULE_RETENTION_DAYS", "30") or "30")
+        retention_days = int(
+            os.environ.get("SCHEDULE_RETENTION_DAYS", str(DEFAULT_SCHEDULE_RETENTION_DAYS))
+            or str(DEFAULT_SCHEDULE_RETENTION_DAYS)
+        )
     ensure_dirs()
     cutoff = datetime.now(timezone.utc) - timedelta(days=retention_days)
-    removed = {"posted": 0, "failed": 0, "cancelled": 0}
+    removed = {"posted": 0, "failed": 0, "cancelled": 0, "missed_orphans": 0}
     for label, directory in (("posted", POSTED_DIR), ("failed", FAILED_DIR), ("cancelled", CANCELLED_DIR)):
         for path in directory.glob("*"):
             if not path.is_file():
@@ -456,4 +466,20 @@ def cleanup_old(retention_days: int | None = None) -> dict[str, int]:
             if mtime < cutoff:
                 path.unlink()
                 removed[label] += 1
+    # 2026-09-28: MISSED_DIR keeps a task's own .json only while it's
+    # still awaiting review, but resolving it (reschedule / cancel /
+    # "Đăng ngay") moves ONLY the .json out — the .result.txt explaining
+    # why it was missed is deliberately left behind (cancel_missed()'s own
+    # docstring), and nothing ever removed those orphans (83 had piled up
+    # by then). A .result.txt whose .json is STILL there belongs to a live
+    # missed task and is never touched here.
+    for path in MISSED_DIR.glob("*.result.txt"):
+        if not path.is_file():
+            continue
+        if path.with_name(path.name[: -len(".result.txt")] + ".json").exists():
+            continue
+        mtime = datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc)
+        if mtime < cutoff:
+            path.unlink()
+            removed["missed_orphans"] += 1
     return removed

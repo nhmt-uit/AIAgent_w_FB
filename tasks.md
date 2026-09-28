@@ -91,6 +91,9 @@
 - [Rà soát lần cuối trước khi push — bug thứ 2 cùng gốc](#rà-soát-lần-cuối-trước-khi-push-2026-09-25-phát-hiện-thêm-1-bug-thật-cùng-gốc)
 - [Đảo ngược lại fix "Xoá key" — hiểu sai thiết kế](#đảo-ngược-lại-fix-xoá-key-hiểu-sai-thiết-kế-owner-sửa-lại-đúng-ý-2026-09-25)
 
+**28/09**
+- [Đổi thời hạn tự dọn: ảnh 60 ngày, JSON task 6 tháng + dọn file mồ côi](#đổi-thời-hạn-tự-dọn-ảnh-chụp-60-ngày-json-task-180-ngày-dọn-file-resulttxt-mồ-côi-ở-missed-2026-09-28)
+
 ---
 
 ## Giai đoạn khởi tạo (02/09 – 04/09)
@@ -4594,3 +4597,45 @@ Owner nêu 2 ý tưởng, đã xác nhận lại đúng ý qua hỏi đáp trư�
 
 Cả 2 chưa rõ chi tiết UI/UX (nút bấm ở đâu, xác nhận thế nào) — cần bàn
 thêm với owner trước khi lên kế hoạch code thật.
+
+## Đổi thời hạn tự dọn: ảnh chụp 60 ngày, JSON task 180 ngày + dọn file `.result.txt` mồ côi ở `missed/` (2026-09-28)
+
+Owner hỏi "hiện có những gì ghi log, tự huỷ khi nào" — liệt kê đủ từ code
++ dữ liệu thật (không đoán), rồi chốt 2 thay đổi, mọi thứ còn lại giữ
+nguyên:
+
+- `screenshots/`: mặc định **30 → 60 ngày** (`DEFAULT_SCREENSHOT_RETENTION_DAYS`
+  mới trong `human_bot/screenshots.py`). Đo thật: 100 ảnh, ~600 KB/ảnh,
+  ~5-6 ảnh/ngày → ~200 MB ở mốc 60 ngày.
+- `scheduled/posted|failed|cancelled`: mặc định **30 → 180 ngày ≈ 6 tháng**
+  (`DEFAULT_SCHEDULE_RETENTION_DAYS` mới trong `human_bot/schedule_store.py`).
+  Đo thật: ~200 file/tháng, ~1,2 MB/tháng → ~8 MB ở mốc 6 tháng;
+  `list_posted()` (đọc hết `posted/` mỗi lần đồng bộ) chỉ ~400 file, không
+  đáng kể.
+- Đổi cả `.env.example` và `README.md`. `.env` thật của owner không đặt 2
+  biến này nên đổi mặc định là có hiệu lực ngay.
+
+**Phát hiện thêm khi đọc code, đã sửa cùng đợt:**
+1. **83 file `.result.txt` mồ côi trong `scheduled/missed/`** — khi task
+   quá hạn được xử lý (đặt lại lịch/huỷ/đăng ngay) chỉ `.json` chuyển đi,
+   `.result.txt` cố ý ở lại (xem docstring `cancel_missed()`), nhưng
+   `cleanup_old()` chưa bao giờ đụng tới `missed/` nên chúng tích tụ mãi.
+   Nay `cleanup_old()` dọn thêm loại này (cùng thời hạn 180 ngày, tính theo
+   giờ sửa file): CHỈ xoá `.result.txt` mà `.json` cùng tên đã không còn;
+   `.result.txt` của task còn đang chờ duyệt không bao giờ bị đụng dù cũ
+   đến đâu. Kết quả trả về thêm khoá `missed_orphans`. 83 file hiện có đều
+   mới (14-24/9) nên sẽ chỉ bị dọn từ ~tháng 3/2027.
+2. **(Kết luận từ đọc code, chưa quan sát thực tế)** với mốc cũ 30 ngày,
+   task bị `cancel_stale_missed()` tự huỷ sau 30 ngày quá hạn có nguy cơ bị
+   `cleanup_old()` xoá ngay ở lần chạy kế tiếp (~24 giờ sau): việc dọn tính
+   theo *giờ sửa file*, mà chuyển thư mục (`rename`) không đổi giờ sửa, còn
+   task quá hạn ≥30 ngày thì file gốc đã ≥30 ngày tuổi — trái với ý "giữ
+   lại xem lịch sử". Chưa có task thật nào chạm ngưỡng nên chưa xảy ra;
+   mốc 180 ngày giải quyết được điểm này (giữ lại thêm ~5 tháng).
+
+**Test mới** (`tests/test_schedule_store.py`, +5): mặc định giữ 100 ngày
+tuổi/xoá 200 ngày tuổi; biến môi trường `SCHEDULE_RETENTION_DAYS` vẫn thắng
+mặc định; `pending/` không bao giờ bị đụng; dọn đúng `.result.txt` mồ côi
+cũ, giữ mồ côi mới và giữ `.result.txt` của task còn sống; ảnh chụp mặc
+định 60 ngày. **378/378 test pass.** Dữ liệu thật (`scheduled/`,
+`screenshots/`) xác nhận không bị đụng. Chưa commit.

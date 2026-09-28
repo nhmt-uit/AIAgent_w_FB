@@ -257,7 +257,7 @@ tiếp trong lệnh terminal, giờ quản lý toàn bộ qua web:
 6. **Lịch đăng** (`/admin/schedule`): lọc theo tài khoản, phân trang (20
    bài/trang), sửa nội dung/giờ, huỷ, hoặc đăng ngay — có cả bài lên lịch
    thủ công lẫn tự động từ bộ đồng bộ bên B. Giờ đăng hiển thị theo giờ
-   Nhật Bản. Các bài đã đăng/thất bại/huỷ tự động dọn sau 30 ngày
+   Nhật Bản. Các bài đã đăng/thất bại/huỷ tự động dọn sau 180 ngày (~6 tháng)
    (`SCHEDULE_RETENTION_DAYS`), bài đang chờ thì không bao giờ bị đụng.
 7. **Báo cáo** (`/admin/reports`): thêm khối tổng quan nhanh (tổng số/
    thành công/thất bại/tỉ lệ/số tài khoản hoạt động) và bộ lọc theo

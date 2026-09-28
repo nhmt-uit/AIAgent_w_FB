@@ -57,15 +57,25 @@ async def capture(page: Page, account_id: str, action: str, success: bool) -> st
         return None
 
 
+# Default for cleanup_old() below when SCREENSHOT_RETENTION_DAYS isn't set in
+# .env — 60 days, owner's explicit choice 2026-09-28 (was 30). Measured cost
+# at the time: ~5-6 screenshots/day at ~600 KB each, so ~200 MB at 60 days.
+DEFAULT_SCREENSHOT_RETENTION_DAYS = 60
+
+
 def cleanup_old(retention_days: int | None = None) -> int:
     """Permanently delete screenshots older than `retention_days`
-    (default: SCREENSHOT_RETENTION_DAYS in .env, or 30) — mirrors
+    (default: SCREENSHOT_RETENTION_DAYS in .env, or
+    DEFAULT_SCREENSHOT_RETENTION_DAYS = 60) — mirrors
     human_bot/schedule_store.py's cleanup_old() exactly. Returns the
     number of files removed, for logging/visibility. A row in
     /admin/reports whose screenshot got pruned this way just shows no
     image link anymore — the text history in human_bot.db is untouched."""
     if retention_days is None:
-        retention_days = int(os.environ.get("SCREENSHOT_RETENTION_DAYS", "30") or "30")
+        retention_days = int(
+            os.environ.get("SCREENSHOT_RETENTION_DAYS", str(DEFAULT_SCREENSHOT_RETENTION_DAYS))
+            or str(DEFAULT_SCREENSHOT_RETENTION_DAYS)
+        )
     if not SCREENSHOTS_ROOT.is_dir():
         return 0
     cutoff = datetime.now(timezone.utc) - timedelta(days=retention_days)
