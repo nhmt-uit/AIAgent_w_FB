@@ -95,6 +95,7 @@
 - [Đổi thời hạn tự dọn: ảnh 60 ngày, JSON task 6 tháng + dọn file mồ côi](#đổi-thời-hạn-tự-dọn-ảnh-chụp-60-ngày-json-task-180-ngày-dọn-file-resulttxt-mồ-côi-ở-missed-2026-09-28)
 - [Chuyển 3 thời hạn lưu dữ liệu từ `.env` sang UI: tab "Cấu hình" ở trang Báo cáo](#chuyển-3-thời-hạn-lưu-dữ-liệu-từ-env-sang-ui-tab-cấu-hình-ở-trang-báo-cáo-2026-09-28)
 - [Lỗi bình luận nhóm của nhtu00 (nhóm chưa tham gia) + ưu tiên tài khoản đã tham gia khi chia candidate](#lỗi-bình-luận-nhóm-của-nhtu00-nhóm-chưa-tham-gia--ưu-tiên-tài-khoản-đã-tham-gia-khi-chia-candidate-2026-09-28)
+- [Sửa lỗi tab Quản lý MOD: danh sách nhảy lên trên header sau khi lưu](#sửa-lỗi-tab-quản-lý-mod-danh-sách-nhảy-lên-trên-header-sau-khi-lưu-2026-09-28)
 
 ---
 
@@ -4797,3 +4798,30 @@ cho candidate; phần chia job không đổi.
 thành viên, rơi về khi không ai tham gia/thành viên hết chỗ, không vượt hạn
 mức, cân bằng 2 thành viên). **402/402 pass.** Task lỗi cũ
 `20260928T034640Z_f507808e` để nguyên ở `failed/` (owner: bỏ qua).
+
+
+## Sửa lỗi tab Quản lý MOD: danh sách nhảy lên trên header sau khi lưu (2026-09-28)
+
+**Triệu chứng (owner báo):** thêm tài khoản MOD rồi bấm lưu, danh sách tài
+khoản hiện ở trên header; F5 mới về đúng chỗ.
+
+**Nguyên nhân:** form "Thêm tài khoản MOD" có `hx-target="#modal-root"`
+(để khi lỗi validate thì vẽ lại modal tại chỗ), nhưng khi thành công route
+`mod_users_add` lại trả về **khối danh sách** như nội dung chính → htmx nhét
+nó vào bên trong `#modal-root` (nằm trên đầu trang) thay vì thay chỗ
+`#mod-users-content`. Form "Đổi mật khẩu" có lỗi cùng loại theo chiều ngược
+lại: target là `#mod-users-content`, nên khi lỗi validate thì **modal bị vẽ
+đè lên danh sách**, còn khi thành công thì modal **không đóng**.
+
+**Sửa (`human_bot/admin.py`):** cả 2 route (`mod_users_add`,
+`mod_users_edit_password`) nay để form target `#modal-root`; khi thành công
+trả danh sách dạng **out-of-band** (`hx-swap-oob="true"` trên
+`#mod-users-content`) và không còn nội dung chính → danh sách được thay đúng
+chỗ, `#modal-root` bị làm rỗng nên modal tự đóng. Khi lỗi: vẫn vẽ lại modal
+trong `#modal-root`. Nhánh không-htmx (redirect) không đổi; xoá tài khoản
+không bị (target thẳng danh sách).
+
+**Test:** 3 test mới trong `tests/test_admin_login.py` (thêm thành công trả OOB
+và không vẽ lại modal; thêm lỗi vẽ lại modal, không trả danh sách; đổi mật
+khẩu đúng target + thành công/lỗi). **405/405 pass.** Chưa xác nhận trên
+trình duyệt thật — owner nên thử lại thêm/đổi mật khẩu MOD.

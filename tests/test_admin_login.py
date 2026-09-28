@@ -127,6 +127,56 @@ def test_correct_mod_login_is_blocked_from_mod_users_page(client, monkeypatch):
     assert forbidden.status_code == 403
 
 
+def test_htmx_add_mod_returns_list_out_of_band_so_it_does_not_land_in_modal_root(client, monkeypatch):
+    """The add modal's form targets #modal-root; a plain content fragment
+    as primary response would be swapped INSIDE it (list rendered above the
+    header until F5). The list must come back as an hx-swap-oob element."""
+    monkeypatch.setenv("ADMIN_USERNAME", "boss")
+    monkeypatch.setenv("ADMIN_PASSWORD", "boss-pass")
+    _login(client, "boss", "boss-pass")
+    resp = client.post("/admin/mod-users/add", headers={"hx-request": "true"}, data={
+        "username": "mod9", "password": "mod-pass123", "password_confirm": "mod-pass123",
+    })
+    assert resp.status_code == 200
+    assert 'id="mod-users-content" hx-swap-oob="true"' in resp.text
+    assert "mod9" in resp.text
+    assert "modal-backdrop" not in resp.text  # modal not re-rendered
+
+
+def test_htmx_add_mod_validation_error_rerenders_modal_not_list(client, monkeypatch):
+    monkeypatch.setenv("ADMIN_USERNAME", "boss")
+    monkeypatch.setenv("ADMIN_PASSWORD", "boss-pass")
+    _login(client, "boss", "boss-pass")
+    resp = client.post("/admin/mod-users/add", headers={"hx-request": "true"}, data={
+        "username": "mod9", "password": "mod-pass123", "password_confirm": "different",
+    })
+    assert "modal-backdrop" in resp.text
+    assert "mod-users-content" not in resp.text
+
+
+def test_htmx_edit_password_targets_modal_root_and_returns_list_out_of_band(client, monkeypatch):
+    monkeypatch.setenv("ADMIN_USERNAME", "boss")
+    monkeypatch.setenv("ADMIN_PASSWORD", "boss-pass")
+    _login(client, "boss", "boss-pass")
+    client.post("/admin/mod-users/add", data={
+        "username": "mod9", "password": "mod-pass123", "password_confirm": "mod-pass123",
+    })
+    modal = client.get("/admin/mod-users/mod9/edit-password-modal").text
+    assert 'hx-target="#modal-root"' in modal
+
+    ok = client.post("/admin/mod-users/mod9/edit-password", headers={"hx-request": "true"}, data={
+        "new_password": "newpass123", "new_password_confirm": "newpass123",
+    })
+    assert 'id="mod-users-content" hx-swap-oob="true"' in ok.text
+    assert "modal-backdrop" not in ok.text
+
+    bad = client.post("/admin/mod-users/mod9/edit-password", headers={"hx-request": "true"}, data={
+        "new_password": "newpass123", "new_password_confirm": "nope",
+    })
+    assert "modal-backdrop" in bad.text
+    assert "mod-users-content" not in bad.text
+
+
 def test_wrong_password_shows_generic_error_redirect(client, monkeypatch):
     monkeypatch.setenv("ADMIN_USERNAME", "boss")
     monkeypatch.setenv("ADMIN_PASSWORD", "boss-pass")

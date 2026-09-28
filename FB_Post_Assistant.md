@@ -419,6 +419,11 @@ liệu thật hằng ngày và yêu cầu kiểm tra chéo lại mọi thứ tr�
   Nay hệ thống ưu tiên tài khoản đã tham gia; nếu không có ai tham gia (hoặc
   người đó hết hạn mức) thì dùng tài khoản nào còn chỗ, vì nhóm công khai vẫn
   bình luận được.
+- **Sửa lỗi ở tab Quản lý MOD:** sau khi thêm tài khoản, danh sách bị hiện
+  lên trên đầu trang (F5 mới về đúng chỗ). Nguyên nhân là kết quả được đặt
+  nhầm vào khung cửa sổ nhỏ (modal) thay vì thay thế danh sách. Đã sửa; đồng
+  thời sửa luôn lỗi tương tự ở nút "Đổi mật khẩu" (cửa sổ không tự đóng, và khi
+  nhập sai thì đè lên danh sách). Cần owner thử lại trên trình duyệt.
 
 ---
 

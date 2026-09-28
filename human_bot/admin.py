@@ -1596,7 +1596,7 @@ def _mod_user_password_modal_html(username: str, error: str | None = None) -> st
       <button type="button" class="modal-close" onclick="this.closest('.modal-backdrop').remove()">✕</button>
     </div>
     {err_html}
-    <form method="post" action="/admin/mod-users/{uname}/edit-password" hx-post="/admin/mod-users/{uname}/edit-password" hx-target="#mod-users-content" hx-swap="outerHTML">
+    <form method="post" action="/admin/mod-users/{uname}/edit-password" hx-post="/admin/mod-users/{uname}/edit-password" hx-target="#modal-root" hx-swap="innerHTML">
       <div class="field-stack">
         <div class="field-label">Mật khẩu mới</div>
         <div class="field-input"><input type="password" name="new_password" required minlength="6" autofocus></div>
@@ -1652,7 +1652,17 @@ async def mod_users_add(request: Request, _: None = Depends(_require_admin_role)
         from urllib.parse import urlencode
         return RedirectResponse(url=f"/admin/mod-users?{urlencode({'error': error})}", status_code=303)
     if _is_htmx(request):
-        return HTMLResponse(_mod_users_content_html(saved=True))
+        # The add form's hx-target is #modal-root (so a validation error can
+        # re-render the modal in place), which means the response's primary
+        # content lands INSIDE #modal-root. Returning the list card as
+        # primary content put it there — above the page header — until F5.
+        # Send it out-of-band instead (replaces #mod-users-content in
+        # place); with no primary content left, #modal-root is emptied,
+        # which also closes the modal.
+        content = _mod_users_content_html(saved=True).replace(
+            'id="mod-users-content"', 'id="mod-users-content" hx-swap-oob="true"', 1,
+        )
+        return HTMLResponse(content)
     return RedirectResponse(url="/admin/mod-users?saved=1", status_code=303)
 
 
@@ -1700,7 +1710,13 @@ async def mod_users_edit_password(request: Request, username: str, _: None = Dep
         from urllib.parse import urlencode
         return RedirectResponse(url=f"/admin/mod-users?{urlencode({'error': error})}", status_code=303)
     if _is_htmx(request):
-        return HTMLResponse(_mod_users_content_html(saved=True))
+        # Same reasoning as mod_users_add(): the form targets #modal-root
+        # (an error must re-render the modal, not overwrite the list), so
+        # the list goes out-of-band and #modal-root is emptied (modal closes).
+        content = _mod_users_content_html(saved=True).replace(
+            'id="mod-users-content"', 'id="mod-users-content" hx-swap-oob="true"', 1,
+        )
+        return HTMLResponse(content)
     return RedirectResponse(url="/admin/mod-users?saved=1", status_code=303)
 
 
