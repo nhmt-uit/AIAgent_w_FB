@@ -36,6 +36,7 @@ from human_bot.config import ACCOUNT_AGE_TIERS, COOLDOWN_WEEK2_STEP_UP_TIER, Rat
 from human_bot.data_sync_config import DataSyncConfig
 from human_bot.scheduling_config import SchedulingConfig
 from human_bot.media import MediaConfig
+from human_bot.retention_config import RetentionConfig
 from human_bot.safety_cooldown_config import SafetyCooldownConfig
 from human_bot.secrets_config import SecretsConfig
 
@@ -274,6 +275,32 @@ def get_scroll_config() -> HumanScrollConfig:
 
 def save_scroll_overrides(values: dict[str, Any]) -> None:
     _save_overrides("scroll", EDITABLE_SCROLL_FIELDS, values)
+
+
+# --- Data retention (admin-managed, /admin/reports "Cấu hình" tab) ---------
+# See human_bot/retention_config.py's docstring. Saved by the whole section
+# at once (every field submitted together from one form), same "REPLACES,
+# not merge" rule as every other save_*_overrides() here.
+
+EDITABLE_RETENTION_FIELDS: list[str] = [
+    "screenshot_days",
+    "schedule_days",
+    "action_log_days",
+]
+
+
+def get_retention_overrides() -> dict[str, Any]:
+    return _get_overrides("retention", EDITABLE_RETENTION_FIELDS)
+
+
+def get_retention_config() -> RetentionConfig:
+    """What the 3 daily cleanups actually use — saved values, else
+    RetentionConfig's own defaults (60 / 180 / 180)."""
+    return _get_config(RetentionConfig, "retention", EDITABLE_RETENTION_FIELDS)
+
+
+def save_retention_overrides(values: dict[str, Any]) -> None:
+    _save_overrides("retention", EDITABLE_RETENTION_FIELDS, values)
 
 
 # --- Secrets (admin-managed API keys) --------------------------------------

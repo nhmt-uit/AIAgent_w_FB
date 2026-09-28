@@ -216,9 +216,16 @@ def _messages(db_mod) -> set[str]:
     return {r["message"] for r in db_mod.recent_activity(limit=100)}
 
 
-def test_cleanup_old_default_keeps_six_months_and_drops_older(isolated_db, monkeypatch):
-    monkeypatch.delenv("ACTION_LOG_RETENTION_DAYS", raising=False)
-    assert isolated_db.DEFAULT_ACTION_LOG_RETENTION_DAYS == 180
+def _set_retention(**kwargs):
+    from human_bot.runtime_config import save_retention_overrides
+    values = {"screenshot_days": 60, "schedule_days": 180, "action_log_days": 180}
+    values.update(kwargs)
+    save_retention_overrides(values)
+
+
+def test_cleanup_old_default_keeps_six_months_and_drops_older(isolated_db, isolated_runtime_config):
+    from human_bot.retention_config import RetentionConfig
+    assert RetentionConfig().action_log_days == 180
     _log_at(isolated_db, 5, "recent")
     _log_at(isolated_db, 170, "just-inside")
     _log_at(isolated_db, 190, "just-outside")
@@ -227,36 +234,27 @@ def test_cleanup_old_default_keeps_six_months_and_drops_older(isolated_db, monke
     assert _messages(isolated_db) == {"recent", "just-inside"}
 
 
-def test_cleanup_old_env_override(isolated_db, monkeypatch):
-    monkeypatch.setenv("ACTION_LOG_RETENTION_DAYS", "10")
+def test_cleanup_old_uses_the_admin_configured_window(isolated_db, isolated_runtime_config):
+    _set_retention(action_log_days=10)
     _log_at(isolated_db, 5, "keep")
     _log_at(isolated_db, 20, "drop")
     assert isolated_db.cleanup_old() == 1
     assert _messages(isolated_db) == {"keep"}
 
 
-def test_cleanup_old_on_empty_table_is_a_noop(isolated_db):
+def test_cleanup_old_on_empty_table_is_a_noop(isolated_db, isolated_runtime_config):
     assert isolated_db.cleanup_old() == 0
 
 
-def test_cleanup_old_non_positive_retention_disables_instead_of_wiping(isolated_db, monkeypatch):
-    """Found in a pre-commit review: ACTION_LOG_RETENTION_DAYS=0 used to
-    delete EVERY row (cutoff = now), even one written seconds ago. Zero or
-    negative must mean "keep everything"."""
+def test_cleanup_old_non_positive_retention_disables_instead_of_wiping(isolated_db, isolated_runtime_config):
+    """Found in a pre-commit review: a retention of 0 used to delete EVERY
+    row (cutoff = now), even one written seconds ago. Zero or negative must
+    mean "keep everything" — as an explicit argument and as the saved
+    admin setting."""
     _log_at(isolated_db, 0, "brand-new")
     _log_at(isolated_db, 400, "ancient")
     assert isolated_db.cleanup_old(0) == 0
     assert isolated_db.cleanup_old(-5) == 0
-    monkeypatch.setenv("ACTION_LOG_RETENTION_DAYS", "0")
+    _set_retention(action_log_days=0)
     assert isolated_db.cleanup_old() == 0
     assert _messages(isolated_db) == {"brand-new", "ancient"}
-
-
-def test_get_retention_days_reads_env_else_default(monkeypatch):
-    from human_bot import db
-    monkeypatch.delenv("ACTION_LOG_RETENTION_DAYS", raising=False)
-    assert db.get_retention_days() == 180
-    monkeypatch.setenv("ACTION_LOG_RETENTION_DAYS", "45")
-    assert db.get_retention_days() == 45
-    monkeypatch.setenv("ACTION_LOG_RETENTION_DAYS", "")
-    assert db.get_retention_days() == 180

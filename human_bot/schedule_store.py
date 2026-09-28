@@ -18,7 +18,6 @@ ky muc nao truoc khi no thuc su chay.
 from __future__ import annotations
 
 import json
-import os
 import uuid
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -281,7 +280,7 @@ def cancel_stale_missed(max_age_days: int = STALE_MISSED_MAX_AGE_DAYS, now: date
     more than `max_age_days` in the past — owner request 2026-09-24:
     MISSED_DIR previously had NO cleanup of its own at all (unlike
     posted/failed/cancelled, which cleanup_old() prunes after
-    SCHEDULE_RETENTION_DAYS) — a task nobody reviews just sits there
+    RetentionConfig.schedule_days) — a task nobody reviews just sits there
     forever, see MISSED_DIR's own docstring above ("chờ bạn duyệt").
 
     Reuses cancel_missed() so this is exactly "the same 🗑️ Xoá click a
@@ -429,17 +428,11 @@ def mark_failed(task_id: str, reason: str, source_dir: Path | None = None) -> No
         dest.with_suffix(".result.txt").write_text(reason, encoding="utf-8")
 
 
-# Default for cleanup_old() below when SCHEDULE_RETENTION_DAYS isn't set in
-# .env — 180 days (~6 months), owner's explicit choice 2026-09-28 (was 30).
-# Measured cost at the time: ~200 files/month, ~1.2 MB/month, so 6 months is
-# ~8 MB — trivially cheap to keep for a much longer audit trail.
-DEFAULT_SCHEDULE_RETENTION_DAYS = 180
-
-
 def cleanup_old(retention_days: int | None = None) -> dict[str, int]:
     """Permanently delete files from posted/, failed/, cancelled/ older
-    than `retention_days` (default: SCHEDULE_RETENTION_DAYS in .env, or
-    DEFAULT_SCHEDULE_RETENTION_DAYS = 180) — these are terminal states nothing reads back from at runtime
+    than `retention_days` (default: RetentionConfig.schedule_days — 180 unless
+    changed on /admin/reports' "Cấu hình" tab; a value <= 0 disables this
+    cleanup entirely) — these are terminal states nothing reads back from at runtime
     (reporting already lives in human_bot.db's action_log, see
     human_bot/db.py, and survives this untouched), so kept on disk only
     as an inspectable audit trail. Bounded here on purpose, mirroring
@@ -451,13 +444,13 @@ def cleanup_old(retention_days: int | None = None) -> dict[str, int]:
     material regardless of age. Returns a per-directory count of files
     removed, for logging/visibility."""
     if retention_days is None:
-        retention_days = int(
-            os.environ.get("SCHEDULE_RETENTION_DAYS", str(DEFAULT_SCHEDULE_RETENTION_DAYS))
-            or str(DEFAULT_SCHEDULE_RETENTION_DAYS)
-        )
+        from human_bot.runtime_config import get_retention_config
+        retention_days = get_retention_config().schedule_days
+    removed = {"posted": 0, "failed": 0, "cancelled": 0, "missed_orphans": 0}
+    if retention_days <= 0:
+        return removed  # "never auto-delete" — see human_bot/retention_config.py
     ensure_dirs()
     cutoff = datetime.now(timezone.utc) - timedelta(days=retention_days)
-    removed = {"posted": 0, "failed": 0, "cancelled": 0, "missed_orphans": 0}
     for label, directory in (("posted", POSTED_DIR), ("failed", FAILED_DIR), ("cancelled", CANCELLED_DIR)):
         for path in directory.glob("*"):
             if not path.is_file():

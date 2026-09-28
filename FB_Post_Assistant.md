@@ -381,6 +381,14 @@ liệu thật hằng ngày và yêu cầu kiểm tra chéo lại mọi thứ tr�
   hạn mà không ai dọn (đã tích tụ 83 file). Nay được dọn cùng thời hạn 6
   tháng (chỉ dọn file ghi chú "mồ côi", không đụng file của task còn đang chờ
   duyệt).
+- **Chỉnh thời hạn lưu ngay trên trang quản trị, không cần sửa file `.env`
+  nữa:** trang **Báo cáo** có thêm tab **"⚙️ Cấu hình"** với 3 ô số (ảnh
+  chụp, file lịch đăng, lịch sử báo cáo), mỗi ô ghi rõ hết hạn thì mất gì.
+  Nhập **0 = không bao giờ tự xoá** loại đó. Lưu xong áp dụng từ lần dọn
+  kế tiếp (không cần khởi động lại, và không xoá gì ngay lập tức). Giá trị
+  nhập sai (trống, chữ, số âm, số quá lớn) bị từ chối và không lưu gì. Nhân
+  dịp này cũng bỏ luôn cách chỉnh cũ qua biến trong `.env` (chưa ai đặt nên
+  không mất gì).
 - **Dữ liệu báo cáo cũng giữ 6 tháng rồi xoá** (owner chốt sau khi được cảnh
   báo rõ đánh đổi): các dòng lịch sử cũ hơn 180 ngày sẽ tự biến mất khỏi mọi
   báo cáo ở trang quản trị (thống kê, theo từng lần đăng/bình luận). Đây là

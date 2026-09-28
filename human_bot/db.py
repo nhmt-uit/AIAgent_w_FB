@@ -27,7 +27,6 @@ cau truy van bao cao duoc thiet ke theo.
 from __future__ import annotations
 
 import json
-import os
 import sqlite3
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -197,29 +196,11 @@ def log_action(
         conn.close()
 
 
-# Default for cleanup_old() below when ACTION_LOG_RETENTION_DAYS isn't set in
-# .env — 180 days (~6 months), owner's explicit choice 2026-09-28. Measured
-# cost at the time: ~8 rows/day at ~1 KB each, so the table stays around
-# 1.5 MB even at the cap — this is about bounding history, not disk space.
-DEFAULT_ACTION_LOG_RETENTION_DAYS = 180
-
-
-def get_retention_days() -> int:
-    """The effective action_log retention window in days —
-    ACTION_LOG_RETENTION_DAYS from .env, else DEFAULT_ACTION_LOG_RETENTION_DAYS.
-    Shared by cleanup_old() and /admin/reports (so the page can state the
-    real window instead of a hard-coded number that .env could contradict).
-    A value <= 0 means cleanup is disabled (see cleanup_old())."""
-    return int(
-        os.environ.get("ACTION_LOG_RETENTION_DAYS", str(DEFAULT_ACTION_LOG_RETENTION_DAYS))
-        or str(DEFAULT_ACTION_LOG_RETENTION_DAYS)
-    )
-
-
 def cleanup_old(retention_days: int | None = None) -> int:
     """Permanently delete action_log rows whose created_at is older than
-    `retention_days` (default: ACTION_LOG_RETENTION_DAYS in .env, or
-    DEFAULT_ACTION_LOG_RETENTION_DAYS = 180). Returns how many rows were
+    `retention_days` (default: RetentionConfig.action_log_days — 180 unless
+    changed on /admin/reports' "Cấu hình" tab, human_bot/retention_config.py;
+    a value <= 0 disables the cleanup entirely). Returns how many rows were
     removed, for logging/visibility.
 
     This is the one cleanup in the project that deletes REPORT history, not
@@ -238,14 +219,16 @@ def cleanup_old(retention_days: int | None = None) -> int:
     _base_where() already relies on for the reports' date filter. SQLite
     reuses freed pages, so the file doesn't need a VACUUM at this size."""
     if retention_days is None:
-        retention_days = get_retention_days()
+        # Lazy import: runtime_config pulls in a lot of the package, and
+        # db.py is imported very early (agent.py, admin.py, service.py).
+        from human_bot.runtime_config import get_retention_config
+        retention_days = get_retention_config().action_log_days
     if retention_days <= 0:
-        # Guard found in a pre-commit review: with the raw value, 0 (which
-        # many read as "cleanup disabled") made the cutoff "right now" and
-        # wiped the WHOLE table, including a row written seconds earlier.
-        # Non-positive therefore means "keep everything", never "delete
-        # everything" — irreversible report-history loss is the one
-        # mistake this function must not make on a stray env value.
+        # Non-positive means "keep everything", never "delete everything":
+        # with the raw value, 0 made the cutoff "right now" and wiped the
+        # WHOLE table, including a row written seconds earlier (found in a
+        # pre-commit review) — irreversible report-history loss is the one
+        # mistake this function must not make on a stray value.
         return 0
     cutoff = (datetime.now(timezone.utc) - timedelta(days=retention_days)).isoformat()
     conn = _connect()

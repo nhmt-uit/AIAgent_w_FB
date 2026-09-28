@@ -93,6 +93,7 @@
 
 **28/09**
 - [Đổi thời hạn tự dọn: ảnh 60 ngày, JSON task 6 tháng + dọn file mồ côi](#đổi-thời-hạn-tự-dọn-ảnh-chụp-60-ngày-json-task-180-ngày-dọn-file-resulttxt-mồ-côi-ở-missed-2026-09-28)
+- [Chuyển 3 thời hạn lưu dữ liệu từ `.env` sang UI: tab "Cấu hình" ở trang Báo cáo](#chuyển-3-thời-hạn-lưu-dữ-liệu-từ-env-sang-ui-tab-cấu-hình-ở-trang-báo-cáo-2026-09-28)
 
 ---
 
@@ -4700,3 +4701,55 @@ Kiểm tra thêm, không có vấn đề: 175/175 dòng `created_at` thật đ�
 trường), `get_retention_days()` đọc env/mặc định/rỗng, trang báo cáo hiển
 thị đúng khoảng lưu (180/90/tắt). **384/384 test pass.** Chưa commit.
 
+## Chuyển 3 thời hạn lưu dữ liệu từ `.env` sang UI: tab "Cấu hình" ở trang Báo cáo (2026-09-28)
+
+Owner yêu cầu "config các giới hạn này trên ADMIN UI, không qua `.env`
+nữa". Hỏi lại 4 điểm trước khi làm (`AskUserQuestion`), owner chốt:
+**bỏ hẳn `.env`** (không giữ làm mặc định), **số 0 = không tự xoá** cho cả
+3, đặt ở **1 tab nhỏ tên "Cấu hình" ngay trong trang Báo cáo**
+(`/admin/reports`, không phải `/admin/config`), và **commit phần đang chờ
+trước** (đã commit `84d2680`). *Lưu ý: câu trả lời về vị trí là gõ tay,
+hơi cụt — tôi hiểu là "tạo tab nhỏ 'Cấu hình' trong BÁO CÁO"; nếu hiểu sai
+thì chỉ cần dời card sang nơi khác.*
+
+**Thay đổi:**
+- `human_bot/retention_config.py` (mới): `RetentionConfig` với 3 trường
+  `screenshot_days=60`, `schedule_days=180`, `action_log_days=180`.
+  Đăng ký vào `runtime_config.py` (`EDITABLE_RETENTION_FIELDS`,
+  `get_retention_config()`, `get_retention_overrides()`,
+  `save_retention_overrides()`) — lưu ở khoá `retention` của
+  `runtime_config.json`, đúng khuôn các section khác.
+- `db.cleanup_old()`, `schedule_store.cleanup_old()`,
+  `screenshots.cleanup_old()`: đọc thời hạn từ `get_retention_config()`
+  (import trễ để khỏi vòng import), **bỏ hẳn** việc đọc biến môi trường và
+  các hằng `DEFAULT_*`/`db.get_retention_days()` vừa thêm sáng nay. Cả 3
+  giờ thống nhất: **giá trị ≤ 0 = không xoá gì** — cũng sửa luôn bẫy "0 =
+  xoá hết" của 2 hàm dọn file mà tôi đã nêu ở lượt rà soát trước.
+- `human_bot/admin.py`: thêm tab `"settings"` ("⚙️ Cấu hình") vào
+  `_REPORTS_TABS`; tab này bỏ bộ lọc tài khoản/thời gian và các ô KPI (chỉ
+  là cấu hình toàn cục, các thứ đó chỉ gây nhầm) và hiện card 3 ô số kèm
+  giải thích hậu quả từng loại (riêng dòng "Lịch sử hành động" cảnh báo rõ
+  đây là cái duy nhất xoá lịch sử báo cáo). Route mới
+  `POST /admin/reports/retention` lưu cả 3 giá trị cùng lúc; chấp nhận
+  0…3650, **từ chối** rỗng/không phải số nguyên/âm/quá lớn và **không lưu
+  gì cả** (kể cả ô hợp lệ đi kèm) — 1 giá trị gõ nhầm chính là loại đầu vào
+  có thể xoá lịch sử owner muốn giữ. Có nhánh htmx lẫn không-htmx. Mô tả
+  trang Báo cáo đọc thời hạn thật từ cấu hình (không còn số cố định).
+- `.env.example`: bỏ 3 khối `*_RETENTION_DAYS`, thay bằng 1 ghi chú trỏ tới
+  tab mới; `README.md` cập nhật câu tương ứng. `.env` thật của owner không
+  đặt biến nào nên không mất cấu hình gì.
+- Việc dọn vẫn chạy lúc khởi động + mỗi 24 giờ và **đọc lại cấu hình mỗi
+  lần chạy** → lưu trên UI có hiệu lực ở lần dọn kế tiếp, không cần khởi
+  động lại, và hạ thời hạn xuống thấp cũng không xoá gì ngay lập tức.
+- Bộ nhớ chống trùng bên B (`cache_retention_days`, 45 ngày) **không dời**:
+  đã có sẵn ở `/admin/config` → Đồng bộ dữ liệu; card mới có dòng trỏ tới.
+
+**Test:** viết lại 8 test cũ (dựa vào biến môi trường/hằng đã bỏ) sang cấu
+hình mới, dùng `isolated_runtime_config` (tránh đọc `runtime_config.json`
+thật); thêm test 0-nghĩa-là-không-xoá cho cả 3 hàm dọn, và 8+ test cho tab/
+route (form hiện đúng giá trị, tab bỏ bộ lọc/KPI, lưu đủ 3 giá trị, 0 hợp
+lệ, 6 kiểu giá trị xấu đều bị từ chối và không lưu gì, nhánh htmx).
+**396/396 test pass.** Chụp ảnh thật bằng Playwright (dữ liệu cô lập) để
+xác nhận giao diện; phát hiện và sửa luôn chữ "ngày" bị rớt dòng. Xác nhận
+`runtime_config.json`/`human_bot.db`/`accounts/` thật không bị đụng. Chưa
+commit.

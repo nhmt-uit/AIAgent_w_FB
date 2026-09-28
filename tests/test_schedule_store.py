@@ -300,10 +300,17 @@ def _put(directory, name: str, days_old: float):
     return f
 
 
-def test_cleanup_old_default_keeps_terminal_files_for_six_months(isolated_store, monkeypatch):
+def _set_retention(**kwargs):
+    from human_bot.runtime_config import save_retention_overrides
+    values = {"screenshot_days": 60, "schedule_days": 180, "action_log_days": 180}
+    values.update(kwargs)
+    save_retention_overrides(values)
+
+
+def test_cleanup_old_default_keeps_terminal_files_for_six_months(isolated_store, isolated_runtime_config):
     """Owner's choice 2026-09-28: default retention went 30 -> 180 days."""
-    monkeypatch.delenv("SCHEDULE_RETENTION_DAYS", raising=False)
-    assert isolated_store.DEFAULT_SCHEDULE_RETENTION_DAYS == 180
+    from human_bot.retention_config import RetentionConfig
+    assert RetentionConfig().schedule_days == 180
     keep = _put(isolated_store.POSTED_DIR, "keep.json", 100)  # >30 days, <180
     drop = _put(isolated_store.FAILED_DIR, "drop.json", 200)
     removed = isolated_store.cleanup_old()
@@ -312,26 +319,35 @@ def test_cleanup_old_default_keeps_terminal_files_for_six_months(isolated_store,
     assert removed["failed"] == 1 and removed["posted"] == 0
 
 
-def test_cleanup_old_env_override_still_wins(isolated_store, monkeypatch):
-    monkeypatch.setenv("SCHEDULE_RETENTION_DAYS", "10")
+def test_cleanup_old_uses_the_admin_configured_window(isolated_store, isolated_runtime_config):
+    _set_retention(schedule_days=10)
     old = _put(isolated_store.CANCELLED_DIR, "old.json", 20)
     isolated_store.cleanup_old()
     assert not old.exists()
 
 
-def test_cleanup_old_never_touches_pending(isolated_store, monkeypatch):
-    monkeypatch.delenv("SCHEDULE_RETENTION_DAYS", raising=False)
+def test_cleanup_old_zero_means_never_delete(isolated_store, isolated_runtime_config):
+    """Owner decision 2026-09-28: 0 = never auto-delete. Before that, 0 was
+    "delete everything older than now" — i.e. every terminal file."""
+    _set_retention(schedule_days=0)
+    ancient = _put(isolated_store.POSTED_DIR, "ancient.json", 900)
+    orphan = _put(isolated_store.MISSED_DIR, "x.result.txt", 900)
+    removed = isolated_store.cleanup_old()
+    assert ancient.exists() and orphan.exists()
+    assert sum(removed.values()) == 0
+
+
+def test_cleanup_old_never_touches_pending(isolated_store, isolated_runtime_config):
     pending = _put(isolated_store.PENDING_DIR, "pending.json", 400)
     isolated_store.cleanup_old()
     assert pending.exists()
 
 
-def test_cleanup_old_removes_only_old_orphaned_missed_result_txt(isolated_store, monkeypatch):
+def test_cleanup_old_removes_only_old_orphaned_missed_result_txt(isolated_store, isolated_runtime_config):
     """A missed/*.result.txt whose .json is gone (task was rescheduled/
     cancelled/fired — only the .json moves) is an orphan and gets pruned
     after the retention window; one whose .json is still present belongs
     to a live missed task and must survive no matter how old."""
-    monkeypatch.delenv("SCHEDULE_RETENTION_DAYS", raising=False)
     missed = isolated_store.MISSED_DIR
     old_orphan = _put(missed, "a.result.txt", 200)
     fresh_orphan = _put(missed, "b.result.txt", 5)
@@ -346,12 +362,21 @@ def test_cleanup_old_removes_only_old_orphaned_missed_result_txt(isolated_store,
     assert removed["missed_orphans"] == 1
 
 
-def test_screenshots_cleanup_default_is_sixty_days(tmp_path, monkeypatch):
+def test_screenshots_cleanup_default_is_sixty_days(tmp_path, isolated_runtime_config, monkeypatch):
     from human_bot import screenshots
+    from human_bot.retention_config import RetentionConfig
     monkeypatch.setattr(screenshots, "SCREENSHOTS_ROOT", tmp_path)
-    monkeypatch.delenv("SCREENSHOT_RETENTION_DAYS", raising=False)
-    assert screenshots.DEFAULT_SCREENSHOT_RETENTION_DAYS == 60
+    assert RetentionConfig().screenshot_days == 60
     keep = _put(tmp_path / "acc", "keep.png", 45)  # >30, <60
     drop = _put(tmp_path / "acc", "drop.png", 70)
     assert screenshots.cleanup_old() == 1
     assert keep.exists() and not drop.exists()
+
+
+def test_screenshots_cleanup_zero_means_never_delete(tmp_path, isolated_runtime_config, monkeypatch):
+    from human_bot import screenshots
+    monkeypatch.setattr(screenshots, "SCREENSHOTS_ROOT", tmp_path)
+    _set_retention(screenshot_days=0)
+    ancient = _put(tmp_path / "acc", "ancient.png", 900)
+    assert screenshots.cleanup_old() == 0
+    assert ancient.exists()

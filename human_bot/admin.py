@@ -120,6 +120,8 @@ from human_bot.runtime_config import (
     set_account_sync_enabled,
     get_sponsored_only_account_ids,
     set_account_sponsored_only,
+    get_retention_config,
+    save_retention_overrides,
     get_secrets_config,
     save_secrets_overrides,
     get_active_ai_provider_config,
@@ -4766,12 +4768,13 @@ _CANDIDATE_REPORT_PAGE_SIZE = 10
 # /admin/reports with no `tab` in the URL renders exactly what it always
 # has, same "don't change behavior for old bookmarks/links" reasoning as
 # _REPORTS_RECENT_PAGE_SIZE's default above.
-_REPORTS_TABS = ("tables", "jobs", "candidates", "recent")
+_REPORTS_TABS = ("tables", "jobs", "candidates", "recent", "settings")
 _REPORTS_TAB_LABELS = {
     "tables": "📊 Thống kê chi tiết",
     "jobs": "📮 Bài đăng",
     "candidates": "💬 Bình luận",
     "recent": "🕒 Hoạt động gần đây",
+    "settings": "⚙️ Cấu hình",
 }
 
 
@@ -5173,6 +5176,19 @@ def _reports_content_html(
     tab_nav_html = f"""
 <div style="display:flex; gap:20px; margin-bottom:18px; border-bottom:1px solid #e5e7eb;">
   {"".join(_reports_tab_link(k) for k in _REPORTS_TABS)}
+</div>"""
+
+    # The "Cấu hình" tab is global settings, not report data: the
+    # account/days filters and the KPI tiles (both scoped to those
+    # filters) would only confuse here, so skip them — and every query
+    # below — and render just the flash line, the tab bar and the form.
+    if tab == "settings":
+        return f"""<div id="reports-content">
+{flash}
+{err}
+{warn}
+{tab_nav_html}
+{_retention_settings_card_html()}
 </div>"""
 
     # --- KPI summary — glance-and-go health check before the detail tables ---
@@ -5685,6 +5701,76 @@ def _reports_content_html(
 </div>"""
 
 
+_RETENTION_FIELDS: list[tuple[str, str, str, str]] = [
+    ("screenshot_days", "Ảnh chụp bằng chứng",
+     "Ảnh chụp mỗi lần đăng/bình luận (thư mục screenshots/).",
+     "Hết hạn: dòng báo cáo mất link \"📷 Xem\", chữ và số liệu vẫn còn."),
+    ("schedule_days", "File lịch đăng đã xong / lỗi / huỷ",
+     "File lưu vết của task đã đăng, đã lỗi, đã huỷ (thư mục scheduled/), gồm cả ghi chú lý do quá hạn còn sót lại.",
+     "Hết hạn: chỉ mất file lưu vết trên đĩa, báo cáo không ảnh hưởng. Task đang chờ đăng không bao giờ bị xoá."),
+    ("action_log_days", "Lịch sử hành động (dữ liệu báo cáo)",
+     "Mỗi lần bot thử đăng/bình luận, thành công hay thất bại (human_bot.db).",
+     "⚠️ Hết hạn: dòng đó BIẾN MẤT khỏi mọi báo cáo ở trang này — đây là cái duy nhất xoá lịch sử báo cáo."),
+]
+
+_RETENTION_MAX_DAYS = 3650  # 10 years — keeps timedelta() far from overflow
+
+
+def _retention_settings_card_html() -> str:
+    cfg = get_retention_config()
+    rows = []
+    for field, title, what, effect in _RETENTION_FIELDS:
+        rows.append(f"""
+<div class="field-row">
+  <div class="field-label">{html.escape(title)}
+    <div class="field-key">{html.escape(what)}<br>{html.escape(effect)}</div>
+  </div>
+  <div class="field-input" style="display:flex; align-items:center; gap:8px;"><input type="number" name="{field}" min="0" max="{_RETENTION_MAX_DAYS}" step="1"
+       value="{getattr(cfg, field)}" required style="flex:1; min-width:0;"><span class="muted">ngày</span></div>
+</div>""")
+    return f"""
+<div class="card" id="retention-settings">
+  <h2>⚙️ Thời hạn lưu dữ liệu</h2>
+  <p class="page-desc">Sau bao nhiêu ngày thì từng loại dữ liệu cũ tự động bị xoá. Nhập <b>0</b> = không bao giờ tự xoá loại đó.
+  Việc dọn chạy lúc khởi động service rồi mỗi 24 giờ — thay đổi ở đây áp dụng từ lần dọn kế tiếp, không cần khởi động lại, và không xoá gì ngay lập tức.</p>
+  <form method="post" action="/admin/reports/retention"
+        hx-post="/admin/reports/retention" hx-target="#reports-content" hx-swap="outerHTML">
+    <div class="field-grid">{"".join(rows)}</div>
+    <p class="muted" style="margin-top:12px;">Bộ nhớ chống trùng tin bên B (mặc định 45 ngày) có cấu hình riêng ở <a href="/admin/config?tab=sync">Cấu hình → Đồng bộ dữ liệu</a>.</p>
+    <div class="form-actions"><button type="submit">Lưu thời hạn</button></div>
+  </form>
+</div>"""
+
+
+@router.post("/reports/retention")
+async def reports_retention_save(request: Request, _: None = Depends(_require_login)):
+    """Saves the 3 data-retention windows (human_bot/retention_config.py) —
+    all three together, since save_retention_overrides() replaces the whole
+    section. 0 is valid (= never auto-delete); blank/non-integer/negative/
+    absurdly large is rejected with nothing saved, rather than silently
+    coerced — a mistyped retention value is exactly the kind of input that
+    could delete history the owner meant to keep."""
+    form = await request.form()
+    values: dict[str, int] = {}
+    error: str | None = None
+    for field, title, _what, _effect in _RETENTION_FIELDS:
+        try:
+            n = int(str(form.get(field, "")).strip())
+        except ValueError:
+            error = f"\"{title}\": cần nhập một số nguyên."
+            break
+        if not 0 <= n <= _RETENTION_MAX_DAYS:
+            error = f"\"{title}\": phải từ 0 đến {_RETENTION_MAX_DAYS} ngày."
+            break
+        values[field] = n
+    if error is None:
+        save_retention_overrides(values)
+    posted = None if error else "Đã lưu thời hạn lưu dữ liệu — áp dụng từ lần dọn kế tiếp."
+    if _is_htmx(request):
+        return HTMLResponse(_reports_content_html(tab="settings", posted=posted, error=error))
+    return _reports_redirect(None, None, 1, tab="settings", posted=posted, error=error)
+
+
 @router.get("/screenshot")
 async def admin_screenshot(path: str, _: None = Depends(_require_login)):
     """Serves one evidence screenshot (human_bot/screenshots.py) from
@@ -5729,9 +5815,9 @@ async def reports_page(
 
 def _retention_note() -> str:
     """"180 ngày gần nhất" for /admin/reports' description — the real
-    action_log window (db.get_retention_days()), or a plain statement that
-    nothing is being pruned when .env disables it (<= 0)."""
-    days = db.get_retention_days()
+    action_log window (RetentionConfig.action_log_days), or a plain
+    statement that nothing is being pruned when it is set to 0."""
+    days = get_retention_config().action_log_days
     return f"{days} ngày gần nhất" if days > 0 else "toàn bộ thời gian (đang tắt tự xoá)"
 
 

@@ -233,13 +233,81 @@ def test_reschedule_confirm_rejects_a_successful_row(client, isolated_db):
     assert len(schedule_store.list_pending()) == 0
 
 
-def test_reports_page_states_the_real_retention_window(client, monkeypatch):
+def test_reports_page_states_the_real_retention_window(client):
     """The page used to claim stats cover "toàn bộ hành động" — no longer
     true once action_log is pruned; it must state the actual window."""
-    monkeypatch.delenv("ACTION_LOG_RETENTION_DAYS", raising=False)
-    resp = client.get("/admin/reports")
-    assert "180 ngày gần nhất" in resp.text
-    monkeypatch.setenv("ACTION_LOG_RETENTION_DAYS", "90")
+    from human_bot.runtime_config import save_retention_overrides
+    assert "180 ngày gần nhất" in client.get("/admin/reports").text
+    save_retention_overrides({"screenshot_days": 60, "schedule_days": 180, "action_log_days": 90})
     assert "90 ngày gần nhất" in client.get("/admin/reports").text
-    monkeypatch.setenv("ACTION_LOG_RETENTION_DAYS", "0")
+    save_retention_overrides({"screenshot_days": 60, "schedule_days": 180, "action_log_days": 0})
     assert "đang tắt tự xoá" in client.get("/admin/reports").text
+
+
+# --- "Cấu hình" tab: data retention (2026-09-28) ---
+
+def _retention_form(**overrides):
+    data = {"screenshot_days": "60", "schedule_days": "180", "action_log_days": "180"}
+    data.update({k: str(v) for k, v in overrides.items()})
+    return data
+
+
+def test_settings_tab_renders_the_form_with_current_values(client):
+    resp = client.get("/admin/reports?tab=settings")
+    assert resp.status_code == 200
+    assert 'action="/admin/reports/retention"' in resp.text
+    assert 'name="screenshot_days"' in resp.text and 'value="60"' in resp.text
+    assert 'name="schedule_days"' in resp.text and 'name="action_log_days"' in resp.text
+    assert "Cấu hình" in resp.text  # the tab label is in the nav
+
+
+def test_settings_tab_skips_the_report_filters_and_kpi_tiles(client):
+    """Global settings, not report data: the account/days filters and the
+    KPI tiles would only mislead there."""
+    text = client.get("/admin/reports?tab=settings").text
+    assert "reports-account-select" not in text
+    assert "Tổng số hành động" not in text
+
+
+def test_saving_retention_persists_all_three_values(client):
+    from human_bot.runtime_config import get_retention_config
+    resp = client.post("/admin/reports/retention", data=_retention_form(
+        screenshot_days=90, schedule_days=365, action_log_days=270,
+    ))
+    assert resp.status_code == 303
+    assert "tab=settings" in resp.headers["location"] and "posted=" in resp.headers["location"]
+    cfg = get_retention_config()
+    assert (cfg.screenshot_days, cfg.schedule_days, cfg.action_log_days) == (90, 365, 270)
+    # ...and the form shows what was saved.
+    assert 'value="270"' in client.get("/admin/reports?tab=settings").text
+
+
+def test_saving_retention_accepts_zero_as_never_delete(client):
+    from human_bot.runtime_config import get_retention_config
+    resp = client.post("/admin/reports/retention", data=_retention_form(action_log_days=0))
+    assert resp.status_code == 303 and "error=" not in resp.headers["location"]
+    assert get_retention_config().action_log_days == 0
+
+
+@pytest.mark.parametrize("bad", ["", "abc", "1.5", "-1", "3651", "999999999"])
+def test_saving_retention_rejects_bad_values_and_saves_nothing(client, bad):
+    from human_bot.runtime_config import get_retention_config
+    resp = client.post("/admin/reports/retention", data=_retention_form(
+        screenshot_days=90, schedule_days=bad,
+    ))
+    assert resp.status_code == 303
+    assert "error=" in resp.headers["location"]
+    cfg = get_retention_config()
+    # Nothing saved — not even the valid screenshot_days=90 sent alongside.
+    assert (cfg.screenshot_days, cfg.schedule_days, cfg.action_log_days) == (60, 180, 180)
+
+
+def test_saving_retention_via_htmx_returns_the_refreshed_tab(client):
+    resp = client.post(
+        "/admin/reports/retention", data=_retention_form(action_log_days=120),
+        headers={"hx-request": "true"},
+    )
+    assert resp.status_code == 200
+    assert 'id="reports-content"' in resp.text
+    assert 'value="120"' in resp.text
+    assert "Đã lưu thời hạn" in resp.text
