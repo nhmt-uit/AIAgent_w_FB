@@ -897,7 +897,8 @@ async def comment_on_group_post(
         # trả lời" — Facebook's placeholder varies with membership and
         # post type, so keyword matching survives the next variant too.
         # Send-button label for that non-member composer (icon-only arrow)
-        # is still UNVERIFIED, so the button regex below is unchanged.
+        # is "Đăng bình luận" (owner-confirmed 2026-09-28), already matched
+        # by the button regex below.
         comment_box = page.get_by_role(
             "textbox",
             name=re.compile("comment|answer|bình luận|câu trả lời", re.IGNORECASE),

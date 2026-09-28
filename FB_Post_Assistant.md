@@ -411,9 +411,9 @@ liệu thật hằng ngày và yêu cầu kiểm tra chéo lại mọi thứ tr�
   đúng thiết kế, owner chọn không bù.
 - **Lỗi bình luận của nhtu00 và cách sửa:** một bình luận báo lỗi "không tìm
   thấy ô nhập" vì tài khoản **chưa tham gia nhóm** đó nên Facebook hiện ô bình
-  luận với chữ khác ("Bình luận dưới tên…"). Đã bổ sung cụm chữ này. Còn một
-  điểm chưa chắc: nút gửi của kiểu ô này chỉ là biểu tượng nên chưa biết tên
-  chính xác — cần ghi hình thao tác thật để xác nhận.
+  luận với chữ khác ("Bình luận dưới tên…"). Đã bổ sung cụm chữ này. Nút gửi
+  của kiểu ô này tên "Đăng bình luận" (owner xác nhận), hệ thống đã nhận sẵn.
+  Bình luận lỗi cũ được bỏ qua, không chạy lại.
 - **Chia ứng viên ưu tiên tài khoản đã tham gia nhóm:** trước đây ứng viên
   được chia theo hạn mức còn lại, không quan tâm tài khoản đã vào nhóm chưa.
   Nay hệ thống ưu tiên tài khoản đã tham gia; nếu không có ai tham gia (hoặc

@@ -4776,10 +4776,9 @@ Việt cho nhóm đã tham gia).
 **Sửa A — `human_bot/actions.py` `comment_on_group_post`:** đổi
 regex textbox thành từ khoá ngắn `comment|answer|bình luận|câu trả lời` (tiếng Việt
 khớp bằng từ khoá như tiếng Anh, thay vì ghép từng cụm dài) (`comment` đã khớp sẵn "Write a public
-comment…" vì `IGNORECASE`). **Chưa xác minh trên Facebook thật:** nút gửi của
-composer này chỉ là biểu tượng mũi tên; regex nút `^(Post comment|Đăng bình
-luận)$` để nguyên vì đoán "Bình luận" có thể trùng nút "Bình luận" dưới bài
-và bấm nhầm — cần Codegen trên nhtu00 với nhóm chưa tham gia.
+comment…" vì `IGNORECASE`). Nút gửi của composer này (biểu tượng mũi tên) có tên "Đăng bình luận" — owner
+xác nhận 28/09, đã khớp sẵn regex nút `^(Post comment|Đăng bình luận)$`, không
+cần sửa (không mở rộng thành "Bình luận" vì trùng nút dưới bài).
 
 **Sửa B — `human_bot/data_sync.py`:** trước đây candidate chia cho tài khoản
 chỉ theo hạn mức bình luận còn lại (`_water_fill_distribute`), không xét đã
@@ -4796,5 +4795,5 @@ cho candidate; phần chia job không đổi.
 
 **Test:** 6 test mới trong `tests/test_data_sync.py` (`_group_key`, ưu tiên
 thành viên, rơi về khi không ai tham gia/thành viên hết chỗ, không vượt hạn
-mức, cân bằng 2 thành viên). **402/402 pass.** Task lỗi cũ vẫn nằm ở
-`failed/`; chưa commit.
+mức, cân bằng 2 thành viên). **402/402 pass.** Task lỗi cũ
+`20260928T034640Z_f507808e` để nguyên ở `failed/` (owner: bỏ qua).
