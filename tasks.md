@@ -96,6 +96,7 @@
 - [Chuyển 3 thời hạn lưu dữ liệu từ `.env` sang UI: tab "Cấu hình" ở trang Báo cáo](#chuyển-3-thời-hạn-lưu-dữ-liệu-từ-env-sang-ui-tab-cấu-hình-ở-trang-báo-cáo-2026-09-28)
 - [Lỗi bình luận nhóm của nhtu00 (nhóm chưa tham gia) + ưu tiên tài khoản đã tham gia khi chia candidate](#lỗi-bình-luận-nhóm-của-nhtu00-nhóm-chưa-tham-gia--ưu-tiên-tài-khoản-đã-tham-gia-khi-chia-candidate-2026-09-28)
 - [Sửa lỗi tab Quản lý MOD: danh sách nhảy lên trên header sau khi lưu](#sửa-lỗi-tab-quản-lý-mod-danh-sách-nhảy-lên-trên-header-sau-khi-lưu-2026-09-28)
+- [Bỏ tab "Trang chủ" trên thanh menu — bấm logo human_bot để về /admin](#bỏ-tab-trang-chủ-trên-thanh-menu--bấm-logo-human_bot-để-về-admin-2026-09-28)
 
 ---
 
@@ -4825,3 +4826,15 @@ không bị (target thẳng danh sách).
 và không vẽ lại modal; thêm lỗi vẽ lại modal, không trả danh sách; đổi mật
 khẩu đúng target + thành công/lỗi). **405/405 pass.** Chưa xác nhận trên
 trình duyệt thật — owner nên thử lại thêm/đổi mật khẩu MOD.
+
+
+## Bỏ tab "Trang chủ" trên thanh menu — bấm logo human_bot để về /admin (2026-09-28)
+
+Owner: tab "Trang chủ" không cần thiết; thay vào đó bấm chữ **human_bot** ở góc
+trái thanh menu sẽ đưa về `/admin` (trang chủ). `_layout()` trong
+`human_bot/admin.py`: bỏ link "Trang chủ" khỏi `nav.topnav`, đổi `div.brand`
+thành `<a href="/admin" class="brand" title="Trang chủ">` (CSS `.brand` thêm
+màu chữ đen và không gạch chân để trông y như cũ). Hệ quả cần biết: trang chủ
+không còn tab nào được tô sáng khi đang đứng ở đó (`nav_class('home')` không
+còn dùng). 1 test mới (logo là link tới /admin, menu không còn "Trang chủ").
+**406/406 pass.**

@@ -589,7 +589,8 @@ _PAGE_STYLE = """
      of the page's H1/content instead of pushing it down. min-h instead
      of h lets the sticky bar grow to fit however many rows it wraps to. */
   .topbar-inner { @apply max-w-6xl mx-auto flex items-center gap-4 sm:gap-7 min-h-[56px] py-2 flex-wrap; }
-  .brand { @apply font-bold text-base tracking-tight flex items-center gap-2; }
+  .brand { @apply font-bold text-base tracking-tight flex items-center gap-2 text-gray-900 no-underline; }
+  .brand:hover { @apply no-underline; }
   .brand-dot { @apply w-2.5 h-2.5 rounded-full bg-indigo-600 inline-block; }
   nav.topnav { @apply flex gap-1 flex-wrap; }
   nav.topnav a { @apply text-gray-500 text-sm font-medium px-3 py-1.5 rounded-md hover:bg-indigo-50 hover:text-indigo-600 hover:no-underline transition-colors; }
@@ -1757,9 +1758,8 @@ def _layout(body: str, active: str = "", *, current_user: dict[str, str] | None 
 <div id="modal-root"></div>
 <div class="topbar">
   <div class="topbar-inner">
-    <div class="brand"><span class="brand-dot"></span> human_bot</div>
+    <a href="/admin" class="brand" title="Trang chủ"><span class="brand-dot"></span> human_bot</a>
     <nav class="topnav">
-      <a href="/admin" class="{nav_class('home')}">Trang chủ</a>
       <a href="/admin/accounts" class="{nav_class('accounts')}">Tài khoản</a>
       <a href="/admin/config" class="{nav_class('config')}">Cấu hình</a>
       <a href="/admin/post" class="{nav_class('post')}">Đăng bài</a>

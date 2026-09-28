@@ -177,6 +177,15 @@ def test_htmx_edit_password_targets_modal_root_and_returns_list_out_of_band(clie
     assert "mod-users-content" not in bad.text
 
 
+def test_brand_links_to_admin_home_and_nav_has_no_home_tab(client, monkeypatch):
+    monkeypatch.setenv("ADMIN_USERNAME", "boss")
+    monkeypatch.setenv("ADMIN_PASSWORD", "boss-pass")
+    _login(client, "boss", "boss-pass")
+    page = client.get("/admin/accounts").text
+    assert '<a href="/admin" class="brand"' in page
+    assert ">Trang chủ</a>" not in page
+
+
 def test_wrong_password_shows_generic_error_redirect(client, monkeypatch):
     monkeypatch.setenv("ADMIN_USERNAME", "boss")
     monkeypatch.setenv("ADMIN_PASSWORD", "boss-pass")

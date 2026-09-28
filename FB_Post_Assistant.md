@@ -424,6 +424,8 @@ liệu thật hằng ngày và yêu cầu kiểm tra chéo lại mọi thứ tr�
   nhầm vào khung cửa sổ nhỏ (modal) thay vì thay thế danh sách. Đã sửa; đồng
   thời sửa luôn lỗi tương tự ở nút "Đổi mật khẩu" (cửa sổ không tự đóng, và khi
   nhập sai thì đè lên danh sách). Cần owner thử lại trên trình duyệt.
+- **Menu:** bỏ tab "Trang chủ"; bấm chữ **human_bot** ở góc trái để về trang chủ
+  `/admin`.
 
 ---
 
