@@ -45,6 +45,7 @@ from __future__ import annotations
 import json
 import os
 import random
+import re
 import tempfile
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
@@ -647,6 +648,52 @@ def _water_fill_distribute(items: list, capacities: dict[str, int]) -> tuple[dic
     return assignment, leftover
 
 
+def _group_key(url: str | None) -> str | None:
+    """The `<id-or-slug>` part of a facebook.com/groups/<key>/... URL, or
+    None if `url` isn't a group URL. Joined groups are stored as
+    `.../groups/<key>` and candidate permalinks as
+    `.../groups/<key>/permalink/<post>/`, so the key is what they share
+    (owner confirmed 2026-09-28: each group has exactly one URL form in
+    /admin/groups, no slug/numeric aliasing to reconcile)."""
+    m = re.search(r"/groups/([^/?#]+)", url or "")
+    return m.group(1) if m else None
+
+
+def _distribute_candidates_prefer_members(
+    candidates: list[dict],
+    capacities: dict[str, int],
+    member_keys: dict[str, set[str]],
+) -> tuple[dict[str, list], list]:
+    """Assign each candidate to one account for its comment, PREFERRING an
+    account that already joined the candidate's group (owner decision
+    2026-09-28, after nhtu00 hit "Bình luận dưới tên…" — the composer of a
+    group it hadn't joined — and timed out; public groups can be commented
+    on without joining, so membership is a preference, never a filter).
+
+    Per candidate, in order: among accounts with room left, take those in
+    the group (`member_keys[aid]` holds each account's joined group keys);
+    if none has room/none joined, fall back to every account with room.
+    Within the chosen pool the account with the MOST remaining capacity
+    wins (ties → fewest assigned so far), which keeps the load spread
+    roughly like _water_fill_distribute() does. Never exceeds an account's
+    capacity; whatever finds no room anywhere is returned as leftover
+    (same "never drop, only delay" contract as _water_fill_distribute())."""
+    remaining = {aid: max(0, cap) for aid, cap in capacities.items()}
+    assignment: dict[str, list] = {aid: [] for aid in capacities}
+    leftover: list[dict] = []
+    for cand in candidates:
+        key = _group_key(cand.get("url"))
+        open_ids = [aid for aid, room in remaining.items() if room > 0]
+        pool = [aid for aid in open_ids if key and key in member_keys.get(aid, set())] or open_ids
+        if not pool:
+            leftover.append(cand)
+            continue
+        best = max(pool, key=lambda aid: (remaining[aid], -len(assignment[aid])))
+        assignment[best].append(cand)
+        remaining[best] -= 1
+    return assignment, leftover
+
+
 def _distribute_jobs_with_sponsored_priority(
     jobs: list[dict],
     job_capacities: dict[str, int],
@@ -1226,7 +1273,13 @@ async def sync_all(account_ids: list[str], cfg: DataSyncConfig | None = None) ->
         )
         for aid, acc in accounts.items()
     }
-    candidate_assignment, deferred_candidates = _water_fill_distribute(distributable_candidates, comment_capacities)
+    member_keys = {
+        aid: {k for k in (_group_key(g.url) for g in get_joined_groups(aid)) if k}
+        for aid in accounts
+    }
+    candidate_assignment, deferred_candidates = _distribute_candidates_prefer_members(
+        distributable_candidates, comment_capacities, member_keys,
+    )
 
     # --- Actually schedule each account's assigned share, using THAT
     # account's own joined groups / gap settings / existing day-so-far

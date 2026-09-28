@@ -94,6 +94,7 @@
 **28/09**
 - [Đổi thời hạn tự dọn: ảnh 60 ngày, JSON task 6 tháng + dọn file mồ côi](#đổi-thời-hạn-tự-dọn-ảnh-chụp-60-ngày-json-task-180-ngày-dọn-file-resulttxt-mồ-côi-ở-missed-2026-09-28)
 - [Chuyển 3 thời hạn lưu dữ liệu từ `.env` sang UI: tab "Cấu hình" ở trang Báo cáo](#chuyển-3-thời-hạn-lưu-dữ-liệu-từ-env-sang-ui-tab-cấu-hình-ở-trang-báo-cáo-2026-09-28)
+- [Lỗi bình luận nhóm của nhtu00 (nhóm chưa tham gia) + ưu tiên tài khoản đã tham gia khi chia candidate](#lỗi-bình-luận-nhóm-của-nhtu00-nhóm-chưa-tham-gia--ưu-tiên-tài-khoản-đã-tham-gia-khi-chia-candidate-2026-09-28)
 
 ---
 
@@ -4753,3 +4754,47 @@ lệ, 6 kiểu giá trị xấu đều bị từ chối và không lưu gì, nh�
 xác nhận giao diện; phát hiện và sửa luôn chữ "ngày" bị rớt dòng. Xác nhận
 `runtime_config.json`/`human_bot.db`/`accounts/` thật không bị đụng. Chưa
 commit.
+
+
+## Lỗi bình luận nhóm của nhtu00 (nhóm chưa tham gia) + ưu tiên tài khoản đã tham gia khi chia candidate (2026-09-28)
+
+**Kiểm tra sync 28/09 (chỉ đọc):** 14 job + 1 candidate từ bên B đều được lên
+lịch (41 task), sponsor xếp sớm nhất và chia đều 2/2 giữa 2 tài khoản, đúng
+hạn mức/giãn cách/giờ yên lặng, không vượt ngày 30/9. Job 675 (sponsor) và 703
+chỉ đăng 2 nhóm vì ngày đó `tu_iizuki` chỉ còn 2 slot (thiết kế "đăng vừa đủ
+chỗ"); owner quyết định không bù.
+
+**Lỗi:** task bình luận candidate 175 của nhtu00
+(`20260928T034640Z_f507808e`) timeout 30s ở `get_by_role("textbox", …)`.
+Ảnh chụp lúc lỗi: trang bài đã tải, ô bình luận hiện rõ nhưng placeholder là
+**"Bình luận dưới tên Nguyễn Tú"** và cạnh tên nhóm có nút **"Tham gia"** —
+nhtu00 chưa vào nhóm đó, Facebook hiện composer khác cho người chưa tham gia.
+Regex cũ (`comment|answer|Viết câu trả lời|Viết bình luận công khai`) không
+khớp. Đây là biến thể thứ 2 cùng bước với lỗi 17/09 (lần đó thêm 2 cụm tiếng
+Việt cho nhóm đã tham gia).
+
+**Sửa A — `human_bot/actions.py` `comment_on_group_post`:** đổi
+regex textbox thành từ khoá ngắn `comment|answer|bình luận|câu trả lời` (tiếng Việt
+khớp bằng từ khoá như tiếng Anh, thay vì ghép từng cụm dài) (`comment` đã khớp sẵn "Write a public
+comment…" vì `IGNORECASE`). **Chưa xác minh trên Facebook thật:** nút gửi của
+composer này chỉ là biểu tượng mũi tên; regex nút `^(Post comment|Đăng bình
+luận)$` để nguyên vì đoán "Bình luận" có thể trùng nút "Bình luận" dưới bài
+và bấm nhầm — cần Codegen trên nhtu00 với nhóm chưa tham gia.
+
+**Sửa B — `human_bot/data_sync.py`:** trước đây candidate chia cho tài khoản
+chỉ theo hạn mức bình luận còn lại (`_water_fill_distribute`), không xét đã
+tham gia nhóm chưa (68 task candidate cũ: nhtu00 nhận 8 task ở nhóm mình
+không tham gia). Thêm `_group_key(url)` (lấy phần `<id/slug>` sau `/groups/`;
+owner xác nhận mỗi nhóm chỉ có 1 dạng URL trong /admin/groups, không cần
+alias) và `_distribute_candidates_prefer_members()`: mỗi candidate ưu tiên
+tài khoản đã tham gia nhóm và còn hạn mức; nếu không có ai (hoặc người đó hết
+hạn mức) thì rơi về bất kỳ tài khoản nào còn chỗ, chọn người còn nhiều hạn mức
+nhất. **Chỉ là ưu tiên, không phải bộ lọc** — nhóm công khai bình luận được
+dù chưa tham gia (owner). Không vượt hạn mức; phần dư trả về `leftover` như
+cũ (hoãn, không mất). `sync_all()` gọi hàm mới thay `_water_fill_distribute`
+cho candidate; phần chia job không đổi.
+
+**Test:** 6 test mới trong `tests/test_data_sync.py` (`_group_key`, ưu tiên
+thành viên, rơi về khi không ai tham gia/thành viên hết chỗ, không vượt hạn
+mức, cân bằng 2 thành viên). **402/402 pass.** Task lỗi cũ vẫn nằm ở
+`failed/`; chưa commit.

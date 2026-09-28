@@ -404,6 +404,22 @@ liệu thật hằng ngày và yêu cầu kiểm tra chéo lại mọi thứ tr�
   task tự huỷ sau 30 ngày quá hạn có thể bị xoá luôn ngay hôm sau thay vì
   được giữ lại xem lịch sử; mốc 6 tháng mới đã giải quyết điểm này.
 
+- **Kiểm tra lần lấy bài từ bên B (28/09):** 14 tin + 1 ứng viên đều được xếp
+  lịch đúng: tin trả tiền (sponsor) được xếp sớm nhất và chia đều cho 2 tài
+  khoản, không vượt giới hạn/ngày, giờ giãn cách hợp lệ, không đăng vào giờ
+  yên lặng. Chỉ có 2 tin chỉ đăng được 2 nhóm thay vì 3 vì hôm đó hết chỗ —
+  đúng thiết kế, owner chọn không bù.
+- **Lỗi bình luận của nhtu00 và cách sửa:** một bình luận báo lỗi "không tìm
+  thấy ô nhập" vì tài khoản **chưa tham gia nhóm** đó nên Facebook hiện ô bình
+  luận với chữ khác ("Bình luận dưới tên…"). Đã bổ sung cụm chữ này. Còn một
+  điểm chưa chắc: nút gửi của kiểu ô này chỉ là biểu tượng nên chưa biết tên
+  chính xác — cần ghi hình thao tác thật để xác nhận.
+- **Chia ứng viên ưu tiên tài khoản đã tham gia nhóm:** trước đây ứng viên
+  được chia theo hạn mức còn lại, không quan tâm tài khoản đã vào nhóm chưa.
+  Nay hệ thống ưu tiên tài khoản đã tham gia; nếu không có ai tham gia (hoặc
+  người đó hết hạn mức) thì dùng tài khoản nào còn chỗ, vì nhóm công khai vẫn
+  bình luận được.
+
 ---
 
 # 5. Những quyết định quan trọng đã bàn kỹ với chủ dự án

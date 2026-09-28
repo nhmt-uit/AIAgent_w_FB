@@ -888,9 +888,19 @@ async def comment_on_group_post(
         # (icon-only send control), so a Q&A post will still fail at that
         # step; this only fixes the textbox-not-found timeout, not full
         # Q&A support.
+        # Simplified 2026-09-28 to bare keywords ("bình luận" / "câu trả
+        # lời", the Vietnamese counterparts of "comment" / "answer")
+        # instead of full phrases: nhtu00 hit "Bình luận dưới tên <name>"
+        # on a group post it had NOT joined (fail screenshot
+        # 20260928T034808988Z: "Tham gia" button next to the group name),
+        # a third wording after "Viết bình luận công khai" and "Viết câu
+        # trả lời" — Facebook's placeholder varies with membership and
+        # post type, so keyword matching survives the next variant too.
+        # Send-button label for that non-member composer (icon-only arrow)
+        # is still UNVERIFIED, so the button regex below is unchanged.
         comment_box = page.get_by_role(
             "textbox",
-            name=re.compile("comment|answer|Viết câu trả lời|Viết bình luận công khai", re.IGNORECASE),
+            name=re.compile("comment|answer|bình luận|câu trả lời", re.IGNORECASE),
         )
         await human_click(page, comment_box, mouse)
         await human_type(page, content, config=get_human_typing_config())

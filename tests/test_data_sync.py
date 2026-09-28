@@ -23,6 +23,8 @@ from human_bot.data_sync import (
     _overflow_days_remaining,
     _pick_groups_for_job,
     _seen_key,
+    _distribute_candidates_prefer_members,
+    _group_key,
     _water_fill_distribute,
     apply_quiet_hours,
     sweep_overdue_on_startup,
@@ -531,6 +533,61 @@ def test_distribute_jobs_no_sponsored_behaves_like_plain_water_fill():
     expected_assignment, expected_deferred = _water_fill_distribute(jobs, capacities)
     assert assignment == expected_assignment
     assert deferred == expected_deferred
+
+
+# --- candidate → account: prefer members of the group (2026-09-28) ---------
+
+def _cand(cid: str, group: str) -> dict:
+    return {"id": cid, "url": f"https://www.facebook.com/groups/{group}/permalink/{cid}/"}
+
+
+def test_group_key_extracts_slug_or_id_and_ignores_non_group_urls():
+    assert _group_key("https://www.facebook.com/groups/vieclamtimnguoi/permalink/1/") == "vieclamtimnguoi"
+    assert _group_key("https://www.facebook.com/groups/123456?x=1") == "123456"
+    assert _group_key("https://www.facebook.com/someone/posts/1") is None
+    assert _group_key(None) is None
+
+
+def test_prefer_members_candidate_goes_to_the_account_that_joined_the_group():
+    members = {"A": {"g1"}, "B": {"g2"}}
+    assignment, leftover = _distribute_candidates_prefer_members(
+        [_cand("1", "g1"), _cand("2", "g2")], {"A": 5, "B": 5}, members,
+    )
+    assert [c["id"] for c in assignment["A"]] == ["1"]
+    assert [c["id"] for c in assignment["B"]] == ["2"]
+    assert leftover == []
+
+
+def test_prefer_members_falls_back_to_any_account_when_nobody_joined():
+    assignment, leftover = _distribute_candidates_prefer_members(
+        [_cand("1", "unknown")], {"A": 1, "B": 3}, {"A": {"g1"}, "B": set()},
+    )
+    assert [c["id"] for c in assignment["B"]] == ["1"]  # most room wins
+    assert leftover == []
+
+
+def test_prefer_members_falls_back_when_the_member_has_no_capacity_left():
+    assignment, leftover = _distribute_candidates_prefer_members(
+        [_cand("1", "g1"), _cand("2", "g1")], {"A": 1, "B": 5}, {"A": {"g1"}, "B": set()},
+    )
+    assert [c["id"] for c in assignment["A"]] == ["1"]
+    assert [c["id"] for c in assignment["B"]] == ["2"]
+    assert leftover == []
+
+
+def test_prefer_members_never_exceeds_capacity_and_returns_the_rest_as_leftover():
+    assignment, leftover = _distribute_candidates_prefer_members(
+        [_cand(str(i), "g1") for i in range(4)], {"A": 1, "B": 1}, {"A": {"g1"}, "B": {"g1"}},
+    )
+    assert len(assignment["A"]) == 1 and len(assignment["B"]) == 1
+    assert len(leftover) == 2
+
+
+def test_prefer_members_balances_between_two_members():
+    assignment, _ = _distribute_candidates_prefer_members(
+        [_cand(str(i), "g1") for i in range(4)], {"A": 5, "B": 5}, {"A": {"g1"}, "B": {"g1"}},
+    )
+    assert len(assignment["A"]) == 2 and len(assignment["B"]) == 2
 
 
 # --- _pick_groups_for_job (fair round-robin + light random pick, 2026-09-15) -
