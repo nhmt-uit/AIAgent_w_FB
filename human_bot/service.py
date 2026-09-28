@@ -51,7 +51,7 @@ import sys  # noqa: E402
 from urllib.parse import quote  # noqa: E402
 from datetime import datetime, timezone  # noqa: E402
 
-from human_bot import data_sync, schedule_store, screenshots  # noqa: E402
+from human_bot import data_sync, db, schedule_store, screenshots  # noqa: E402
 from human_bot.admin import NotLoggedIn, router as admin_router  # noqa: E402
 from human_bot.agent import TaskRequest, run_task  # noqa: E402
 from human_bot.browser_pool import close_all, warm_up  # noqa: E402
@@ -182,8 +182,10 @@ async def _schedule_cleanup_loop() -> None:
     doesn't grow without bound as the schedule gets busier over time.
     Runs once at startup, then once a day — this is disk housekeeping,
     not something that needs a tight interval. Reporting history lives in
-    human_bot.db regardless (human_bot/db.py), so this never loses
-    anything /admin/reports can show.
+    human_bot.db (human_bot/db.py), untouched by the file cleanups above —
+    but since 2026-09-28 the same loop also prunes action_log rows older
+    than its own 180-day window (db.cleanup_old(), owner's explicit
+    choice), which DOES drop those rows from /admin/reports.
 
     Also runs schedule_store.cancel_stale_missed() (2026-09-24, owner
     request) — MISSED_DIR previously had no cleanup of its own at all
@@ -201,6 +203,12 @@ async def _schedule_cleanup_loop() -> None:
             schedule_store.cancel_stale_missed()
         except Exception:  # noqa: BLE001 - a cleanup failure must not take down posting
             logger.exception("schedule_store.cancel_stale_missed failed")
+        try:
+            # 2026-09-28: also prunes human_bot.db's action_log beyond its
+            # (180-day default) retention window — see db.cleanup_old().
+            db.cleanup_old()
+        except Exception:  # noqa: BLE001 - a cleanup failure must not take down posting
+            logger.exception("db.cleanup_old failed")
         await asyncio.sleep(SCHEDULE_CLEANUP_INTERVAL_SECONDS)
 
 

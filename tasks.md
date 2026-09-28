@@ -4639,3 +4639,64 @@ mặc định; `pending/` không bao giờ bị đụng; dọn đúng `.result.t
 cũ, giữ mồ côi mới và giữ `.result.txt` của task còn sống; ảnh chụp mặc
 định 60 ngày. **378/378 test pass.** Dữ liệu thật (`scheduled/`,
 `screenshots/`) xác nhận không bị đụng. Chưa commit.
+
+### Bổ sung cùng ngày: `human_bot.db` cũng giữ 6 tháng rồi xoá (2026-09-28)
+
+Owner được hỏi về mục "dọn `human_bot.db`" (tôi đề xuất bỏ vì file chỉ
+176 KB / 175 dòng, ~8 dòng/ngày) và **chốt ngược lại: cũng lưu 6 tháng,
+cũ hơn thì bỏ**. Làm theo đúng ý, có nêu rõ đánh đổi trước khi chốt: đây
+là cơ chế dọn DUY NHẤT xoá **lịch sử báo cáo** chứ không chỉ file bằng
+chứng — mọi thứ trong `/admin/reports` (thống kê, theo từng lần đăng/
+bình luận, trạng thái "Đã đăng lại") đọc từ bảng `action_log`, nên dòng
+cũ hơn 180 ngày sẽ biến mất khỏi mọi báo cáo.
+
+- `human_bot/db.py`: thêm `cleanup_old(retention_days=None)` +
+  `DEFAULT_ACTION_LOG_RETENTION_DAYS = 180`; đọc `ACTION_LOG_RETENTION_DAYS`
+  từ `.env` nếu có (ghi vào `.env.example`). `DELETE FROM action_log WHERE
+  created_at < <cutoff>` — `created_at` luôn là chuỗi ISO 8601 UTC nên so
+  sánh chuỗi là đúng (cùng quy ước `_base_where()` đang dùng cho bộ lọc
+  ngày của báo cáo).
+- `human_bot/service.py`: gọi `db.cleanup_old()` trong vòng dọn hằng ngày
+  sẵn có (`_schedule_cleanup_loop`, lúc khởi động + mỗi 24 giờ), có
+  `try/except` như các bước dọn khác; sửa lại docstring của vòng lặp vì
+  câu cũ "không bao giờ mất lịch sử báo cáo" không còn đúng.
+- **Kiểm tra trước khi làm:** ngoài báo cáo, không có gì đọc `action_log`
+  (`agent.py` chỉ ghi) → không ảnh hưởng lên lịch/giới hạn tốc độ/chống
+  trùng. Tác dụng phụ duy nhất: 1 tin có nhiều dòng theo nhóm (đăng cách
+  nhau vài ngày) mà nằm đúng vắt qua mốc cắt thì báo cáo có thể hiện thiếu
+  vài nhóm.
+- Không cần `VACUUM` ở kích thước này (SQLite tái dùng trang trống).
+
+**Test mới** (`tests/test_db.py`, +3): mặc định giữ dòng 170 ngày tuổi/
+xoá dòng 190 và 400 ngày tuổi; biến môi trường thắng mặc định; bảng rỗng
+không lỗi. Chạy thử **chỉ đọc** trên `human_bot.db` thật: 0/175 dòng cũ
+hơn 180 ngày → lần chạy đầu tiên chưa xoá gì.
+
+**Rà soát kỹ trước khi commit (owner yêu cầu) — phát hiện 2 vấn đề thật
+trong phần vừa làm, đã sửa:**
+
+1. **Rủi ro xoá sạch dữ liệu:** `ACTION_LOG_RETENTION_DAYS=0` (nhiều người
+   hiểu là "tắt dọn") làm mốc cắt = "ngay bây giờ" nên `DELETE` xoá **toàn
+   bộ bảng**, kể cả dòng vừa ghi vài giây trước — tái hiện được trên DB tạm
+   (1 dòng → 0 dòng). **Sửa**: giá trị ≤ 0 nghĩa là "giữ hết", `cleanup_old()`
+   trả 0 và không xoá gì. Tách `get_retention_days()` dùng chung.
+   *Ghi chú (có từ trước, chưa sửa):* `SCHEDULE_RETENTION_DAYS=0` và
+   `SCREENSHOT_RETENTION_DAYS=0` cũng có hành vi "xoá hết" tương tự — nhẹ
+   hơn vì chỉ là file bằng chứng, nhưng cùng kiểu bẫy; để hỏi owner có muốn
+   áp cùng cách bảo vệ không.
+2. **Trang `/admin/reports` nói sai sự thật:** mô tả trang ghi "Thống kê từ
+   toàn bộ hành động..." và bộ lọc ghi "Tất cả thời gian", trong khi giờ
+   chỉ còn 6 tháng gần nhất. **Sửa**: mô tả nay ghi đúng khoảng đang lưu (đọc
+   từ cấu hình thật, nên nếu đổi `ACTION_LOG_RETENTION_DAYS` thì trang tự
+   khớp; nếu tắt thì ghi "đang tắt tự xoá"); nhãn bộ lọc đổi thành "Tất cả
+   dữ liệu đang lưu".
+
+Kiểm tra thêm, không có vấn đề: 175/175 dòng `created_at` thật đều cùng
+định dạng ISO `+00:00`, cột `NOT NULL` → so sánh chuỗi an toàn; `ensure_dirs()`
+đã tạo `missed/` nên quét file mồ côi không lỗi; không trùng tên `db` trong
+`service.py`; ngoài báo cáo không có gì đọc `action_log`.
+
+**Test mới thêm ở đợt rà soát** (+3): ≤0 không xoá gì (kể cả qua biến môi
+trường), `get_retention_days()` đọc env/mặc định/rỗng, trang báo cáo hiển
+thị đúng khoảng lưu (180/90/tắt). **384/384 test pass.** Chưa commit.
+

@@ -374,12 +374,24 @@ liệu thật hằng ngày và yêu cầu kiểm tra chéo lại mọi thứ tr�
   lịch chỉ ~8 MB sau 6 tháng — đều rất nhẹ. Bảng thời hạn hiện tại: log dịch
   vụ tự xoay vòng (tối đa ~30 MB); ảnh 60 ngày; file lịch 6 tháng; bộ nhớ
   chống trùng bên B 45 ngày; task quá hạn > 30 ngày tự huỷ; dữ liệu báo cáo
-  (`human_bot.db`) và bộ nhớ "đã nhắn ứng viên" không tự xoá.
+  (`human_bot.db`) giữ 6 tháng (xem mục ngay dưới); chỉ bộ nhớ "đã nhắn ứng
+  viên" là không tự xoá (cố ý, để không nhắn trùng).
 - **Đọc code phát hiện và sửa luôn 1 chỗ rò rỉ nhỏ:** khi 1 task quá hạn được
   xử lý xong, file ghi chú lý do quá hạn của nó ở lại mãi trong thư mục quá
   hạn mà không ai dọn (đã tích tụ 83 file). Nay được dọn cùng thời hạn 6
   tháng (chỉ dọn file ghi chú "mồ côi", không đụng file của task còn đang chờ
   duyệt).
+- **Dữ liệu báo cáo cũng giữ 6 tháng rồi xoá** (owner chốt sau khi được cảnh
+  báo rõ đánh đổi): các dòng lịch sử cũ hơn 180 ngày sẽ tự biến mất khỏi mọi
+  báo cáo ở trang quản trị (thống kê, theo từng lần đăng/bình luận). Đây là
+  việc dọn duy nhất xoá lịch sử báo cáo chứ không chỉ file bằng chứng. Kiểm
+  tra trước: ngoài trang báo cáo không có gì đọc dữ liệu này, nên không ảnh
+  hưởng việc lên lịch hay giới hạn tốc độ. Lần chạy đầu chưa xoá gì (dữ liệu
+  hiện chỉ mới 3 tuần).
+  Khi rà soát lại trước khi lưu còn sửa 2 điểm: (1) đặt thời hạn lưu = 0 trong
+  cấu hình lẽ ra sẽ xoá sạch toàn bộ báo cáo — nay 0 nghĩa là "tắt tự xoá,
+  giữ hết"; (2) trang báo cáo trước đó ghi "toàn bộ hành động" — nay ghi đúng
+  khoảng thời gian đang lưu.
 - **Rủi ro phát hiện qua đọc code (chưa xảy ra thật):** với mốc cũ 30 ngày,
   task tự huỷ sau 30 ngày quá hạn có thể bị xoá luôn ngay hôm sau thay vì
   được giữ lại xem lịch sử; mốc 6 tháng mới đã giải quyết điểm này.
@@ -531,10 +543,9 @@ Một vài lựa chọn thiết kế đáng chú ý, được cân nhắc kỹ c
   luôn cho chắc. Đã sửa xong, đồng bộ với bản kia, test tự động xác nhận đúng.
 - **[ĐÃ LÀM, 2026-09-25]** Owner đã tự tay thử trang đăng nhập mới trên trình
   duyệt thật, xác nhận ổn.
-- Cơ sở dữ liệu báo cáo (`human_bot.db`) chưa có cơ chế dọn định kỳ. Đo thật
-  ngày 28/9: chỉ 176 KB / 175 dòng sau 3 tuần (~8 dòng/ngày → cỡ 10-20 MB/năm
-  dù nhiều tài khoản hơn) nên chưa cần; dọn sẽ làm mất lịch sử báo cáo. Đề
-  xuất chỉ xem lại nếu file vượt ~100 MB (chờ owner xác nhận bỏ hẳn mục này).
+- **[ĐÃ LÀM, 2026-09-28]** Cơ sở dữ liệu báo cáo (`human_bot.db`) giờ tự dọn:
+  giữ 6 tháng, cũ hơn thì xoá (theo yêu cầu owner, dù file hiện chỉ 176 KB —
+  quyết định về giới hạn lịch sử chứ không vì dung lượng).
 - **[ĐÃ QUYẾT ĐỊNH, 2026-09-28: giữ nguyên]** Nút "Chọn tất cả" ở tab "Task quá
   hạn" chỉ chọn được task đang hiển thị trên trang, không phải toàn bộ kết quả
   đang lọc qua nhiều trang — owner chốt giữ nguyên như hiện tại.

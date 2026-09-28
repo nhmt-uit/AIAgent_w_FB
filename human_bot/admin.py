@@ -4739,7 +4739,7 @@ def _screenshot_link_html(path: str | None) -> str:
 
 
 _REPORTS_DAYS_LABELS: dict[str, str] = {
-    "": "Tất cả thời gian",
+    "": "Tất cả dữ liệu đang lưu",
     "7": "7 ngày qua",
     "30": "30 ngày qua",
     "90": "90 ngày qua",
@@ -5722,9 +5722,17 @@ async def reports_page(
         return content
     return _layout(f"""
 <h1>Báo cáo</h1>
-<p class="page-desc">Thống kê từ toàn bộ hành động human_bot đã thử thực hiện (thành công lẫn thất bại) — ghi tự động mỗi lần qua human_bot/agent.py's run_task(), không phân biệt đăng thủ công, từ hàng đợi, đặt lịch, hay tự động từ bộ đồng bộ bên B.</p>
+<p class="page-desc">Thống kê từ các hành động human_bot đã thử thực hiện trong {_retention_note()} (thành công lẫn thất bại; cũ hơn tự xoá) — ghi tự động mỗi lần qua human_bot/agent.py's run_task(), không phân biệt đăng thủ công, từ hàng đợi, đặt lịch, hay tự động từ bộ đồng bộ bên B.</p>
 {content}
 """, active="reports", current_user=_build_current_user(request))
+
+
+def _retention_note() -> str:
+    """"180 ngày gần nhất" for /admin/reports' description — the real
+    action_log window (db.get_retention_days()), or a plain statement that
+    nothing is being pruned when .env disables it (<= 0)."""
+    days = db.get_retention_days()
+    return f"{days} ngày gần nhất" if days > 0 else "toàn bộ thời gian (đang tắt tự xoá)"
 
 
 def _reports_redirect(account_id: str | None, days: str | None, page: int, **params) -> RedirectResponse:

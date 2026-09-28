@@ -231,3 +231,15 @@ def test_reschedule_confirm_rejects_a_successful_row(client, isolated_db):
     assert resp.status_code == 200
     assert "Bản ghi này không thể lên lịch lại" in resp.text
     assert len(schedule_store.list_pending()) == 0
+
+
+def test_reports_page_states_the_real_retention_window(client, monkeypatch):
+    """The page used to claim stats cover "toàn bộ hành động" — no longer
+    true once action_log is pruned; it must state the actual window."""
+    monkeypatch.delenv("ACTION_LOG_RETENTION_DAYS", raising=False)
+    resp = client.get("/admin/reports")
+    assert "180 ngày gần nhất" in resp.text
+    monkeypatch.setenv("ACTION_LOG_RETENTION_DAYS", "90")
+    assert "90 ngày gần nhất" in client.get("/admin/reports").text
+    monkeypatch.setenv("ACTION_LOG_RETENTION_DAYS", "0")
+    assert "đang tắt tự xoá" in client.get("/admin/reports").text
