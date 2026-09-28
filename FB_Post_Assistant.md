@@ -422,6 +422,14 @@ Một vài lựa chọn thiết kế đáng chú ý, được cân nhắc kỹ c
   từ bên B), thay vì cần thao tác tay ở một số bước.
 - Cân nhắc thêm tính năng chọn nhóm đăng theo đúng chủ đề (VD tin ngành IT → nhóm
   về IT) thay vì đăng vào mọi nhóm đã tham gia.
+- **[Ý TƯỞNG MỚI, chưa làm, 2026-09-25]** 2 ý tưởng cho trang "Lịch đăng":
+  1. **Hoán đổi lịch đăng giữa 2 bài** — có nút để đổi chỗ giờ đăng giữa 2 bài
+     đã lên lịch (bài A nhận giờ của bài B và ngược lại), thay vì phải sửa tay
+     từng bài.
+  2. **Khi "Đặt lịch"/"Lên lịch lại" cho 1 task quá hạn, cho chọn "mượn" giờ
+     của 1 bài đã lên lịch khác** — task quá hạn nhận đúng giờ của bài đó, còn
+     bài bị mượn giờ sẽ được hệ thống **tự động tìm giờ trống mới** để dời sang
+     (không cần tự chọn tay giờ mới cho bài bị dời).
 
 **Từ đợt rà soát tổng thể (2026-09-24), chưa làm — xếp theo mức độ ưu tiên:**
 

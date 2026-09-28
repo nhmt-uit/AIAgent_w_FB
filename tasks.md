@@ -4573,3 +4573,24 @@ rõ ràng, cần hỏi owner xác nhận ý đồ trước khi kết luận "đ�
 
 **Kết quả**: 373/373 test pass (số lượng test không đổi, chỉ đổi nội
 dung 1 test). Đã commit (`9f76fe1`) và push.
+
+## Ý tưởng mới cho trang "Lịch đăng" — ghi nhận, chưa làm (2026-09-25)
+
+Owner nêu 2 ý tưởng, đã xác nhận lại đúng ý qua hỏi đáp trước khi ghi
+(chưa lên kế hoạch/chưa code gì):
+
+1. **Hoán đổi lịch đăng giữa 2 bài** (`/admin/schedule`, tab "Chờ đăng"):
+   thêm 1 thao tác đổi chỗ `scheduled_at` giữa 2 task đang chờ đăng — task
+   A nhận giờ của task B và ngược lại, trong 1 lần bấm thay vì phải sửa
+   tay từng cái (2 lần "Đặt lịch" riêng).
+2. **"Mượn giờ" của 1 bài đã lên lịch khi Đặt lịch/Lên lịch lại cho task
+   quá hạn**: ở form "📅 Đặt lịch"/"🔄 Lên lịch lại" của tab "Task quá
+   hạn", cho phép chọn thẳng 1 task đang có sẵn trong "Chờ đăng" làm mốc
+   giờ, thay vì tự gõ/chọn giờ mới — task quá hạn nhận đúng
+   `scheduled_at` của task được chọn, còn task bị "mượn giờ" đó được hệ
+   thống **tự động tìm giờ trống mới** (tái dùng đúng
+   `_suggest_reschedule_at()` đã có sẵn cho chính nó, thay vì phải tự
+   tay chọn) để dời sang.
+
+Cả 2 chưa rõ chi tiết UI/UX (nút bấm ở đâu, xác nhận thế nào) — cần bàn
+thêm với owner trước khi lên kế hoạch code thật.
