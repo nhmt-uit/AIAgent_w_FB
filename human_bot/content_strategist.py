@@ -316,6 +316,56 @@ def _join_list_or_str(value: Any) -> str:
     return str(value) if value else ""
 
 
+# Side B sometimes sends a literal placeholder string (e.g. "unknown")
+# for a field instead of omitting it or sending null — confirmed on both
+# attributes.jlpt and attributes.visaType in real synced jobs. Every
+# downstream field check here is a bare truthy check (`if jlpt:`), so
+# without this, the placeholder string passes through unchanged and gets
+# printed verbatim into a live Facebook post ("Yêu cầu JLPT: unknown").
+_SENTINEL_STRINGS = {"unknown", "n/a", "na", "none", "null", ""}
+
+
+def _clean_sentinel(value: Any) -> Any:
+    """Recursive so a sentinel buried inside a nested dict (e.g.
+    attributes.salary.currency == "unknown") is caught too — not just a
+    bare top-level string/list. `_salary_line()` does `salary.get(
+    "currency") or "JPY"`, which only guards against falsy values, so
+    without recursing here a sentinel string one level down would print
+    verbatim ("Lương: khoảng 20 UNKNOWN/tháng") the same way jlpt/visaType
+    used to."""
+    if isinstance(value, str):
+        return None if value.strip().lower() in _SENTINEL_STRINGS else value
+    if isinstance(value, list):
+        cleaned = [v for v in value if not (isinstance(v, str) and v.strip().lower() in _SENTINEL_STRINGS)]
+        return cleaned or None
+    if isinstance(value, dict):
+        return {k: _clean_sentinel(v) for k, v in value.items()}
+    return value
+
+
+def sanitize_job_attributes(attrs: dict) -> dict:
+    """Replace side-B sentinel placeholder strings with None so callers'
+    existing `if attrs.get(x):` checks correctly treat them as absent.
+    Call this ONCE, as early as possible (right after fetching jobs from
+    side B) — everything downstream (template_variants(), the job_data
+    subset stashed on a ScheduledTask, and _job_summary()'s AI prompt)
+    reads from the same attributes dict, so sanitizing later or in just
+    one of those call sites would leave the others exposed."""
+    return {k: _clean_sentinel(v) for k, v in attrs.items()}
+
+
+def sanitize_job(job: dict) -> dict:
+    """Same sentinel cleanup as sanitize_job_attributes(), but for the
+    WHOLE job record — also covers the top-level `title` field, which
+    sits outside `attributes` and would otherwise leak a literal
+    "unknown"/"n/a" straight into a post's header via
+    `_draft_job_post_placeholder()`'s `job.get("title") or
+    attrs.get("jobField")`. This is the function data_sync.py's sync_all()
+    should call on each fetched job, not sanitize_job_attributes()
+    directly."""
+    return {**job, "title": _clean_sentinel(job.get("title")), "attributes": sanitize_job_attributes(job.get("attributes") or {})}
+
+
 def _draft_job_post_placeholder(job: dict, variant_seed: int = 0) -> str:
     attrs = job.get("attributes") or {}
     opener = _JOB_POST_OPENERS[variant_seed % len(_JOB_POST_OPENERS)]

@@ -4970,3 +4970,123 @@ khôi phục lại bản lỗi tương ứng, rồi mới khôi phục bản s�
 Đã xác nhận qua trình duyệt thật (owner tự thử, phát hiện đúng cả 2 lỗi trên
 qua các câu hỏi truy tiếp) — chưa thử lại bản đã sửa lần 2 trên trình duyệt.
 Chưa commit.
+
+## Lọc dữ liệu job từ bên B: giá trị "unknown" lọt vào bài đăng thật + job thiếu nội dung vẫn được lên lịch (2026-09-29/30)
+
+Phát hiện khi owner rà lại các task đang `pending`: 3 task thật cho thấy
+2 lỗ hổng riêng biệt ở khâu `human_bot/data_sync.py` → `content_strategist.py`
+chuyển dữ liệu thô từ bên B (`GET /api/jobs`) thành bài đăng Facebook.
+
+**Lỗi 1 — giá trị sentinel `"unknown"` in thẳng vào bài đăng thật.** Bên B
+đôi khi gửi CHUỖI LITERAL `"unknown"` cho 1 field thay vì bỏ trống/`null`
+— xác nhận thật ở cả `attributes.jlpt` (task job 577, `20260929T224157Z_
+9cf9b077.json`, ra "Yêu cầu JLPT: unknown") và `attributes.visaType` (task
+job 776, `20260930T071035Z_d9beafd9.json`, ra "Visa: Unknown" — do
+`_visa_line()` fallback `.capitalize()` khi code không nằm trong
+`_VISA_TYPE_NAMES`). Code cũ chỉ check truthy (`if jlpt:`) nên chuỗi
+`"unknown"` (không rỗng) lọt qua y nguyên.
+
+**Lỗi 2 — job thiếu gần hết nội dung vẫn được lên lịch.** Candidate đã có
+`candidate_min_confidence` để lọc, nhưng job thì chưa có filter tương
+đương. Task job 703 (`20260929T045612Z_606e185c.json`, `confidence: 0.88`
+— khá cao) chỉ có mỗi field `confidence`, không title/company/location/
+salary/visa nào cả, vẫn qua hết pipeline và ra bài đăng gần như trống
+("vị trí đang tuyển" + "Thông tin visa/lương — nhắn tin thêm nha").
+
+**Owner quyết định (sau khi bàn hướng fix):**
+1. Sentinel-value: sanitize NGAY LÚC FETCH (1 điểm chốt duy nhất), không vá
+   riêng từng field.
+2. Job thiếu nội dung: **loại hẳn** (không lên lịch), nhưng phải **lưu lại
+   để xem báo cáo sau** — vì `_mark_seen()` cũ chỉ ghi `{kind, seen_at}`,
+   dữ liệu thô từ bên B mất vĩnh viễn sau đó.
+
+**Code:**
+- `content_strategist.py`: thêm `sanitize_job_attributes(attrs)` +
+  `_SENTINEL_STRINGS = {"unknown", "n/a", "na", "none", "null", ""}`
+  (so khớp không phân biệt hoa/thường, đã strip) — chuỗi khớp → `None`;
+  list chứa chuỗi khớp → lọc bỏ phần tử đó, rỗng hết thì → `None`; giá trị
+  khác (số, dict như `salary`) giữ nguyên.
+- `data_sync.py`: gọi `sanitize_job_attributes()` NGAY SAU khi fetch
+  `jobs` từ `/api/jobs` (dòng ~1158) — 1 điểm chốt duy nhất đủ cho CẢ 2
+  nơi tiêu thụ: `template_variants()` (lúc lên lịch) và `job_data` được
+  lưu vào `ScheduledTask` (đọc lại bởi `draft_single_post()`/`_job_summary()`
+  lúc AI redraft tại giờ đăng thật — xác nhận qua truy vết
+  `task.job_data` không fetch lại từ bên B).
+- `data_sync.py`: thêm `_missing_job_fields(job)` (cạnh `_is_expired()`,
+  cùng pattern) — bắt buộc có `title`/`jobField`, VÀ ít nhất 1 trong
+  (`company`, `location`, `salary`, `visaType`). Wire vào vòng lặp job ở
+  `sync_all()`, ngay sau check `_is_expired` — có `missing` thì log rồi
+  `_mark_seen()` + `continue`, giống hệt cách job hết hạn/candidate
+  confidence thấp đang bị loại vĩnh viễn (không retry lại).
+- `db.py`: thêm bảng `skipped_jobs` (KHÔNG dùng chung `action_log` vì bảng
+  đó bắt buộc `account_id NOT NULL`, còn job bị loại ở đây là loại TRƯỚC
+  khi chọn account, giống lý do candidate-confidence-skip cũng áp dụng
+  "một lần, từ đầu, không theo account") + hàm `log_skipped_job(job_id,
+  reason, missing_fields, job)` — lưu nguyên `title` + `attributes` (đã
+  sanitize) dạng JSON để sau này còn coi lại được, thay vì mất hẳn như
+  `_mark_seen()` cũ.
+- **Không sửa** `_MISSING_INFO_LABELS`/logic dòng "Thông tin visa/lương
+  — ..." — sau khi sanitize, `jlpt`/`visaType` tự thành `None`, check
+  `if jlpt:`/`if visa:` cũ đã tự động đúng: jlpt thiếu thì im lặng bỏ qua
+  (đúng ý quyết định cũ của owner, 2026-09-10, xem comment trên
+  `_MISSING_INFO_LABELS`), visaType thiếu thì rơi vào đúng dòng "Thông
+  tin visa/lương" có sẵn (visaType vốn đã là 1 trong 2 key của
+  `_MISSING_INFO_LABELS`).
+
+**Test:** `tests/test_content_strategist.py` (4 test mới cho
+`sanitize_job_attributes` — sentinel string, sentinel trong list, list
+toàn sentinel → `None`, giá trị thật giữ nguyên), `tests/test_data_sync.py`
+(5 test mới cho `_missing_job_fields` — dựng lại đúng 3 shape thật của job
+703/577/776 + 2 case biên chỉ có title/chỉ có details),
+`tests/test_db.py` (1 test round-trip cho `log_skipped_job`). Verify thủ
+công bằng cách dựng lại đúng 3 job thật (703/577/776) qua toàn bộ pipeline
+mới — kết quả: job 703 bị skip đúng (`missing: ['title', 'details']`),
+job 577 hết dòng "Yêu cầu JLPT: unknown" (im lặng bỏ qua), job 776 hết
+dòng "Visa: Unknown" (đổi đúng thành "Thông tin visa — nhắn mình để rõ
+hơn"). **435/435 test pass.** Chưa chạy qua trình duyệt thật/chưa restart
+service thật để xác nhận `skipped_jobs` được tạo trên `human_bot.db` thật
+(chỉ verify bằng DB tạm trong lúc code). Chưa commit.
+
+### Dò lại (owner yêu cầu "kiểm tra cẩn thận") — phát hiện 3 lỗi thật ngay trong bản vừa code, sửa lại (2026-09-30)
+
+Chạy `/code-review high` soát lại đúng phần vừa code ở trên, cả 3 phát
+hiện đều xác nhận thật (đọc code trực tiếp, không chỉ tin báo cáo) và cùng
+1 nhóm với bug gốc đang sửa — chỉ là chưa che hết:
+
+1. **`sanitize_job_attributes()` không đệ quy vào dict lồng bên trong**
+   (VD `attributes.salary`) — nếu bên B gửi `salary.currency = "unknown"`,
+   `_salary_line()` chỉ chặn giá trị falsy (`salary.get("currency") or
+   "JPY"`) nên chuỗi "unknown" vẫn lọt qua, in ra "Lương: khoảng 20
+   UNKNOWN/tháng" — đúng y hệt lớp lỗi đang sửa, chỉ sâu hơn 1 tầng.
+2. **Field `title` ở NGOÀI `attributes` không được sanitize** — code cũ
+   chỉ làm sạch `job["attributes"]`, còn `job["title"]` (nếu bên B lỡ gửi
+   "unknown"/"n/a") vẫn lọt thẳng vào tiêu đề bài đăng qua
+   `job.get("title") or attrs.get("jobField")`.
+3. **`_JOB_DETAIL_KEYS` (bộ lọc completeness) thiếu `jlpt`** — trong khi
+   `_draft_job_post_placeholder()` VẪN coi jlpt là nội dung thật (in dòng
+   "Yêu cầu JLPT: ..."). Hệ quả: 1 job có `title` + chỉ mỗi `jlpt` (không
+   company/location/salary/visa) đáng lẽ đăng được bình thường lại bị
+   liệt vào "thiếu nội dung" và bị loại oan.
+
+(Phát hiện thứ 4 — `log_skipped_job()` mở/đóng 1 connection SQLite riêng
+mỗi lần gọi thay vì gộp — xác nhận đúng nhưng **không sửa**: đây là đúng
+pattern mọi hàm khác trong `db.py` đang dùng sẵn (kiểm tra lại: tất cả ~19
+hàm đều mở connection riêng mỗi lần gọi), không phải chỗ lệch riêng của
+thay đổi này, và khối lượng job bị loại thực tế rất nhỏ.)
+
+**Sửa:**
+- `content_strategist.py`: gộp logic làm sạch vào 1 hàm đệ quy
+  `_clean_sentinel()` (tự gọi lại cho dict lồng bên trong) dùng chung cho
+  `sanitize_job_attributes()`. Thêm hàm mới `sanitize_job(job)` làm sạch
+  CẢ `title` lẫn `attributes` — đây mới là hàm `data_sync.py` cần gọi,
+  thay vì gọi thẳng `sanitize_job_attributes()`.
+- `data_sync.py`: đổi lệnh gọi sang `content_strategist.sanitize_job(j)`;
+  thêm `"jlpt"` vào `_JOB_DETAIL_KEYS`.
+- Verify lại đúng 3 job thật (703/577/776) — không có hồi quy (regression),
+  kết quả giống hệt lần verify trước. Thêm case mới: job có `title`+
+  `salary.currency` đều là "unknown" → sanitize đúng cả 2, ra bài đăng
+  bình thường; job chỉ có `title`+`jlpt` → không còn bị loại oan.
+
+**Test:** thêm 4 test (2 cho `sanitize_job()`/dict lồng ở
+`test_content_strategist.py`, 1 cho case jlpt-only ở `test_data_sync.py`).
+**439/439 pass.** Vẫn chưa chạy qua trình duyệt thật, chưa commit.

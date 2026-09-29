@@ -440,6 +440,37 @@ liệu thật hằng ngày và yêu cầu kiểm tra chéo lại mọi thứ tr�
   (2) modal xem trước báo 1 ngày, nhưng bấm xác nhận thì hệ thống lại đăng
   vào ngày khác — cả 2 đều cùng 1 gốc (quên tính bài quá hạn sắp chiếm chỗ),
   đã sửa cả 2 nơi và thêm test riêng cho từng trường hợp.
+- **Lọc dữ liệu tin tuyển dụng từ bên B trước khi đăng:** owner rà lại vài
+  task đang chờ đăng, phát hiện 2 vấn đề về chất lượng dữ liệu bên B gửi
+  sang, không phải lỗi code hiển thị:
+  1. Bên B thỉnh thoảng gửi chữ **"unknown"** cho 1 trường (thay vì để
+     trống) — hệ thống cũ không nhận ra đây là "chưa có thông tin" nên in
+     thẳng nguyên chữ "unknown" vào bài đăng thật (VD: "Yêu cầu JLPT:
+     unknown", "Visa: Unknown"). Nay hệ thống tự nhận diện và coi như chưa
+     có thông tin, bỏ qua dòng đó (hoặc thay bằng câu mời nhắn tin thêm,
+     đúng như khi trường đó trống thật sự).
+  2. Có tin tuyển dụng gần như không có thông tin gì (chỉ có điểm tin cậy
+     cao 0.88, không tên vị trí/công ty/địa điểm/lương/visa) nhưng vẫn
+     được tự động lên lịch, ra bài đăng gần như trống nội dung. Nay hệ
+     thống **loại hẳn** những tin kiểu này trước khi lên lịch — yêu cầu
+     tối thiểu phải có tên vị trí VÀ ít nhất 1 trong (công ty/địa điểm/
+     lương/visa) mới được đăng. Tin bị loại vẫn được **lưu lại đầy đủ
+     trong cơ sở dữ liệu báo cáo** (bảng riêng, không tự xoá theo lịch
+     dọn dẹp thông thường) để owner xem lại sau này nếu cần, chứ không
+     mất hẳn như cách hệ thống đang xử lý các tin bị bỏ qua khác.
+  Đã kiểm chứng lại đúng 3 tin thật gặp phải (job 703/577/776) qua bản sửa
+  mới, kết quả đúng như mong đợi. **435/435 test pass.** Chưa thử qua
+  trình duyệt/chưa chạy trên service thật, chưa commit.
+  **Owner yêu cầu dò lại cẩn thận** trước khi coi là xong — cho AI tự soát
+  lại chính bản vừa sửa, phát hiện thêm đúng 3 lỗ hổng thuộc cùng nhóm
+  lỗi, chưa được che hết ở lần sửa đầu: (a) nếu "unknown" nằm LỒNG bên
+  trong (VD `salary.currency`) thì vẫn lọt qua, ra "Lương: khoảng 20
+  UNKNOWN/tháng"; (b) chữ "unknown" ở ngay TÊN VỊ TRÍ (không nằm trong
+  phần thuộc tính) chưa được lọc; (c) tin chỉ có tên vị trí + yêu cầu JLPT
+  (không có công ty/địa điểm/lương/visa) đáng lẽ đăng bình thường được lại
+  bị liệt nhầm vào "thiếu nội dung" và bị loại oan. Đã sửa cả 3, kiểm tra
+  lại không ảnh hưởng gì tới 3 tin thật đã xác nhận trước đó. **439/439
+  test pass.**
 
 ---
 

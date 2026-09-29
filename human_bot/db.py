@@ -59,6 +59,24 @@ CREATE INDEX IF NOT EXISTS idx_action_log_target ON action_log(target_url);
 -- are ever grouped this way, candidates aren't), same left-to-right
 -- reasoning as idx_action_log_account_time above.
 CREATE INDEX IF NOT EXISTS idx_action_log_source ON action_log(source_kind, source_id, account_id);
+-- Jobs from side B that never got scheduled because they had too little
+-- content to draft a real post from (see data_sync.py's
+-- _missing_job_fields()) — separate from action_log since this happens
+-- BEFORE any account is even chosen (account-independent, same as the
+-- candidate confidence filter), so there's no real account_id to log
+-- against. The raw (sanitized) attributes are kept here since this is
+-- the last point the record is ever visible — data_sync.py's
+-- _mark_seen() itself only stores {kind, seen_at}.
+CREATE TABLE IF NOT EXISTS skipped_jobs (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    job_id         TEXT    NOT NULL,
+    reason         TEXT    NOT NULL,
+    missing_fields TEXT,
+    title          TEXT,
+    attributes     TEXT,
+    created_at     TEXT    NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_skipped_jobs_time ON skipped_jobs(created_at);
 """
 
 
@@ -189,6 +207,33 @@ def log_action(
                 json.dumps(job_data, ensure_ascii=False) if job_data else None,
                 retry_of_log_id,
                 created_at or datetime.now(timezone.utc).isoformat(),
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def log_skipped_job(job_id: str, *, reason: str, missing_fields: list[str], job: dict) -> None:
+    """Record a job that was filtered out before ever reaching
+    scheduling — see data_sync.py's _missing_job_fields()/sync_all() for
+    the caller. `job` is the raw (sanitized) side-B record; only its
+    title/attributes are persisted, same "small, no separate table to
+    join" reasoning as log_action()'s own job_data column."""
+    conn = _connect()
+    try:
+        conn.execute(
+            """
+            INSERT INTO skipped_jobs (job_id, reason, missing_fields, title, attributes, created_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                job_id,
+                reason,
+                json.dumps(missing_fields, ensure_ascii=False),
+                job.get("title"),
+                json.dumps(job.get("attributes") or {}, ensure_ascii=False),
+                datetime.now(timezone.utc).isoformat(),
             ),
         )
         conn.commit()

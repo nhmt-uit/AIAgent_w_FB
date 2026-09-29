@@ -258,3 +258,27 @@ def test_cleanup_old_non_positive_retention_disables_instead_of_wiping(isolated_
     _set_retention(action_log_days=0)
     assert isolated_db.cleanup_old() == 0
     assert _messages(isolated_db) == {"brand-new", "ancient"}
+
+
+# --- log_skipped_job (2026-09-29/30: jobs filtered out for incomplete
+# content are logged here since _mark_seen() itself only stores
+# {kind, seen_at} — this table is the only place the raw record survives) --
+
+def test_log_skipped_job_round_trip(isolated_db):
+    isolated_db.log_skipped_job(
+        "703",
+        reason="incomplete_data",
+        missing_fields=["title", "details"],
+        job={"title": None, "attributes": {"confidence": 0.88}},
+    )
+    conn = isolated_db._connect()
+    try:
+        row = conn.execute("SELECT * FROM skipped_jobs WHERE job_id = ?", ("703",)).fetchone()
+    finally:
+        conn.close()
+    assert row is not None
+    assert row["reason"] == "incomplete_data"
+    assert json.loads(row["missing_fields"]) == ["title", "details"]
+    assert row["title"] is None
+    assert json.loads(row["attributes"]) == {"confidence": 0.88}
+    assert row["created_at"]

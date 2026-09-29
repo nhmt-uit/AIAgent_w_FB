@@ -19,6 +19,7 @@ from human_bot.data_sync import (
     _is_expired,
     _last_scheduled_post_time,
     _max_jobs_over_window,
+    _missing_job_fields,
     _next_available_business_day,
     _overflow_days_remaining,
     _pick_groups_for_job,
@@ -73,6 +74,54 @@ def test_is_expired_future_deadline_not_yet_expired():
 def test_is_expired_exact_now_counts_as_expired():
     now = "2026-09-16T00:00:00+00:00"
     assert _is_expired(now, now) is True
+
+
+# --- _missing_job_fields (2026-09-29/30: jobs had no completeness filter —
+# unlike candidates' candidate_min_confidence — so a job with high
+# `confidence` but zero descriptive attributes still got scheduled and
+# produced an almost-empty post) ---------------------------------------
+
+def test_missing_job_fields_only_confidence_missing_both():
+    # Real shape: job id 703, confidence 0.88, no other attribute at all.
+    job = {"title": None, "attributes": {"confidence": 0.88}}
+    assert _missing_job_fields(job) == ["title", "details"]
+
+
+def test_missing_job_fields_jobfield_and_location_present_not_missing():
+    # Real shape: job id 577 — jobField + location, no company/salary/visa.
+    job = {"title": None, "attributes": {"jobField": ["IT Comtor"], "location": ["Đà Nẵng"], "confidence": 0.98}}
+    assert _missing_job_fields(job) == []
+
+
+def test_missing_job_fields_jobfield_and_salary_present_not_missing():
+    # Real shape: job id 776 — jobField + salary, visaType sanitized to None.
+    job = {
+        "title": None,
+        "attributes": {
+            "jobField": ["xây dựng"], "visaType": None,
+            "salary": {"min": 100000, "period": "month", "currency": "JPY"},
+        },
+    }
+    assert _missing_job_fields(job) == []
+
+
+def test_missing_job_fields_title_only_no_detail_missing_details():
+    job = {"title": "Kỹ sư cơ khí", "attributes": {}}
+    assert _missing_job_fields(job) == ["details"]
+
+
+def test_missing_job_fields_details_only_no_title_missing_title():
+    job = {"title": None, "attributes": {"company": "ABC Corp"}}
+    assert _missing_job_fields(job) == ["title"]
+
+
+def test_missing_job_fields_title_plus_jlpt_only_not_missing():
+    # jlpt IS rendered as real content by _draft_job_post_placeholder() —
+    # a job with only title+jlpt drafts into a valid post, so it must not
+    # be classified as "incomplete" just because _JOB_DETAIL_KEYS once
+    # excluded jlpt.
+    job = {"title": "Kỹ sư cơ khí", "attributes": {"jlpt": "N2"}}
+    assert _missing_job_fields(job) == []
 
 
 # --- _atomic_write_json / _cursor (2026-09-16 fix for a real incident: a

@@ -102,6 +102,60 @@ def test_join_list_or_str_falsy_returns_empty_string():
     assert cs._join_list_or_str([]) == ""
 
 
+# --- sanitize_job_attributes -------------------------------------------------
+
+def test_sanitize_job_attributes_strips_sentinel_strings_case_insensitive():
+    attrs = cs.sanitize_job_attributes({"jlpt": "unknown", "visaType": "Unknown", "company": "N/A"})
+    assert attrs == {"jlpt": None, "visaType": None, "company": None}
+
+
+def test_sanitize_job_attributes_strips_sentinel_from_list_leaves_real_entries():
+    attrs = cs.sanitize_job_attributes({"location": ["Đà Nẵng", "unknown"]})
+    assert attrs["location"] == ["Đà Nẵng"]
+
+
+def test_sanitize_job_attributes_all_sentinel_list_becomes_none():
+    attrs = cs.sanitize_job_attributes({"location": ["unknown", ""]})
+    assert attrs["location"] is None
+
+
+def test_sanitize_job_attributes_leaves_real_values_untouched():
+    attrs = cs.sanitize_job_attributes({
+        "visaType": "gijinkoku",
+        "location": ["Đà Nẵng"],
+        "salary": {"min": 100000, "period": "month", "currency": "JPY"},
+        "confidence": 0.98,
+    })
+    assert attrs["visaType"] == "gijinkoku"
+    assert attrs["location"] == ["Đà Nẵng"]
+    assert attrs["salary"] == {"min": 100000, "period": "month", "currency": "JPY"}
+    assert attrs["confidence"] == 0.98
+
+
+def test_sanitize_job_attributes_strips_sentinel_nested_inside_salary_dict():
+    # A sentinel one level down (e.g. salary.currency) must be caught too —
+    # _salary_line() only guards against FALSY currency (`or "JPY"`), so an
+    # un-sanitized "unknown" string would print verbatim ("khoảng 20
+    # UNKNOWN/tháng") the same way top-level jlpt/visaType used to.
+    attrs = cs.sanitize_job_attributes({"salary": {"min": 200000, "currency": "unknown", "period": "month"}})
+    assert attrs["salary"]["currency"] is None
+    assert attrs["salary"]["min"] == 200000
+
+
+# --- sanitize_job (whole record, incl. top-level `title`) --------------------
+
+def test_sanitize_job_strips_sentinel_title():
+    job = cs.sanitize_job({"title": "Unknown", "attributes": {}})
+    assert job["title"] is None
+
+
+def test_sanitize_job_leaves_real_title_and_sanitizes_attributes():
+    job = cs.sanitize_job({"title": "Kỹ sư cơ khí", "attributes": {"jlpt": "unknown", "location": ["Tokyo"]}})
+    assert job["title"] == "Kỹ sư cơ khí"
+    assert job["attributes"]["jlpt"] is None
+    assert job["attributes"]["location"] == ["Tokyo"]
+
+
 # --- _draft_job_post_placeholder --------------------------------------------
 
 def _job(**attrs) -> dict:

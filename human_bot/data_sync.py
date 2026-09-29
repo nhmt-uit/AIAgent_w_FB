@@ -53,7 +53,7 @@ from typing import Any
 
 import httpx
 
-from human_bot import content_strategist, daily_limits, schedule_store
+from human_bot import content_strategist, daily_limits, db, schedule_store
 from human_bot.config import AccountConfig, GroupRef, get_account
 from human_bot.data_sync_config import DataSyncConfig
 from human_bot.scheduling_config import SchedulingConfig
@@ -343,6 +343,29 @@ def _is_expired(expires_at: str | None, now_iso: str) -> bool:
     generates), same string-comparison approach sync_all() already uses
     for its own `latest_job_ts` cursor — no need for datetime parsing."""
     return bool(expires_at) and expires_at <= now_iso
+
+
+# A job needs a title AND at least one real descriptive attribute to draft
+# a post worth publishing — a high `confidence` score alone doesn't mean
+# side B sent anything usable (confirmed real: a job with confidence 0.88
+# and no other attribute at all). Must run on an already-sanitized job
+# (see content_strategist.sanitize_job()) so a sentinel "unknown" string
+# doesn't count as a real value here. Kept in sync with every field
+# _draft_job_post_placeholder() actually renders as content (including
+# jlpt) — a field missing here would make a job LOOK incomplete even
+# though it'd draft into a perfectly valid post.
+_JOB_DETAIL_KEYS = ("company", "location", "salary", "visaType", "jlpt")
+
+
+def _missing_job_fields(job: dict) -> list[str]:
+    """Empty list = job has enough content to draft a real post from."""
+    attrs = job.get("attributes") or {}
+    missing = []
+    if not (job.get("title") or attrs.get("jobField")):
+        missing.append("title")
+    if not any(attrs.get(k) for k in _JOB_DETAIL_KEYS):
+        missing.append("details")
+    return missing
 
 
 def _cursor(latest_ts: str | None, deferred_items: list[dict], kind: str, max_holdback_days: float) -> str | None:
@@ -1157,6 +1180,13 @@ async def sync_all(account_ids: list[str], cfg: DataSyncConfig | None = None) ->
 
             jobs = await _fetch_all_pages(client, "/api/jobs", jobs_params)
             candidates = await _fetch_all_pages(client, "/api/candidates", candidates_params)
+            # Sanitize sentinel placeholder strings (e.g. "unknown") ONCE,
+            # here, before anything else touches `jobs` — see
+            # content_strategist.sanitize_job()'s docstring for why this
+            # single early call site (covering both `title` and
+            # `attributes`) is sufficient for both the schedule-time
+            # template and the fire-time AI draft.
+            jobs = [content_strategist.sanitize_job(j) for j in jobs]
     except Exception as exc:
         for aid in account_ids:
             _record_sync_status(aid, {"last_run_at": now_iso, "status": "error", "error": str(exc)})
@@ -1188,6 +1218,19 @@ async def sync_all(account_ids: list[str], cfg: DataSyncConfig | None = None) ->
         # than deferred — re-fetching it every poll forever would be
         # pointless, it can only get MORE expired with time.
         if _is_expired(job.get("expires_at"), now_iso):
+            _mark_seen(jid, "job")
+            continue
+        # Not enough content to draft a real post from (see
+        # _missing_job_fields()'s docstring) — fully handled here (marked
+        # seen, same as an expired job) rather than deferred: side B
+        # re-scraping the same id later doesn't retroactively enrich this
+        # exact record, so retrying it every poll would be pointless. The
+        # raw record is logged to db.skipped_jobs first since this is the
+        # last point it's ever visible — _mark_seen() itself only stores
+        # {kind, seen_at}.
+        missing = _missing_job_fields(job)
+        if missing:
+            db.log_skipped_job(jid, reason="incomplete_data", missing_fields=missing, job=job)
             _mark_seen(jid, "job")
             continue
         new_jobs.append(job)
