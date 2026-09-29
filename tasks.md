@@ -98,6 +98,7 @@
 - [Sửa lỗi tab Quản lý MOD: danh sách nhảy lên trên header sau khi lưu](#sửa-lỗi-tab-quản-lý-mod-danh-sách-nhảy-lên-trên-header-sau-khi-lưu-2026-09-28)
 - [Bỏ tab "Trang chủ" trên thanh menu — bấm logo human_bot để về /admin](#bỏ-tab-trang-chủ-trên-thanh-menu--bấm-logo-human_bot-để-về-admin-2026-09-28)
 - [Đổi giờ đăng giữa 2 task đang chờ (pending-pending)](#đổi-giờ-đăng-giữa-2-task-đang-chờ-pending-pending-phần-1-của-ý-tưởng-hoán-đổi-lịch-2026-09-29)
+- [Đổi giờ đăng giai đoạn 2: task quá hạn "↩️ Mượn giờ" của task đang chờ](#đổi-giờ-đăng-giai-đoạn-2-task-quá-hạn--mượn-giờ-của-task-đang-chờ-2026-09-29)
 
 ---
 
@@ -4887,3 +4888,85 @@ không tồn tại đều không đổi gì). **415/415 pass.** Chưa xác nhậ
 duyệt thật (chỉ HTTP-level qua TestClient) — owner nên thử tay: mở tab "Chờ
 đăng", bấm "⇄ Đổi giờ" ở 1 task, chọn 1 task khác cùng tài khoản/loại hành
 động, xác nhận 2 giờ đã tráo đúng và modal tự đóng. Chưa commit.
+
+
+## Đổi giờ đăng giai đoạn 2: task quá hạn "↩️ Mượn giờ" của task đang chờ (2026-09-29)
+
+Giai đoạn 2 của ý tưởng "hoán đổi lịch đăng" (giai đoạn 1: [[Đổi giờ đăng giữa
+2 task đang chờ]] — pending↔pending). Đây KHÔNG phải hoán đổi 2 chiều: task
+quá hạn (A) **lấy** giờ của 1 task đang chờ (B), còn B bị dời sang **giờ mới
+do hệ thống tự tìm** — vì `scheduled_at` của A đã ở quá khứ, gán ngược lại
+cho B sẽ biến B thành quá hạn ngay. Owner xác nhận đúng ý này trước khi code
+(xem trao đổi 29/09).
+
+**Code (`human_bot/admin.py`):**
+- `_suggest_reschedule_at()` thêm tham số `exclude_task_id` (mặc định
+  `None`, không ảnh hưởng 2 nơi đang gọi hàm này) — khi tìm giờ mới cho
+  chính B (task sắp bị dời), phải loại trừ giờ CŨ của B ra khỏi phép đếm
+  "đã có bao nhiêu task đang chờ hôm đó / lần gần nhất là lúc nào", nếu
+  không hàm sẽ tự chặn giờ cũ của B như thể nó vẫn còn chiếm chỗ, gợi ý
+  giờ mới xa hơn cần thiết.
+- Nút **"↩️ Mượn giờ"** mới cạnh "🔄 Lên lịch lại" ở mỗi dòng tab "Task quá
+  hạn". `GET /admin/schedule/missed/borrow` mở modal, tái dùng nguyên
+  `_swap_candidates()` (giai đoạn 1) để liệt kê các task ĐANG CHỜ cùng tài
+  khoản + cùng bucket — với MỖI lựa chọn, tính trước bằng
+  `_suggest_reschedule_at(..., exclude_task_id=...)` và hiển thị luôn "→ nếu
+  chọn, bài này dời sang: …", để owner thấy hệ quả trước khi xác nhận
+  (giống tinh thần "xem trước" của "🔄 Lên lịch lại"). `POST
+  /admin/schedule/missed/borrow-confirm` thực hiện: kiểm tra lại cùng tài
+  khoản + cùng bucket tại server (không chỉ tin modal), **tính lại** giờ mới
+  cho B ngay lúc xác nhận (không dùng giá trị đã xem trước, phòng có thay
+  đổi khác xen vào giữa 2 bước), rồi `restore_to_pending(A, scheduled_at=
+  giờ_cũ_của_B)` + `update(B, scheduled_at=giờ_mới)`.
+
+**Vì sao không vi phạm giới hạn:** giờ A nhận chính là giờ B đã từng được
+xác nhận hợp lệ cho đúng tài khoản + bucket đó (như giai đoạn 1); giờ mới
+của B do đúng cơ chế `_suggest_reschedule_at()` đang dùng thật cho "🔄 Lên
+lịch lại" tính ra, tôn trọng đủ hạn mức/ngày, khoảng cách tối thiểu, giờ
+yên lặng — không phải suy luận riêng.
+
+**Bug thật owner phát hiện khi thử tay (trước khi kịp commit)**: owner đặt
+câu hỏi cụ thể — 1 ngày đã có sẵn 5 bài (đúng `posts_per_day`), mượn giờ 1
+trong 5 bài đó cho task quá hạn, "sao bài bị dời vẫn quay lại đúng ngày đó,
+trong khi ngày đó giờ có A + 4 bài còn lại = vẫn đủ 5, cộng thêm bài bị dời
+nữa là 6?" — đúng, đây là lỗi thật trong bản đầu. Route
+`schedule_missed_borrow_confirm` tính giờ mới cho B (`_suggest_reschedule_at`)
+TRƯỚC KHI chèn A vào pending — lúc đó phép đếm ngày chỉ thấy 4 bài còn lại
+(loại B) mà CHƯA thấy A (A vẫn còn ở missed/), nên tưởng ngày đó còn 1 chỗ và
+gợi ý B quay lại đúng ngày cũ; sau đó A mới được chèn vào, ngày đó thành 6.
+**Sửa:** đảo thứ tự — chèn A vào pending TRƯỚC (`restore_to_pending`), rồi
+mới tính giờ mới cho B — lúc này phép đếm thấy đủ A + 4 bài còn lại = 5/5
+đầy, nên B bị đẩy đúng sang ngày khác. Xác nhận lại bằng cách tạm đảo ngược
+lại thứ tự và chạy test mới: fail đúng "6 <= 5" — test bắt được chính xác lỗi
+owner mô tả, rồi khôi phục bản sửa đúng.
+
+**Bug thật thứ 2, owner phát hiện qua 2 câu hỏi truy tiếp** ("vì sao ngày
+29,30/9 tính đúng mà 1/10 lại tính sai?" rồi hỏi lại sâu hơn) — khi trả lời
+câu hỏi đó, rà lại kỹ hơn và phát hiện: bản sửa ở trên CHỈ sửa route xác
+nhận (`schedule_missed_borrow_confirm`), còn **modal xem trước**
+(`_borrow_modal_html`, hiện dòng "→ nếu chọn, bài này dời sang: …") vẫn
+tính bằng công thức cũ — loại chính task đó ra khỏi phép đếm mà KHÔNG chèn A
+vào trước (vì đây chỉ là xem trước, chưa ghi gì thật). Verify bằng script
+so sánh trực tiếp (không qua HTTP): với 1 ngày đã đầy 5/5, modal xem trước
+báo "dời sang đúng ngày đó" (giống lỗi #1), trong khi route xác nhận (đã sửa
+đúng) lại cho ra ngày kế tiếp — 2 nơi trả lời KHÁC NHAU cho cùng 1 câu hỏi.
+
+**Vì sao xem trước không cần `exclude_task_id`:** A sẽ chiếm ĐÚNG NGUYÊN
+giờ cũ của task đang xem, nên với mục đích xem trước (chưa ghi gì), chỗ đó
+coi như luôn luôn bị chiếm — không cần loại trừ gì cả, cứ để nguyên task đó
+trong phép đếm là đã đúng y hệt như sau khi xác nhận thật (khi A thế chỗ nó).
+Verify bằng script: tính không loại trừ trên dữ liệu hiện tại và tính có
+chèn A + loại trừ (như route xác nhận) cho ra CÙNG 1 ngày nghiệp vụ (chỉ lệch
+vài phút do `apply_quiet_hours()` có `random.randint(0, 30)` chọn phút ngẫu
+nhiên khi né giờ yên lặng — không phải lỗi, là nhiễu đã có từ trước).
+**Sửa:** bỏ `exclude_task_id` khỏi lệnh gọi trong `_borrow_modal_html`.
+
+**Test:** 8 test cho luồng chính + 1 test cho bug #1 (không vượt hạn mức
+ngày) + 1 test mới cho bug #2 (modal xem trước phải đồng nhất với kết quả
+thật của route xác nhận — dùng lại đúng kịch bản đầy 5/5, so `business_day_
+key` của giá trị xem trước với ngày thật sau khi xác nhận) trong
+`tests/test_admin_schedule.py`. Xác nhận cả 2 test bug đều FAIL đúng khi tạm
+khôi phục lại bản lỗi tương ứng, rồi mới khôi phục bản sửa. **425/425 pass.**
+Đã xác nhận qua trình duyệt thật (owner tự thử, phát hiện đúng cả 2 lỗi trên
+qua các câu hỏi truy tiếp) — chưa thử lại bản đã sửa lần 2 trên trình duyệt.
+Chưa commit.

@@ -3543,6 +3543,8 @@ def _missed_tasks_section_html(
     </form>
     <button type="button" class="btn-small"
             hx-get="/admin/schedule/missed/suggest?{reschedule_qs}" hx-target="#modal-root" hx-swap="innerHTML">🔄 Lên lịch lại</button>
+    <button type="button" class="btn-secondary btn-small"
+            hx-get="/admin/schedule/missed/borrow?{reschedule_qs}" hx-target="#modal-root" hx-swap="innerHTML">↩️ Mượn giờ</button>
     <form method="post" action="/admin/schedule/missed/cancel"
           hx-post="/admin/schedule/missed/cancel" hx-target="#schedule-content" hx-swap="outerHTML"
           hx-confirm="Xoá mục quá hạn này?">
@@ -4127,6 +4129,150 @@ async def schedule_missed_reschedule_confirm(request: Request, _: None = Depends
         err = "Không tìm thấy mục này (có thể đã được xử lý ở tab khác)"
         return HTMLResponse(_schedule_content_html(account_id=account_id, page=page, page_size=page_size, tab="missed", missed_page=missed_page, missed_min_days=missed_min_days, error=err) + _MODAL_CLOSE_OOB)
     return HTMLResponse(_schedule_content_html(account_id=account_id, page=page, page_size=page_size, tab="missed", missed_page=missed_page, missed_min_days=missed_min_days, saved=True) + _MODAL_CLOSE_OOB)
+
+
+def _borrow_modal_html(
+    task: schedule_store.ScheduledTask, account,
+    account_id: str | None, page: int, page_size: int, missed_page: int, missed_min_days: int | None,
+    error: str | None = None,
+) -> str:
+    """"↩️ Mượn giờ" modal (owner request 2026-09-29, "đổi giờ" giai đoạn 2
+    — task quá hạn LẤY giờ của 1 task đang chờ (pending), task đang chờ đó
+    bị dời sang giờ mới do _suggest_reschedule_at() tìm — KHÔNG phải hoán
+    đổi 2 chiều như "⇄ Đổi giờ" (schedule_swap ở trên), vì scheduled_at
+    của task quá hạn đã ở quá khứ, gán ngược lại cho task pending sẽ biến
+    nó thành quá hạn ngay lập tức.
+
+    Same eligibility rule as _swap_candidates() (same account_id + same
+    RateLimiter bucket) — reused as-is rather than duplicated, since
+    "which slot is safe to hand to this task" doesn't depend on which
+    directory the task making the request currently sits in.
+
+    Shows each candidate's OWN current time AND the time it would be
+    displaced TO if picked (computed with `exclude_task_id` so the
+    candidate's own still-there old slot doesn't block its own new
+    suggestion — see _suggest_reschedule_at()'s docstring) — the admin
+    sees the real consequence before confirming, same "preview before
+    commit" spirit as "🔄 Lên lịch lại"."""
+    filter_fields = (
+        f'<input type="hidden" name="account_id" value="{html.escape(account_id or "")}">'
+        f'<input type="hidden" name="page" value="{page}">'
+        f'<input type="hidden" name="page_size" value="{page_size}">'
+        f'<input type="hidden" name="missed_page" value="{missed_page}">'
+        f'<input type="hidden" name="missed_min_days" value="{missed_min_days if missed_min_days is not None else ""}">'
+        f'<input type="hidden" name="task_id_a" value="{html.escape(task.task_id)}">'
+    )
+    err_html = f'<p class="error">⚠️ {html.escape(error)}</p>' if error else ""
+    candidates = _swap_candidates(task) if account else []
+    if not candidates:
+        body = '<p class="muted">Không có bài nào đang chờ đăng cùng tài khoản + cùng loại hành động (đăng bài / bình luận) để mượn giờ.</p>'
+    else:
+        rows = []
+        for c in candidates:
+            # Deliberately NO exclude_task_id here (owner-caught bug
+            # 2026-09-29, same root cause as schedule_missed_borrow_
+            # confirm()'s own fix — see that route's comment): the missed
+            # task A will take over EXACTLY this candidate's current
+            # slot, so that slot stays "occupied" either way — counting
+            # `c` itself (not excluding it) is what correctly models
+            # that for THIS preview, matching what confirm will actually
+            # compute once A is inserted there for real. Excluding it
+            # here (the original, wrong version) undercounted the day by
+            # 1 and could show a slot that's actually already full.
+            new_time = _suggest_reschedule_at(account, c.action)
+            rows.append(f"""
+    <label style="display:flex; gap:8px; align-items:baseline; padding:6px 0; border-bottom:1px solid #eee;">
+      <input type="radio" name="task_id_b" value="{html.escape(c.task_id)}" required>
+      <span>{_local_dt_html(c.scheduled_at)} — {html.escape((c.content or "")[:80])}<br>
+        <span class="muted">→ nếu chọn, bài này dời sang: {_local_dt_html(new_time.isoformat())}</span></span>
+    </label>""")
+        body = f'<div style="max-height:320px; overflow-y:auto;">{"".join(rows)}</div>'
+    return f"""
+<div class="modal-backdrop" onclick="if(event.target===this) this.remove()">
+  <div class="modal-box">
+    <div class="modal-header">
+      <h2>↩️ Mượn giờ đăng</h2>
+      <button type="button" class="modal-close" onclick="this.closest('.modal-backdrop').remove()">✕</button>
+    </div>
+    {err_html}
+    <p class="page-desc" style="margin-top:0;">Task quá hạn: {_local_dt_html(task.scheduled_at)} — {html.escape((task.content or "")[:80])}</p>
+    <p class="muted">Chọn 1 bài đang chờ đăng, cùng tài khoản + cùng loại hành động — task quá hạn ở trên sẽ đăng vào đúng giờ của bài đó, còn bài đó dời sang giờ mới như xem trước bên dưới.</p>
+    <form method="post" action="/admin/schedule/missed/borrow-confirm"
+          hx-post="/admin/schedule/missed/borrow-confirm" hx-target="#schedule-content" hx-swap="outerHTML">
+      {filter_fields}
+      {body}
+      <div class="form-actions">
+        <button type="button" class="btn-secondary" style="margin-right:8px;" onclick="this.closest('.modal-backdrop').remove()">Huỷ</button>
+        <button type="submit"{" disabled" if not candidates else ""}>Mượn giờ</button>
+      </div>
+    </form>
+  </div>
+</div>"""
+
+
+@router.get("/schedule/missed/borrow", response_class=HTMLResponse)
+async def schedule_missed_borrow(
+    task_id: str, account_id: str | None = None, page: int = 1, page_size: int = _SCHEDULE_PAGE_SIZE,
+    missed_page: int = 1, missed_min_days: int | None = None,
+    _: None = Depends(_require_login),
+) -> str:
+    task = schedule_store.get_missed(task_id)
+    if task is None:
+        return ""
+    account = get_all_accounts().get(task.account_id)
+    page_size = _clamp_schedule_page_size(page_size)
+    if account is None:
+        return _borrow_modal_html(task, None, account_id, page, page_size, missed_page, missed_min_days, error="Không tìm thấy tài khoản này.")
+    return _borrow_modal_html(task, account, account_id, page, page_size, missed_page, missed_min_days)
+
+
+@router.post("/schedule/missed/borrow-confirm")
+async def schedule_missed_borrow_confirm(request: Request, _: None = Depends(_require_login)):
+    """"↩️ Mượn giờ" step 2 — re-validates the pairing server-side (same
+    reasoning as schedule_swap() above: a plain POST an admin could hand-
+    edit) and RE-COMPUTES the displaced task's new slot rather than
+    trusting whatever the preview modal last rendered, in case something
+    else changed the account's schedule in between."""
+    form = await request.form()
+    account_id, page, page_size, missed_page, _action_filter, _date_filter, _tz_offset, missed_min_days = _schedule_form_filter(form)
+    task_id_a = str(form.get("task_id_a", ""))
+    task_id_b = str(form.get("task_id_b", ""))
+    task_a = schedule_store.get_missed(task_id_a)
+    task_b = schedule_store.get(task_id_b)
+    error: str | None = None
+    account = None
+    if task_a is None or task_b is None:
+        error = "Không tìm thấy 1 trong 2 mục này — có thể đã bị đổi/huỷ ở nơi khác."
+    else:
+        from human_bot.agent import rate_limit_bucket_for
+        if task_a.account_id != task_b.account_id or rate_limit_bucket_for(task_a.action) != rate_limit_bucket_for(task_b.action):
+            error = "2 bài phải cùng tài khoản và cùng loại hành động (đăng bài / bình luận) mới mượn giờ được."
+        else:
+            account = get_all_accounts().get(task_a.account_id)
+            if account is None:
+                error = "Không tìm thấy tài khoản này."
+    if error:
+        if _is_htmx(request):
+            return HTMLResponse(_schedule_content_html(account_id=account_id, page=page, page_size=page_size, tab="missed", missed_page=missed_page, missed_min_days=missed_min_days, error=error) + _MODAL_CLOSE_OOB)
+        return _schedule_redirect(account_id, page, page_size=page_size, tab="missed", missed_page=missed_page, missed_min_days=missed_min_days, error=error)
+
+    # Order matters (owner-caught bug 2026-09-29, before this ever shipped):
+    # A must be INSERTED into pending FIRST, then B's new slot computed —
+    # not the other way around. Computing B's new slot before A lands
+    # means the day-cap check below only sees {other 4 tasks} on B's old
+    # day (B itself excluded, A not inserted yet) → looks like room for
+    # one more → often suggests B right back onto that SAME day, which,
+    # once A actually takes B's old slot afterward, leaves that day at
+    # 6 tasks (5 others + relocated B, PLUS A) instead of 5. Inserting A
+    # first means the day-cap check correctly sees "A + other 4" already
+    # there when it decides whether B can still fit that day too.
+    old_b_time = task_b.scheduled_at
+    schedule_store.restore_to_pending(task_id_a, scheduled_at=old_b_time)
+    new_b_time = _suggest_reschedule_at(account, task_b.action, exclude_task_id=task_b.task_id)
+    schedule_store.update(task_id_b, scheduled_at=new_b_time.isoformat())
+    if _is_htmx(request):
+        return HTMLResponse(_schedule_content_html(account_id=account_id, page=page, page_size=page_size, tab="missed", missed_page=missed_page, missed_min_days=missed_min_days, saved=True) + _MODAL_CLOSE_OOB)
+    return _schedule_redirect(account_id, page, page_size=page_size, tab="missed", missed_page=missed_page, missed_min_days=missed_min_days, saved=1)
 
 
 @router.post("/schedule/missed/cancel")
@@ -4991,7 +5137,7 @@ def _attrs_summary_html(title, attrs: dict) -> str:
 _RESCHEDULE_SEARCH_DAYS = 30
 
 
-def _suggest_reschedule_at(account, action: str) -> datetime:
+def _suggest_reschedule_at(account, action: str, exclude_task_id: str | None = None) -> datetime:
     """The "🔄 Lên lịch lại" suggestion (owner request 2026-09-12): the
     earliest time this account could actually post/comment `action` again
     without breaking posts_per_day/comments_per_day, its own min-gap
@@ -5040,7 +5186,19 @@ def _suggest_reschedule_at(account, action: str) -> datetime:
 
     Only a SUGGESTION — reports_reschedule_confirm() still re-checks
     everything for real via schedule_store's normal fire-time path, this
-    is just what the admin sees before clicking "Xác nhận"."""
+    is just what the admin sees before clicking "Xác nhận".
+
+    `exclude_task_id` (2026-09-29, "↩️ Mượn giờ" — /admin/schedule's
+    missed-task borrow-a-pending-slot flow): when suggesting a NEW slot
+    for a task that is ITSELF still sitting in pending/ at its old time
+    (the displaced task, whose slot is about to be handed to a missed
+    task), that old slot must not count against the search below — it's
+    the account's own leftover capacity, not real competition. Without
+    this, the gap floor and day-cap count would both see the task's own
+    still-there old entry and could refuse to land on a slot the account
+    actually has room for, once that task ITSELF vacates it. None
+    (default) for every other caller — a reschedule from action_log has
+    no matching pending row to exclude."""
     from human_bot import daily_limits, schedule_store
     from human_bot.agent import rate_limit_bucket_for
     from human_bot.safety import RateLimiter
@@ -5070,6 +5228,7 @@ def _suggest_reschedule_at(account, action: str) -> datetime:
         t for t in (
             _parse_aware(p.scheduled_at) for p in schedule_store.list_pending()
             if p.account_id == account.account_id and p.action in sibling_actions
+            and p.task_id != exclude_task_id
         ) if t is not None
     )
 

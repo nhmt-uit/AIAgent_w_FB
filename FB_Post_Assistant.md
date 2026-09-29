@@ -431,6 +431,15 @@ liệu thật hằng ngày và yêu cầu kiểm tra chéo lại mọi thứ tr�
   cùng tài khoản và cùng loại hành động (đăng bài, hoặc bình luận). Giai đoạn
   sau (chưa làm) sẽ mở rộng sang đổi giờ với 1 bài đang ở "Task quá hạn".
   Cần owner thử tay trên trình duyệt để xác nhận trước khi coi là xong.
+- **Đổi giờ đăng giai đoạn 2:** tab "Task quá hạn" nay có nút "↩️ Mượn giờ" —
+  task quá hạn lấy giờ của 1 task đang chờ (cùng tài khoản, cùng loại hành
+  động), còn task đang chờ đó tự động dời sang giờ mới hợp lệ. Khác với "⇄
+  Đổi giờ" (giai đoạn 1, không phải hoán đổi 2 chiều vì giờ của task quá hạn
+  đã ở quá khứ). Owner tự thử trên trình duyệt và phát hiện đúng 2 lỗi thật
+  trước khi kịp commit: (1) 1 ngày đã đủ 5 bài, mượn giờ xong thành 6 bài;
+  (2) modal xem trước báo 1 ngày, nhưng bấm xác nhận thì hệ thống lại đăng
+  vào ngày khác — cả 2 đều cùng 1 gốc (quên tính bài quá hạn sắp chiếm chỗ),
+  đã sửa cả 2 nơi và thêm test riêng cho từng trường hợp.
 
 ---
 

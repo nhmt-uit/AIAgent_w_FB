@@ -438,3 +438,153 @@ def test_swap_task_not_found(client):
     resp = client.post("/admin/schedule/swap", data={"task_id_a": a.task_id, "task_id_b": "nonexistent"})
     assert resp.status_code in (200, 303)
     assert schedule_store.get(a.task_id).scheduled_at == a.scheduled_at  # unchanged
+
+
+# --- "↩️ Mượn giờ" (missed task takes a pending task's slot, displaced ------
+# pending task gets a freshly-suggested new slot, 2026-09-29) -------------
+
+def test_borrow_modal_lists_pending_candidates_with_preview_time(client, account_with_rate_limits):
+    account_with_rate_limits(posts_per_day=30)
+    now = datetime.now(timezone.utc)
+    missed = _add_missed(now - timedelta(hours=5), account_id="acc-a", action="post_to_group")
+    pending = _add_task(now + timedelta(hours=1), account_id="acc-a", action="post_to_own_profile")
+    schedule_store.update(pending.task_id, content="candidate B")
+
+    resp = client.get(f"/admin/schedule/missed/borrow?task_id={missed.task_id}")
+    assert resp.status_code == 200
+    assert "candidate B" in resp.text
+    assert pending.task_id in resp.text
+    assert "dời sang" in resp.text
+
+
+def test_borrow_modal_empty_state_with_no_eligible_candidates(client, account_with_rate_limits):
+    account_with_rate_limits(posts_per_day=30)
+    missed = _add_missed(datetime.now(timezone.utc) - timedelta(hours=5), account_id="acc-a", action="post_to_group")
+    resp = client.get(f"/admin/schedule/missed/borrow?task_id={missed.task_id}")
+    assert "Không có bài nào đang chờ đăng" in resp.text
+    assert "disabled" in resp.text
+
+
+def test_borrow_modal_missed_task_not_found(client):
+    resp = client.get("/admin/schedule/missed/borrow?task_id=nonexistent")
+    assert resp.text == ""
+
+
+def test_borrow_modal_account_not_found(client):
+    missed = _add_missed(datetime.now(timezone.utc) - timedelta(hours=5), account_id="acc-unregistered")
+    resp = client.get(f"/admin/schedule/missed/borrow?task_id={missed.task_id}")
+    assert "Không tìm thấy tài khoản" in resp.text
+
+
+def test_borrow_confirm_moves_missed_task_into_pendings_old_slot_and_reschedules_pending(client, account_with_rate_limits):
+    account_with_rate_limits(posts_per_day=30)
+    now = datetime.now(timezone.utc)
+    missed = _add_missed(now - timedelta(hours=5), account_id="acc-a", action="post_to_group")
+    pending = _add_task(now + timedelta(hours=1), account_id="acc-a", action="post_to_own_profile")
+    old_pending_time = pending.scheduled_at
+
+    resp = client.post("/admin/schedule/missed/borrow-confirm", data={"task_id_a": missed.task_id, "task_id_b": pending.task_id})
+    assert resp.status_code in (200, 303)
+
+    moved = schedule_store.get(missed.task_id)
+    assert moved is not None
+    assert moved.scheduled_at == old_pending_time  # missed task took the pending task's exact old slot
+    assert schedule_store.get_missed(missed.task_id) is None  # no longer in missed/
+
+    displaced = schedule_store.get(pending.task_id)
+    assert displaced is not None
+    assert displaced.scheduled_at != old_pending_time  # displaced task got a new slot, not the same one
+
+
+def test_borrow_confirm_does_not_overfill_the_displaced_days_cap(client, account_with_rate_limits):
+    """Owner-caught bug (2026-09-29, before this ever shipped): computing
+    the displaced task's new slot BEFORE inserting the missed task into
+    pending/ let the day-cap check miss the missed task's own arrival —
+    5 other same-day tasks read as "4 once excluding itself, room for 1
+    more" and the displaced task landed right back on the now-6-tasks
+    day. The missed task must be inserted FIRST so its arrival is
+    already counted when the displaced task's new day is searched."""
+    from human_bot import daily_limits
+    account_with_rate_limits(posts_per_day=5, post_min_delay_seconds=0, post_max_delay_seconds=0)
+    day = datetime(2026, 10, 1, 10, tzinfo=timezone.utc)  # well clear of the 2 AM JST quiet-hours boundary
+    assert daily_limits.business_day_key(day) == daily_limits.business_day_key(day + timedelta(hours=5))
+    others = [_add_task(day + timedelta(hours=i), account_id="acc-a", action="post_to_group") for i in range(4)]
+    borrowed_from = _add_task(day + timedelta(hours=5), account_id="acc-a", action="post_to_group")
+    missed = _add_missed(datetime.now(timezone.utc) - timedelta(hours=5), account_id="acc-a", action="post_to_group")
+    target_day = daily_limits.business_day_key(day)
+
+    resp = client.post("/admin/schedule/missed/borrow-confirm", data={"task_id_a": missed.task_id, "task_id_b": borrowed_from.task_id})
+    assert resp.status_code in (200, 303)
+
+    all_tasks = [schedule_store.get(t.task_id) for t in ([missed, borrowed_from] + others)]
+    same_day_count = sum(
+        1 for t in all_tasks
+        if daily_limits.business_day_key(datetime.fromisoformat(t.scheduled_at)) == target_day
+    )
+    assert same_day_count <= 5  # never more than the account's own daily cap
+
+
+def test_borrow_modal_preview_matches_what_confirm_will_actually_do(client, account_with_rate_limits):
+    """Owner-caught bug 2026-09-29 (2nd half — the preview modal, not just
+    the confirm route, had the same missing-A-in-the-count flaw): with a
+    day already at its 5/5 cap, the preview used to say the displaced task
+    would land back on that SAME (already full) day — a lie, since
+    confirm's own (fixed) computation always pushes it to the NEXT
+    business day once A is really counted there. The preview must show
+    that same next-day answer, not the stale same-day one, so the owner
+    isn't shown one outcome and given another."""
+    import re
+    from human_bot import daily_limits
+    account_with_rate_limits(posts_per_day=5, post_min_delay_seconds=0, post_max_delay_seconds=0)
+    day = datetime(2026, 10, 1, 10, tzinfo=timezone.utc)
+    others = [_add_task(day + timedelta(hours=i), account_id="acc-a", action="post_to_group") for i in range(4)]
+    borrowed_from = _add_task(day + timedelta(hours=5), account_id="acc-a", action="post_to_group")
+    missed = _add_missed(datetime.now(timezone.utc) - timedelta(hours=5), account_id="acc-a", action="post_to_group")
+    full_day = daily_limits.business_day_key(day)
+
+    resp = client.get(f"/admin/schedule/missed/borrow?task_id={missed.task_id}")
+    utcs = re.findall(r'data-utc="([^"]+)"', resp.text)
+    # utcs[0] is the modal's own "Task quá hạn: ..." header line (task A's
+    # past time). After that, rows are sorted by scheduled_at ascending
+    # (5 candidates: others[0..3] then borrowed_from, the LAST row) — each
+    # row has 2 data-utc values (its own current time, then its preview).
+    preview_iso = utcs[1 + 2 * len(others) + 1]
+    preview_day = daily_limits.business_day_key(datetime.fromisoformat(preview_iso.replace("Z", "+00:00")))
+    assert preview_day != full_day  # must NOT claim it'll land back on the already-full day
+
+    confirm_resp = client.post("/admin/schedule/missed/borrow-confirm", data={"task_id_a": missed.task_id, "task_id_b": borrowed_from.task_id})
+    assert confirm_resp.status_code in (200, 303)
+    actual_day = daily_limits.business_day_key(datetime.fromisoformat(schedule_store.get(borrowed_from.task_id).scheduled_at))
+    assert preview_day == actual_day  # preview must agree with what confirm actually did
+
+
+def test_borrow_confirm_rejects_different_accounts_even_via_direct_post(client, account_with_rate_limits):
+    account_with_rate_limits(posts_per_day=30)
+    now = datetime.now(timezone.utc)
+    missed = _add_missed(now - timedelta(hours=5), account_id="acc-a", action="post_to_group")
+    pending = _add_task(now + timedelta(hours=1), account_id="acc-b", action="post_to_group")
+
+    resp = client.post("/admin/schedule/missed/borrow-confirm", data={"task_id_a": missed.task_id, "task_id_b": pending.task_id})
+    assert resp.status_code in (200, 303)
+    assert schedule_store.get_missed(missed.task_id) is not None  # untouched, still missed
+    assert schedule_store.get(pending.task_id).scheduled_at == pending.scheduled_at  # unchanged
+
+
+def test_borrow_confirm_rejects_different_buckets_even_via_direct_post(client, account_with_rate_limits):
+    account_with_rate_limits(posts_per_day=30)
+    now = datetime.now(timezone.utc)
+    missed = _add_missed(now - timedelta(hours=5), account_id="acc-a", action="post_to_group")
+    pending = _add_task(now + timedelta(hours=1), account_id="acc-a", action="comment_on_group_post")
+
+    resp = client.post("/admin/schedule/missed/borrow-confirm", data={"task_id_a": missed.task_id, "task_id_b": pending.task_id})
+    assert resp.status_code in (200, 303)
+    assert schedule_store.get_missed(missed.task_id) is not None
+    assert schedule_store.get(pending.task_id).scheduled_at == pending.scheduled_at
+
+
+def test_borrow_confirm_task_not_found(client, account_with_rate_limits):
+    account_with_rate_limits(posts_per_day=30)
+    pending = _add_task(datetime.now(timezone.utc), account_id="acc-a", action="post_to_group")
+    resp = client.post("/admin/schedule/missed/borrow-confirm", data={"task_id_a": "nonexistent", "task_id_b": pending.task_id})
+    assert resp.status_code in (200, 303)
+    assert schedule_store.get(pending.task_id).scheduled_at == pending.scheduled_at
