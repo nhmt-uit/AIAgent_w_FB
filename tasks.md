@@ -97,6 +97,7 @@
 - [Lỗi bình luận nhóm của nhtu00 (nhóm chưa tham gia) + ưu tiên tài khoản đã tham gia khi chia candidate](#lỗi-bình-luận-nhóm-của-nhtu00-nhóm-chưa-tham-gia--ưu-tiên-tài-khoản-đã-tham-gia-khi-chia-candidate-2026-09-28)
 - [Sửa lỗi tab Quản lý MOD: danh sách nhảy lên trên header sau khi lưu](#sửa-lỗi-tab-quản-lý-mod-danh-sách-nhảy-lên-trên-header-sau-khi-lưu-2026-09-28)
 - [Bỏ tab "Trang chủ" trên thanh menu — bấm logo human_bot để về /admin](#bỏ-tab-trang-chủ-trên-thanh-menu--bấm-logo-human_bot-để-về-admin-2026-09-28)
+- [Đổi giờ đăng giữa 2 task đang chờ (pending-pending)](#đổi-giờ-đăng-giữa-2-task-đang-chờ-pending-pending-phần-1-của-ý-tưởng-hoán-đổi-lịch-2026-09-29)
 
 ---
 
@@ -4838,3 +4839,51 @@ màu chữ đen và không gạch chân để trông y như cũ). Hệ quả c�
 không còn tab nào được tô sáng khi đang đứng ở đó (`nav_class('home')` không
 còn dùng). 1 test mới (logo là link tới /admin, menu không còn "Trang chủ").
 **406/406 pass.**
+
+
+## Đổi giờ đăng giữa 2 task đang chờ (pending-pending), phần 1 của ý tưởng hoán đổi lịch (2026-09-29)
+
+Bàn với owner trước khi code (2 câu hỏi + xác nhận công thức): việc đổi giờ
+"hoán đổi lịch đăng giữa 2 bài" đã ghi ở mục ý tưởng 25/09 nay chia làm 2 giai
+đoạn — **giai đoạn 1 (làm ngay): đổi giờ giữa 2 task ĐANG CHỜ (pending)**,
+giai đoạn 2 (sau, chưa làm): đổi giữa 1 task quá hạn + 1 task đang chờ (task
+quá hạn LẤY giờ của task đang chờ, còn task đang chờ bị dời dùng lại
+`_suggest_reschedule_at()` có sẵn để tìm giờ mới — không phải hoán đổi 2 chiều,
+vì giờ của task quá hạn đã ở quá khứ).
+
+**Điều kiện đổi giờ (owner xác nhận):** 2 task phải **cùng tài khoản VÀ cùng
+bucket rate-limit** (agent.py's `rate_limit_bucket_for()` — bucket "post" gồm
+`post_to_group`+`post_to_own_profile`, bucket "comment" gồm
+`comment_on_group_post`+`comment_on_friend_post`). Lý do đủ điều kiện mà
+KHÔNG cần kiểm tra lại hạn mức/khoảng cách/giờ yên lặng (owner tự lý luận,
+xác nhận đúng): mỗi giờ trong 2 giờ đó đã được xác nhận hợp lệ cho ĐÚNG tài
+khoản + bucket đó khi task của chính nó được lên lịch — trao giờ đó cho 1
+task khác cùng tài khoản + cùng bucket thì vẫn hợp lệ, không cần suy lại.
+Ban đầu tưởng "cùng tài khoản" là đủ, nhưng post/comment dùng 2 đồng hồ hạn
+mức + giãn cách tách biệt (`posts_per_day` khác `comments_per_day`) nên phải
+thêm điều kiện cùng bucket.
+
+**Code:**
+- `human_bot/schedule_store.py`: `swap_scheduled_at(task_id_a, task_id_b)` —
+  đọc 2 task từ `pending/`, tráo `scheduled_at`, ghi lại cả 2, các trường khác
+  giữ nguyên. Trả `None` nếu 1 trong 2 không còn ở pending/ (đã đăng/huỷ/sửa
+  ở nơi khác).
+- `human_bot/admin.py`: nút **"⇄ Đổi giờ"** mới trên mỗi dòng ở tab "Chờ đăng".
+  `POST /admin/schedule/swap-modal` mở modal liệt kê CÁC TASK PENDING khác
+  cùng tài khoản + cùng bucket (loại chính nó) để chọn — danh sách rỗng thì
+  vô hiệu nút xác nhận thay vì để trống bấm được. `POST /admin/schedule/swap`
+  thực hiện tráo; **kiểm tra lại cùng tài khoản + cùng bucket ngay tại route**
+  (không chỉ tin modal đã lọc đúng), vì đây là 1 form POST thường, ai đó có
+  thể tự gửi request tay. Giữ nguyên bộ lọc/trang hiện tại sau khi đổi, có
+  nhánh htmx lẫn không-htmx, đóng modal qua `_MODAL_CLOSE_OOB` giống các modal
+  khác của trang này.
+
+**Test:** 2 test mới cho `swap_scheduled_at()` (tráo đúng + giữ nguyên trường
+khác; trả None khi 1 trong 2 không còn) trong `tests/test_schedule_store.py`;
+7 test HTTP mới trong `tests/test_admin_schedule.py` (modal chỉ liệt kê đúng
+cùng tài khoản+bucket, trạng thái rỗng, task không tồn tại, tráo giờ thành
+công, và 3 test chặn thẳng bằng POST tay: khác tài khoản/khác bucket/task
+không tồn tại đều không đổi gì). **415/415 pass.** Chưa xác nhận trên trình
+duyệt thật (chỉ HTTP-level qua TestClient) — owner nên thử tay: mở tab "Chờ
+đăng", bấm "⇄ Đổi giờ" ở 1 task, chọn 1 task khác cùng tài khoản/loại hành
+động, xác nhận 2 giờ đã tráo đúng và modal tự đóng. Chưa commit.

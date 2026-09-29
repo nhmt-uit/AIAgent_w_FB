@@ -373,6 +373,27 @@ def test_screenshots_cleanup_default_is_sixty_days(tmp_path, isolated_runtime_co
     assert keep.exists() and not drop.exists()
 
 
+def test_swap_scheduled_at_trades_time_and_keeps_everything_else(isolated_store):
+    a = _make_task(isolated_store, datetime(2026, 9, 29, 10, tzinfo=timezone.utc), content="A")
+    b = _make_task(isolated_store, datetime(2026, 9, 29, 14, tzinfo=timezone.utc), content="B")
+    result = isolated_store.swap_scheduled_at(a.task_id, b.task_id)
+    assert result is not None
+    new_a, new_b = result
+    assert new_a.scheduled_at == "2026-09-29T14:00:00+00:00"
+    assert new_b.scheduled_at == "2026-09-29T10:00:00+00:00"
+    assert new_a.content == "A" and new_b.content == "B"  # only the time traded
+    # And persisted, not just returned:
+    assert isolated_store.get(a.task_id).scheduled_at == "2026-09-29T14:00:00+00:00"
+    assert isolated_store.get(b.task_id).scheduled_at == "2026-09-29T10:00:00+00:00"
+
+
+def test_swap_scheduled_at_none_when_either_task_is_gone(isolated_store):
+    a = _make_task(isolated_store, datetime(2026, 9, 29, 10, tzinfo=timezone.utc))
+    assert isolated_store.swap_scheduled_at(a.task_id, "does-not-exist") is None
+    assert isolated_store.swap_scheduled_at("does-not-exist", a.task_id) is None
+    assert isolated_store.get(a.task_id).scheduled_at == "2026-09-29T10:00:00+00:00"  # untouched
+
+
 def test_screenshots_cleanup_zero_means_never_delete(tmp_path, isolated_runtime_config, monkeypatch):
     from human_bot import screenshots
     monkeypatch.setattr(screenshots, "SCREENSHOTS_ROOT", tmp_path)

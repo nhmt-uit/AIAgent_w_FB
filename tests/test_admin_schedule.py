@@ -360,3 +360,81 @@ def test_missed_fire_now_task_not_found(client, no_real_run_task):
     resp = client.post("/admin/schedule/missed/fire-now", data={"task_id": "nonexistent"})
     assert resp.status_code in (200, 303)
     assert len(calls) == 0
+
+
+# --- "⇄ Đổi giờ" (swap scheduled_at between 2 pending tasks, 2026-09-29) ----
+
+def test_swap_modal_lists_only_same_account_same_bucket_candidates(client):
+    now = datetime.now(timezone.utc)
+    post_a = _add_task(now, account_id="acc-a", action="post_to_group")
+    post_b = _add_task(now + timedelta(hours=1), account_id="acc-a", action="post_to_own_profile")
+    schedule_store.update(post_b.task_id, content="post B same bucket")
+    other_account = _add_task(now + timedelta(hours=2), account_id="acc-b", action="post_to_group")
+    schedule_store.update(other_account.task_id, content="other account")
+    comment = _add_task(now + timedelta(hours=3), account_id="acc-a", action="comment_on_group_post")
+    schedule_store.update(comment.task_id, content="different bucket")
+
+    resp = client.post("/admin/schedule/swap-modal", data={"task_id": post_a.task_id})
+    assert resp.status_code == 200
+    assert "post B same bucket" in resp.text  # same account + "post" bucket, offered
+    assert "other account" not in resp.text  # different account, excluded
+    assert "different bucket" not in resp.text  # comment bucket, excluded
+    assert post_b.task_id in resp.text
+
+
+def test_swap_modal_shows_empty_state_with_no_eligible_candidates(client):
+    task = _add_task(datetime.now(timezone.utc), account_id="acc-a", action="post_to_group")
+    resp = client.post("/admin/schedule/swap-modal", data={"task_id": task.task_id})
+    assert "Không có bài nào khác" in resp.text
+    assert "disabled" in resp.text
+
+
+def test_swap_modal_task_not_found(client):
+    resp = client.post("/admin/schedule/swap-modal", data={"task_id": "nonexistent"})
+    assert "Không tìm thấy" in resp.text
+
+
+def test_swap_trades_scheduled_at_between_two_pending_tasks(client):
+    now = datetime.now(timezone.utc)
+    a = _add_task(now, account_id="acc-a", action="post_to_group")
+    schedule_store.update(a.task_id, content="A")
+    b = _add_task(now + timedelta(hours=3), account_id="acc-a", action="post_to_group")
+    schedule_store.update(b.task_id, content="B")
+
+    resp = client.post("/admin/schedule/swap", data={"task_id_a": a.task_id, "task_id_b": b.task_id})
+    assert resp.status_code in (200, 303)
+
+    new_a = schedule_store.get(a.task_id)
+    new_b = schedule_store.get(b.task_id)
+    assert new_a.scheduled_at == b.scheduled_at
+    assert new_b.scheduled_at == a.scheduled_at
+    assert new_a.content == "A" and new_b.content == "B"
+
+
+def test_swap_rejects_different_accounts_even_via_direct_post(client):
+    now = datetime.now(timezone.utc)
+    a = _add_task(now, account_id="acc-a", action="post_to_group")
+    b = _add_task(now + timedelta(hours=1), account_id="acc-b", action="post_to_group")
+
+    resp = client.post("/admin/schedule/swap", data={"task_id_a": a.task_id, "task_id_b": b.task_id})
+    assert resp.status_code in (200, 303)
+    assert schedule_store.get(a.task_id).scheduled_at == a.scheduled_at  # unchanged
+    assert schedule_store.get(b.task_id).scheduled_at == b.scheduled_at
+
+
+def test_swap_rejects_different_buckets_even_via_direct_post(client):
+    now = datetime.now(timezone.utc)
+    a = _add_task(now, account_id="acc-a", action="post_to_group")
+    b = _add_task(now + timedelta(hours=1), account_id="acc-a", action="comment_on_group_post")
+
+    resp = client.post("/admin/schedule/swap", data={"task_id_a": a.task_id, "task_id_b": b.task_id})
+    assert resp.status_code in (200, 303)
+    assert schedule_store.get(a.task_id).scheduled_at == a.scheduled_at  # unchanged
+    assert schedule_store.get(b.task_id).scheduled_at == b.scheduled_at
+
+
+def test_swap_task_not_found(client):
+    a = _add_task(datetime.now(timezone.utc), account_id="acc-a", action="post_to_group")
+    resp = client.post("/admin/schedule/swap", data={"task_id_a": a.task_id, "task_id_b": "nonexistent"})
+    assert resp.status_code in (200, 303)
+    assert schedule_store.get(a.task_id).scheduled_at == a.scheduled_at  # unchanged

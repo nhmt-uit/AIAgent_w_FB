@@ -426,6 +426,11 @@ liệu thật hằng ngày và yêu cầu kiểm tra chéo lại mọi thứ tr�
   nhập sai thì đè lên danh sách). Cần owner thử lại trên trình duyệt.
 - **Menu:** bỏ tab "Trang chủ"; bấm chữ **human_bot** ở góc trái để về trang chủ
   `/admin`.
+- **Đổi giờ đăng giữa 2 bài (giai đoạn 1):** tab "Lịch đăng" nay có nút
+  "⇄ Đổi giờ" ở mỗi bài đang chờ đăng, cho phép tráo giờ đăng với 1 bài khác
+  cùng tài khoản và cùng loại hành động (đăng bài, hoặc bình luận). Giai đoạn
+  sau (chưa làm) sẽ mở rộng sang đổi giờ với 1 bài đang ở "Task quá hạn".
+  Cần owner thử tay trên trình duyệt để xác nhận trước khi coi là xong.
 
 ---
 

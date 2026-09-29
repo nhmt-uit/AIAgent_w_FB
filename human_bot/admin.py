@@ -3817,6 +3817,12 @@ def _schedule_content_html(
       {filter_fields}
       <button type="submit" class="btn-small">🚀 Đăng ngay</button>
     </form>
+    <form method="post" action="/admin/schedule/swap-modal"
+          hx-post="/admin/schedule/swap-modal" hx-target="#modal-root" hx-swap="innerHTML">
+      <input type="hidden" name="task_id" value="{html.escape(t.task_id)}">
+      {filter_fields}
+      <button type="submit" class="btn-secondary btn-small">⇄ Đổi giờ</button>
+    </form>
     <form method="post" action="/admin/schedule/cancel"
           hx-post="/admin/schedule/cancel" hx-target="#schedule-content" hx-swap="outerHTML"
           hx-confirm="Huỷ lịch đăng này?">
@@ -4156,6 +4162,125 @@ async def schedule_missed_bulk_cancel(request: Request, _: None = Depends(_requi
 # every htmx response from schedule_fire_now() — harmless when no modal
 # is open (an empty #modal-root swapped for an empty #modal-root).
 _MODAL_CLOSE_OOB = '<div id="modal-root" hx-swap-oob="true"></div>'
+
+
+def _swap_candidates(task: schedule_store.ScheduledTask) -> list[schedule_store.ScheduledTask]:
+    """Other PENDING tasks eligible to trade `scheduled_at` with `task`
+    (owner request 2026-09-29, "đổi giờ đăng giữa 2 bài viết" — pending↔
+    pending only for now, missed↔pending is a later piece). Same
+    account_id AND same RateLimiter bucket (agent.py's
+    rate_limit_bucket_for() — "post" covers post_to_group/
+    post_to_own_profile, "comment" covers comment_on_group_post/
+    comment_on_friend_post) — owner's own reasoning (2026-09-29): each
+    slot was already validated for that exact account+bucket combination
+    when its own task was scheduled, so only another task of the SAME
+    account+bucket can safely inherit it without re-checking daily caps/
+    gaps/quiet-hours. Sorted by time so the modal reads like the pending
+    list itself."""
+    from human_bot.agent import rate_limit_bucket_for
+    bucket = rate_limit_bucket_for(task.action)
+    if bucket is None:
+        return []
+    others = [
+        t for t in schedule_store.list_pending()
+        if t.task_id != task.task_id
+        and t.account_id == task.account_id
+        and rate_limit_bucket_for(t.action) == bucket
+    ]
+    others.sort(key=lambda t: t.scheduled_at)
+    return others
+
+
+def _swap_modal_html(
+    task: schedule_store.ScheduledTask, candidates: list[schedule_store.ScheduledTask],
+    account_id: str | None, page: int, page_size: int,
+    action_filter: str | None, date_filter: str | None, tz_offset: int,
+    error: str | None = None,
+) -> str:
+    filter_fields = (
+        f'<input type="hidden" name="account_id" value="{html.escape(account_id or "")}">'
+        f'<input type="hidden" name="page" value="{page}">'
+        f'<input type="hidden" name="page_size" value="{page_size}">'
+        f'<input type="hidden" name="action" value="{html.escape(action_filter or "")}">'
+        f'<input type="hidden" name="date" value="{html.escape(date_filter or "")}">'
+        f'<input type="hidden" name="tz_offset" value="{tz_offset}">'
+    )
+    err_html = f'<p class="error">⚠️ {html.escape(error)}</p>' if error else ""
+    if not candidates:
+        body = '<p class="muted">Không có bài nào khác cùng tài khoản + cùng loại hành động (đăng bài / bình luận) để đổi giờ.</p>'
+    else:
+        rows = "".join(f"""
+    <label style="display:flex; gap:8px; align-items:baseline; padding:6px 0; border-bottom:1px solid #eee;">
+      <input type="radio" name="task_id_b" value="{html.escape(c.task_id)}" required>
+      <span>{_local_dt_html(c.scheduled_at)} — {html.escape((c.content or "")[:80])}</span>
+    </label>""" for c in candidates)
+        body = f'<div style="max-height:320px; overflow-y:auto;">{rows}</div>'
+    return f"""
+<div class="modal-backdrop" onclick="if(event.target===this) this.remove()">
+  <div class="modal-box">
+    <div class="modal-header">
+      <h2>⇄ Đổi giờ đăng</h2>
+      <button type="button" class="modal-close" onclick="this.closest('.modal-backdrop').remove()">✕</button>
+    </div>
+    {err_html}
+    <p class="page-desc" style="margin-top:0;">Bài đang chọn: {_local_dt_html(task.scheduled_at)} — {html.escape((task.content or "")[:80])}</p>
+    <p class="muted">Chọn 1 bài khác cùng tài khoản, cùng loại hành động để đổi giờ đăng cho nhau.</p>
+    <form method="post" action="/admin/schedule/swap"
+          hx-post="/admin/schedule/swap" hx-target="#schedule-content" hx-swap="outerHTML">
+      <input type="hidden" name="task_id_a" value="{html.escape(task.task_id)}">
+      {filter_fields}
+      {body}
+      <div class="form-actions">
+        <button type="button" class="btn-secondary" style="margin-right:8px;" onclick="this.closest('.modal-backdrop').remove()">Huỷ</button>
+        <button type="submit"{" disabled" if not candidates else ""}>Đổi giờ</button>
+      </div>
+    </form>
+  </div>
+</div>"""
+
+
+@router.post("/schedule/swap-modal")
+async def schedule_swap_modal(request: Request, _: None = Depends(_require_login)):
+    form = await request.form()
+    account_id, page, page_size, _missed_page, action_filter, date_filter, tz_offset, _missed_min_days = _schedule_form_filter(form)
+    task_id = str(form.get("task_id", ""))
+    task = schedule_store.get(task_id)
+    if task is None:
+        return HTMLResponse('<div class="modal-backdrop" onclick="if(event.target===this) this.remove()"><div class="modal-box"><p class="error">⚠️ Không tìm thấy mục này — có thể đã bị đổi/huỷ ở nơi khác.</p></div></div>')
+    candidates = _swap_candidates(task)
+    return HTMLResponse(_swap_modal_html(task, candidates, account_id, page, page_size, action_filter, date_filter, tz_offset))
+
+
+@router.post("/schedule/swap")
+async def schedule_swap(request: Request, _: None = Depends(_require_login)):
+    """Trade `scheduled_at` between two pending tasks — see
+    schedule_store.swap_scheduled_at()'s docstring for why no daily-cap/
+    gap/quiet-hours re-check happens here: it's guaranteed by only ever
+    offering same-account+same-bucket candidates in the modal above.
+    Re-validates that pairing here too (not just trusting the modal's own
+    filtering) since the form is a plain POST an admin could otherwise
+    hand-edit."""
+    form = await request.form()
+    account_id, page, page_size, _missed_page, action_filter, date_filter, tz_offset, _missed_min_days = _schedule_form_filter(form)
+    task_id_a = str(form.get("task_id_a", ""))
+    task_id_b = str(form.get("task_id_b", ""))
+    task_a = schedule_store.get(task_id_a)
+    task_b = schedule_store.get(task_id_b)
+    error: str | None = None
+    if task_a is None or task_b is None:
+        error = "Không tìm thấy 1 trong 2 mục này — có thể đã bị đổi/huỷ ở nơi khác."
+    else:
+        from human_bot.agent import rate_limit_bucket_for
+        if task_a.account_id != task_b.account_id or rate_limit_bucket_for(task_a.action) != rate_limit_bucket_for(task_b.action):
+            error = "2 bài phải cùng tài khoản và cùng loại hành động (đăng bài / bình luận) mới đổi giờ được."
+    if error:
+        if _is_htmx(request):
+            return HTMLResponse(_schedule_content_html(account_id=account_id, page=page, page_size=page_size, action_filter=action_filter, date_filter=date_filter, tz_offset=tz_offset, error=error) + _MODAL_CLOSE_OOB)
+        return _schedule_redirect(account_id, page, page_size=page_size, action=action_filter, date=date_filter, tz_offset=tz_offset, error=error)
+    schedule_store.swap_scheduled_at(task_id_a, task_id_b)
+    if _is_htmx(request):
+        return HTMLResponse(_schedule_content_html(account_id=account_id, page=page, page_size=page_size, action_filter=action_filter, date_filter=date_filter, tz_offset=tz_offset, saved=True) + _MODAL_CLOSE_OOB)
+    return _schedule_redirect(account_id, page, page_size=page_size, action=action_filter, date=date_filter, tz_offset=tz_offset, saved=1)
 
 
 def _fire_now_confirm_modal_html(

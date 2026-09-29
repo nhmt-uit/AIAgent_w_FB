@@ -377,6 +377,37 @@ def update(task_id: str, **fields_to_update) -> ScheduledTask | None:
     return task
 
 
+def swap_scheduled_at(task_id_a: str, task_id_b: str) -> tuple[ScheduledTask, ScheduledTask] | None:
+    """Swap the `scheduled_at` of two PENDING tasks (owner request
+    2026-09-29, "đổi giờ đăng giữa 2 bài viết" — first half only: both
+    tasks already in pending/, missed↔pending swap is a separate, later
+    piece). No other field moves — same task keeps its own content/
+    target_url/account_id, just trades time slots with the other one.
+
+    Deliberately does NOT re-validate daily caps/gaps/quiet-hours here —
+    admin.py's caller is responsible for checking both tasks share the
+    same account_id AND the same RateLimiter bucket (agent.py's
+    rate_limit_bucket_for()) before calling this, per the owner's own
+    reasoning (2026-09-29): each time slot was already validated for
+    that exact account+bucket combination when ITS OWN task was
+    scheduled, so handing that already-valid slot to the other task of
+    the same account+bucket is still valid — nothing here could invalidate
+    that by re-deriving it differently.
+
+    Returns the two updated tasks `(a, b)`, or None if either id is not
+    currently in pending/ (already fired/cancelled/edited away — caller
+    should re-render rather than assume success, same convention as
+    update()/restore_to_pending())."""
+    task_a = get(task_id_a)
+    task_b = get(task_id_b)
+    if task_a is None or task_b is None:
+        return None
+    task_a.scheduled_at, task_b.scheduled_at = task_b.scheduled_at, task_a.scheduled_at
+    add(task_a)
+    add(task_b)
+    return task_a, task_b
+
+
 def _move_to(task_id: str, target_dir: Path, source_dir: Path | None = None) -> Path | None:
     # source_dir resolved to PENDING_DIR here, at CALL time, not as the
     # parameter's own default — a default value binds to the module
