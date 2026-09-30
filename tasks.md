@@ -5102,3 +5102,67 @@ thay đổi này, và khối lượng job bị loại thực tế rất nhỏ.)
 **Test:** thêm 4 test (2 cho `sanitize_job()`/dict lồng ở
 `test_content_strategist.py`, 1 cho case jlpt-only ở `test_data_sync.py`).
 **439/439 pass.** Vẫn chưa chạy qua trình duyệt thật, chưa commit.
+
+## Chỉnh opener + câu chữ mẫu đăng bài nhóm, theo yêu cầu owner (2026-09-30)
+
+- [x] **Thêm opener mới + ràng buộc 1 chiều cho "TÌM NHÂN TÀI"** —
+      `_JOB_POST_OPENERS` (`content_strategist.py`) thêm "TÌM ĐỒNG CAM
+      CỘNG KHỔ" (giờ 9 opener). "TÌM NHÂN TÀI" chỉ được vào vòng xoay khi
+      `visaType == "gijinkoku"` (Kỹ Sư) — lọc hẳn khỏi danh sách cho mọi
+      visa khác/thiếu visa, không chỉ né khi tới lượt. **Chỉ ràng buộc 1
+      chiều** (owner nhấn mạnh lại): visa Kỹ Sư KHÔNG bị ép luôn ra "TÌM
+      NHÂN TÀI" — vẫn xoay đủ cả 9 opener như bình thường, chỉ là opener
+      này được "mở khoá" thêm cho trường hợp này. 2 test mới xác nhận cả
+      2 chiều (`test_..._talent_opener_restricted_to_engineer_visa` /
+      `..._available_for_engineer_visa`). 441/441 pass.
+      Commit: `b5fa630`.
+- [x] **Đổi lại câu chữ theo yêu cầu owner** — CTA thứ 7 trong
+      `_CONTACT_CTA`: "Muốn ứng tuyển thì ib mình nha" → "Tìm hiểu thêm
+      thì ib mình nha". 5 suffix "thiếu visa/lương" (`_MISSING_INFO_SUFFIXES`)
+      thay toàn bộ theo đúng câu owner đưa. Không có test nào phụ thuộc
+      text cụ thể nên không cần sửa test. 441/441 pass. Commit: `3f84183`.
+
+## Rà soát Admin UI + đối chiếu công cụ tương tự trên thị trường — 10 ý tưởng, owner chốt ghi nhận (2026-09-30)
+
+Không phải việc đã làm — chỉ note lại để bàn thêm, chưa cái nào được lên kế
+hoạch triển khai. Đối chiếu Buffer/Hootsuite/Planable/Sprout Social,
+NinjaPoster/Group Posting (đối thủ trực tiếp đăng bài nhóm FB), Workable/
+Greenhouse/Bullhorn (nền tảng tuyển dụng đa kênh), và Hootsuite/FastSocial.ai
+(approval queue cho nội dung AI). Xem đầy đủ lý do/bằng chứng từng ý ở
+`FB_Post_Assistant.md` mục 6. Đã xác nhận hệ thống hiện tại vượt nhiều tool
+cùng loại ở mảng chống phát hiện (mouse/scroll giả người, fingerprint riêng
+theo tài khoản, AI viết N bản/N nhóm) — không đề xuất thêm ở mảng đó.
+
+- [ ] **[Owner: "chính xác", ưu tiên bàn trước]** Trình soạn "kho câu chữ"
+      ngay trên Admin UI (tab mới ở `/admin/config`, sửa được
+      opener/CTA/câu thiếu visa-lương/tên visa/mẫu bình luận, lưu vào
+      `runtime_config.json`) — thay vì phải sửa code + test + commit mỗi
+      lần đổi 1 câu chữ như vừa xảy ra ở mục ngay trên.
+- [ ] Kênh báo động (Slack/Telegram) khi tài khoản bị khoá hoặc service
+      ngừng chạy.
+- [ ] Bảng "sức khoẻ tài khoản" ngay trang chủ (mở rộng sync-status sẵn
+      có): lần đăng/bình luận thành công gần nhất, cảnh báo im lặng quá
+      lâu, cảnh báo phiên đăng nhập sắp hết hạn.
+- [ ] Tìm kiếm (job/công ty/nhóm) + xuất CSV ở trang Báo cáo.
+- [ ] Lịch sử thay đổi cấu hình (audit log `runtime_config.json`) — vì
+      `save_*_overrides` ghi đè cả section, không merge.
+- [ ] Xem "Lịch đăng" dạng calendar kéo-thả, thay vì bảng + thao tác từng
+      cặp "⇄ Đổi giờ"/"↩️ Mượn giờ".
+- [ ] **[Vòng 2]** Gắn nhãn "nguồn nội dung" (AI vs template) cho từng
+      task/log — điều kiện tiên quyết để làm được mục "Kiểm tra lại phần
+      viết lại nội dung khi đăng bài vào nhóm" (dòng 763 phía trên), vì
+      hiện không có cách nào lọc ra đúng tập bài AI viết.
+- [ ] **[Vòng 2]** Bảng "hiệu suất từng nhóm" ở `/admin/groups` (tỉ lệ
+      thành công/chờ duyệt/timeout riêng từng nhóm — báo cáo hiện chỉ
+      gộp theo job, không gộp theo nhóm).
+- [ ] **[Vòng 2]** Tự động tạm ngưng 1 nhóm khỏi vòng xoay nếu thất bại
+      liên tục N lần (circuit breaker, đi kèm ý ngay trên).
+- [ ] **[Vòng 2]** Callback/webhook báo lại kết quả đăng cho bên B (kiến
+      trúc hiện 1 chiều, bot chỉ GET từ bên B) — phụ thuộc bên B có muốn
+      nhận không, cần bàn trước.
+
+**Cố tình KHÔNG đề xuất** (đi ngược tinh thần "giảm dấu vết bot" của dự
+án): phân tích engagement (like/comment nhận được — tăng lượt bot quay lại
+đọc trang); tự động phát hiện trùng lặp văn bản giữa các bài AI viết (cùng
+rủi ro báo sai với quyết định đã chốt ở mục 5 tài liệu nghiên cứu, không tự
+nhận diện tin trùng).

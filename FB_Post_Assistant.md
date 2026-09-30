@@ -487,6 +487,19 @@ liệu thật hằng ngày và yêu cầu kiểm tra chéo lại mọi thứ tr�
   không tìm thấy, không phải lỗi tải trang) — không phải lỗi cũ hồi lại,
   nhiều khả năng liên quan các lần sửa UI tiếng Việt sau đó. Chưa đào
   sâu, owner để sau (30/09).
+- **Chỉnh câu chữ mẫu đăng bài vào nhóm theo yêu cầu owner:** thêm 1 câu
+  mở đầu mới ("TÌM ĐỒNG CAM CỘNG KHỔ"), và giới hạn câu mở đầu "TÌM NHÂN
+  TÀI" chỉ dùng cho tin có visa Kỹ Sư (gijinkoku) — ràng buộc chỉ 1
+  chiều: tin visa Kỹ Sư vẫn xoay đủ mọi câu mở đầu bình thường, không bị
+  ép luôn phải ra đúng câu này. Đổi thêm 1 câu mời nhắn tin và toàn bộ 5
+  câu "thiếu visa/lương" theo đúng bản owner đưa. 441/441 test pass.
+- **Rà lại quy trình ghi chép của chính assistant:** phát hiện 2 việc sửa
+  câu chữ ở trên đã commit code nhưng quên ghi vào `tasks.md`/tài liệu
+  này — bổ sung lại ngay khi owner hỏi tiếp phần "10 câu CTA" cho thấy
+  thiếu sót. Đã bổ sung đầy đủ vào `tasks.md` (mục "Chỉnh opener + câu
+  chữ mẫu đăng bài nhóm").
+- **Rà soát Admin UI + đối chiếu công cụ tương tự trên thị trường, owner
+  chốt ghi nhận cả 6 ý tưởng để bàn thêm (chưa làm, xem mục 6 bên dưới).**
 
 ---
 
@@ -652,6 +665,69 @@ Một vài lựa chọn thiết kế đáng chú ý, được cân nhắc kỹ c
   cảnh báo khi service downtime quá lâu (VD >1 tiếng) có thể giúp phát hiện sớm
   hơn lần sau, tránh dồn backlog lớn — nằm cùng nhóm với mục "thêm kênh báo
   động Slack/email" đã ghi ở trên.
+
+**[MỚI, 2026-09-30] Rà soát Admin UI + đối chiếu công cụ social-media-scheduling
+tương tự trên thị trường (Buffer, Hootsuite, Planable, Sprout Social) và các bot
+auto-post nhóm Facebook cạnh tranh trực tiếp (NinjaPoster, Group Posting). Owner
+đã xem và **chốt ghi nhận cả 6 ý để bàn thêm**, chưa cái nào được lên kế hoạch
+triển khai cụ thể:**
+
+1. **[Owner đánh giá "chính xác", ưu tiên bàn trước]** Trình soạn "kho câu chữ"
+   ngay trên Admin UI — hiện toàn bộ opener/CTA/câu thiếu visa-lương/tên visa/
+   mẫu bình luận đều là hằng số cứng trong code (`content_strategist.py`,
+   `data_sync.py`), sửa 1 câu chữ phải đi qua code + test + commit (đúng như
+   vừa xảy ra ở mục ngay trên). Đề xuất: thêm tab "Kho nội dung" ở
+   `/admin/config`, sửa được các danh sách này và lưu vào `runtime_config.json`,
+   không cần deploy lại.
+2. Kênh báo động (Slack/Telegram) khi tài khoản bị khoá hoặc service ngừng
+   chạy — cùng nhóm với ý đã ghi ở mục ngay trên (sự cố downtime 14h37 phút),
+   nhưng xếp lại thành đề xuất chính thức thay vì chỉ "nêu ý".
+3. Bảng "sức khoẻ tài khoản" ngay trên trang chủ — mở rộng từ sync-status per
+   account đang có sẵn (hiện nằm khuất trong tab "Đồng bộ"): lần đăng/bình luận
+   thành công gần nhất, cảnh báo nếu im lặng quá lâu, cảnh báo phiên đăng nhập
+   sắp hết hạn.
+4. Tìm kiếm (theo tên job/công ty/nhóm) + xuất CSV ở trang Báo cáo — hiện chỉ
+   lọc được theo tài khoản + khoảng ngày.
+5. Lịch sử thay đổi cấu hình (audit log cho `runtime_config.json`) — vì
+   `save_*_overrides` ghi đè cả section chứ không merge, 1 lần lưu nhầm có thể
+   âm thầm mất field khác; audit trail giúp phát hiện sớm.
+6. Xem "Lịch đăng" dạng calendar kéo-thả đổi giờ, thay vì bảng danh sách +
+   thao tác từng cặp "⇄ Đổi giờ"/"↩️ Mượn giờ" như hiện tại.
+
+Đã đối chiếu để không đề xuất trùng: hệ thống hiện **đã vượt** nhiều tool
+thương mại cùng loại ở khía cạnh chống phát hiện (mô phỏng chuột/cuộn người
+thật, fingerprint riêng ổn định theo tài khoản, AI viết N bản khác nhau cho N
+nhóm, phân quyền ADMIN/MOD, ảnh chụp bằng chứng) — không cần làm thêm ở mảng
+đó.
+
+**[MỚI, vòng 2, 2026-09-30] Đào sâu thêm vào schema dữ liệu + kiến trúc 2 hệ
+thống (bot ↔ bên B), đối chiếu thêm nền tảng tuyển dụng đa kênh (Workable,
+Greenhouse, Bullhorn) và tool approval-queue cho nội dung AI (Hootsuite,
+FastSocial.ai). Owner đồng ý ghi nhận thêm 4 ý — cũng chưa lên kế hoạch triển
+khai:**
+
+7. Gắn nhãn "nguồn nội dung" (AI viết vs mẫu cứng/template) cho từng
+   task/log — `action_log` hiện có cột `source` (ai/cái gì kích hoạt) nhưng
+   không có cột nào ghi content do AI hay do `_draft_job_post_placeholder()`
+   tạo ra. Không có cột này thì không thể lọc ra đúng tập bài AI viết để làm
+   ý số 3 ở mục [tasks.md:763](tasks.md#L763) ("rà soát diện rộng nội dung
+   AI") — đây là điều kiện tiên quyết cho việc đó, không phải ý độc lập.
+8. Bảng "hiệu suất từng nhóm" ở trang Nhóm (`/admin/groups`) — hiện chỉ là
+   CRUD phẳng, không thấy tỉ lệ thành công/chờ duyệt/timeout của riêng từng
+   nhóm (báo cáo hiện gộp theo JOB chứ không gộp theo NHÓM).
+9. Tự động tạm ngưng 1 nhóm khỏi vòng xoay nếu thất bại liên tục N lần
+   (circuit breaker) — đi kèm ý 8, giảm rủi ro tiếp tục đăng vào nhóm đã
+   hỏng (rời nhóm/bị chặn) mà không ai phát hiện kịp.
+10. Callback/webhook báo lại kết quả đăng (thành công/thất bại) cho bên B —
+    kiến trúc hiện tại 1 chiều (bot chỉ GET job/candidate từ bên B, không
+    báo ngược lại). Phụ thuộc bên B có muốn nhận không, cần bàn với họ
+    trước khi làm.
+
+Cố tình KHÔNG đề xuất 2 hướng vì đi ngược tinh thần "giảm dấu vết bot": phân
+tích engagement (like/comment nhận được — đòi hỏi bot quay lại đọc trang
+nhiều hơn, tăng tín hiệu bot) và tự động phát hiện trùng lặp văn bản giữa các
+bài AI viết (cùng nhóm rủi ro với quyết định đã chốt ở mục 5, dễ báo sai hơn
+lợi ích).
 
 ---
 
