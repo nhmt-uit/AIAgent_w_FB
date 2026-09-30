@@ -193,7 +193,10 @@ def test_draft_job_post_placeholder_header_splits_past_max_len():
 
 
 def test_draft_job_post_placeholder_opener_keyed_by_variant_seed():
-    job = _job()
+    # visaType=gijinkoku so the full opener list (including the
+    # engineer-only "TÌM NHÂN TÀI") is in rotation — this test is about
+    # the seed->index cycling, not the visa restriction below.
+    job = _job(visaType="gijinkoku")
     text0 = cs._draft_job_post_placeholder(job, variant_seed=0)
     text1 = cs._draft_job_post_placeholder(job, variant_seed=1)
     opener0 = text0.split("\n")[0].split(" - ")[0]
@@ -202,10 +205,40 @@ def test_draft_job_post_placeholder_opener_keyed_by_variant_seed():
     assert opener1 == cs._JOB_POST_OPENERS[1]
 
 
+def test_draft_job_post_placeholder_talent_opener_restricted_to_engineer_visa():
+    # "TÌM NHÂN TÀI" (owner rule, 2026-09-30) must never appear for a
+    # non-engineer visa (or no visa at all) — cycle every seed across the
+    # non-engineer-visa opener list length and confirm it's absent.
+    job = _job(visaType="tokutei")
+    openers_seen = {
+        cs._draft_job_post_placeholder(job, variant_seed=i).split("\n")[0].split(" - ")[0]
+        for i in range(len(cs._JOB_POST_OPENERS))
+    }
+    assert "TÌM NHÂN TÀI" not in openers_seen
+
+    job_no_visa = _job()
+    openers_seen_no_visa = {
+        cs._draft_job_post_placeholder(job_no_visa, variant_seed=i).split("\n")[0].split(" - ")[0]
+        for i in range(len(cs._JOB_POST_OPENERS))
+    }
+    assert "TÌM NHÂN TÀI" not in openers_seen_no_visa
+
+
+def test_draft_job_post_placeholder_talent_opener_available_for_engineer_visa():
+    job = _job(visaType="gijinkoku")
+    openers_seen = {
+        cs._draft_job_post_placeholder(job, variant_seed=i).split("\n")[0].split(" - ")[0]
+        for i in range(len(cs._JOB_POST_OPENERS))
+    }
+    assert "TÌM NHÂN TÀI" in openers_seen
+
+
 # --- template_variants -------------------------------------------------------
 
 def test_template_variants_one_per_group_keyed_by_group_index_not_job_index():
-    job = _job()
+    # visaType=gijinkoku so the full opener list is in rotation, matching
+    # the unfiltered cs._JOB_POST_OPENERS indexing this test asserts against.
+    job = _job(visaType="gijinkoku")
     groups = [GroupRef(name="G1", url=""), GroupRef(name="G2", url=""), GroupRef(name="G3", url="")]
     variants = cs.template_variants(job, groups)
     assert len(variants) == 3

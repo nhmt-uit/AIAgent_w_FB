@@ -129,7 +129,19 @@ _JOB_POST_OPENERS = [
     "TIN TUYỂN DỤNG",
     "CƠ HỘI VIỆC LÀM",
     "CẦN TUYỂN",
+    "TÌM ĐỒNG CAM CỘNG KHỔ",
 ]
+
+# "TÌM NHÂN TÀI" ("looking for talent") over-promises for anything other
+# than the engineer-tier visa — owner's explicit rule (2026-09-30):
+# restricted to jobs whose visaType is "gijinkoku" (_VISA_TYPE_NAMES'
+# "Kỹ Sư"/technical-humanities-international visa). Filtered OUT of the
+# rotation entirely for any other visa (including missing/unknown), not
+# just skipped-when-picked — keeps the group-index cycling in
+# _draft_job_post_placeholder()/template_variants() stable (no gaps to
+# re-roll around).
+_ENGINEER_ONLY_OPENERS = {"TÌM NHÂN TÀI"}
+_ENGINEER_VISA_CODE = "gijinkoku"
 
 # "<opener> - <title>" fits on one line up to this many characters; past
 # it, splits into "<opener>" then "<title>" on their own lines instead
@@ -368,7 +380,12 @@ def sanitize_job(job: dict) -> dict:
 
 def _draft_job_post_placeholder(job: dict, variant_seed: int = 0) -> str:
     attrs = job.get("attributes") or {}
-    opener = _JOB_POST_OPENERS[variant_seed % len(_JOB_POST_OPENERS)]
+    visa = attrs.get("visaType")
+    is_engineer_visa = str(visa).strip().lower() == _ENGINEER_VISA_CODE
+    openers = _JOB_POST_OPENERS if is_engineer_visa else [
+        o for o in _JOB_POST_OPENERS if o not in _ENGINEER_ONLY_OPENERS
+    ]
+    opener = openers[variant_seed % len(openers)]
     title = _join_list_or_str(job.get("title") or attrs.get("jobField")) or "vị trí đang tuyển"
 
     header = f"{opener} - {title}"
@@ -381,7 +398,6 @@ def _draft_job_post_placeholder(job: dict, variant_seed: int = 0) -> str:
     if location:
         lines.append(f"{random.choice(_LOCATION_LABELS)}: {location}")
 
-    visa = attrs.get("visaType")
     if visa:
         lines.append(_visa_line(visa))
     jlpt = attrs.get("jlpt")
