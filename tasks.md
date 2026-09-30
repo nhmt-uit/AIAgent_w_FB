@@ -1174,8 +1174,8 @@
       **Vẫn thiếu bước cuối:** chưa chạy 1 task `post_to_group` thật
       qua chính bot (end-to-end, không phải Codegen tay) để xác nhận
       `result.txt` ra đúng `posted_to_group_pending_approval`.
-- [ ] **(2026-09-17 — hết tạm hoãn, xem cập nhật bên dưới: đã xác nhận
-      lặp lại thật, đã áp dụng lại fix, đang theo dõi)** `comment_on_group_post`
+- [x] **(2026-09-17 — hết tạm hoãn; 2026-09-30 — đủ dữ liệu theo dõi,
+      xác nhận fix đứng, xem cập nhật cuối mục)** `comment_on_group_post`
       timeout 30s khi
       `page.goto(post_url)` vào permalink bài trong nhóm
       (`Page.goto: Timeout 30000ms exceeded... waiting until "load"`,
@@ -1248,6 +1248,18 @@
       tần suất lỗi cũ có giảm hẳn, vừa xem có phát sinh lỗi MỚI nào do
       đổi `wait_until` hay không. Chưa đánh dấu hoàn thành cho tới khi
       có đủ dữ liệu theo dõi.
+
+      **Cập nhật 2026-09-30 — đủ dữ liệu theo dõi, XÁC NHẬN FIX ĐỨNG.**
+      Fix `domcontentloaded` lên `main` lúc `2026-09-17 05:02 UTC` (commit
+      `6b12ef5`). Tra `action_log` từ mốc đó tới nay (13 ngày,
+      `comment_on_group_post`: 5 thành công / 2 thất bại): **0 lần** tái
+      diễn đúng lỗi gốc `Page.goto: Timeout` (trước đó 4 lần/1 tuần). 2
+      lần thất bại còn lại là lỗi KHÁC loại — `Locator.wait_for: Timeout`
+      (id 166 ngày 17/09, id 203 ngày 28/09, "waiting for get_...") —
+      không phải hồi lại lỗi goto, có khả năng liên quan tới 3 commit sau
+      đó về fallback UI tiếng Việt (`b246a92`, `0ba2104`, `5eb614a`).
+      Chưa đào sâu 2 lỗi mới này (owner quyết định để sau, 2026-09-30) —
+      ghi nhận riêng để không lẫn với lỗi goto đã đóng ở đây.
 - [x] **Sửa lỗi thật: comment lên lịch quá gần nhau giữa các lần poll
       `sync_all()` khác nhau — thêm "kẹp sàn" cho comment scheduling.**
       Owner phát hiện 3 comment cùng tài khoản chỉ cách nhau 5-20 phút

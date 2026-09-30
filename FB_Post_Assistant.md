@@ -471,6 +471,22 @@ liệu thật hằng ngày và yêu cầu kiểm tra chéo lại mọi thứ tr�
   bị liệt nhầm vào "thiếu nội dung" và bị loại oan. Đã sửa cả 3, kiểm tra
   lại không ảnh hưởng gì tới 3 tin thật đã xác nhận trước đó. **439/439
   test pass.**
+- **Xác nhận đứng fix lỗi treo (timeout) khi bình luận vào bài trong nhóm
+  — theo dõi 13 ngày, không cần chạy lại/Codegen thêm:** lỗi này (mở lần
+  đầu 10/09) là bài toán khó xác nhận vì tần suất thấp (~1 lần/2-3 ngày)
+  — Codegen ghi tay 1 lần gần như chắc chắn không rơi đúng lúc lỗi xảy
+  ra, nên cách xác nhận đúng là để hệ thống chạy thật nhiều ngày rồi soi
+  lại nhật ký. Trước khi sửa (17/09): lỗi tái diễn 4 lần trong 1 tuần
+  trên 2 nhóm khác nhau — không phải sự cố mạng ngẫu nhiên mà là đặc
+  tính của trang bài viết trong nhóm (Facebook giữ kết nối nền gần vô
+  hạn khiến tín hiệu "tải xong" mặc định của trình duyệt tự động không
+  bao giờ bắn). Sau khi đổi sang tín hiệu "tải xong" khác (17/09), soi
+  lại nhật ký 13 ngày tiếp theo (17/09 → 30/09): **0 lần tái diễn** đúng
+  lỗi gốc. Coi như xác nhận fix đứng.
+  Phát sinh 2 lỗi timeout KHÁC loại trong 13 ngày đó (chờ 1 nút bấm
+  không tìm thấy, không phải lỗi tải trang) — không phải lỗi cũ hồi lại,
+  nhiều khả năng liên quan các lần sửa UI tiếng Việt sau đó. Chưa đào
+  sâu, owner để sau (30/09).
 
 ---
 
