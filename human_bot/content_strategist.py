@@ -160,7 +160,7 @@ _CONTACT_CTA = [
     "Cần thêm thông tin thì ib mình nha",
     "Liên hệ mình qua inbox để rõ hơn",
     "Ai cần thì nhắn tin mình trao đổi thêm nha",
-    "Muốn ứng tuyển thì ib mình nha",
+    "Tìm hiểu thêm thì ib mình nha",
     "Nhắn tin mình để mình gửi thêm thông tin",
     "Quan tâm thì để lại tin nhắn nha",
     "Ib mình để nhận thông tin chi tiết",
@@ -174,11 +174,11 @@ _CONTACT_CTA = [
 # omits its own line, same as before.
 _MISSING_INFO_LABELS = {"visa": "visa", "salary": "lương"}
 _MISSING_INFO_SUFFIXES = [
-    "nhắn tin thêm nha",
-    "trao đổi thêm nhé",
-    "ib để biết thêm",
-    "để lại tin nhắn mình gửi thêm nha",
-    "nhắn mình để rõ hơn",
+    "Trao đổi thêm trong ib nha",
+    "Trao đổi thêm",
+    "Thông tin thêm trong ib",
+    "Mình sẽ nói kĩ hơn khi trao đổi",
+    "Cụ thể hơn trong tin nhắn",
 ]
 
 _SALARY_PERIOD_LABELS = {"month": "tháng", "hour": "giờ", "day": "ngày", "year": "năm"}
