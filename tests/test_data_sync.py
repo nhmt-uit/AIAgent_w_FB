@@ -953,3 +953,39 @@ def test_sweep_overdue_on_startup_empty_when_nothing_pending(isolated_schedule_d
     result = sweep_overdue_on_startup()
     assert result["swept"] == 0
     assert isolated_schedule_dirs.list_missed() == []
+
+
+# --- _draft_candidate_reply_placeholder: runtime_config override (2026-10-01) -
+
+def test_draft_candidate_reply_placeholder_uses_default_template_when_no_override(isolated_runtime_config):
+    """isolated_runtime_config here isn't optional — without it this reads
+    whatever's ACTUALLY saved in the real project's runtime_config.json
+    (feedback_no_live_config_test_writes: tests must never depend on live
+    state); found missing 2026-10-01 alongside the same gap in
+    test_content_strategist.py, after the owner's live "Kho nội dung"
+    save made a DIFFERENT un-isolated test fail against real local data."""
+    candidate = {"attributes": {"desiredJobField": "cơ khí", "preferredRegion": "Tokyo"}}
+    text = data_sync._draft_candidate_reply_placeholder(candidate)
+    assert any(text == t.format(field="cơ khí", region_clause=" ở khu vực Tokyo")
+               for t in data_sync._CANDIDATE_REPLY_TEMPLATES_DEFAULT)
+
+
+def test_draft_candidate_reply_placeholder_uses_runtime_config_override(isolated_runtime_config):
+    from human_bot import runtime_config as rc
+    rc.save_candidate_reply_templates(["Bạn ơi, bên mình cần {field}{region_clause}, nhắn mình nhé."])
+    candidate = {"attributes": {"desiredJobField": "cơ khí", "preferredRegion": "Tokyo"}}
+    text = data_sync._draft_candidate_reply_placeholder(candidate)
+    assert text == "Bạn ơi, bên mình cần cơ khí ở khu vực Tokyo, nhắn mình nhé."
+
+
+def test_draft_candidate_reply_placeholder_falls_back_to_default_on_bad_override_placeholder(isolated_runtime_config):
+    """admin.py's save route already rejects a template with a bad
+    placeholder before it ever reaches runtime_config.json — this covers
+    the only way a bad one could still get there: a hand-edited/corrupted
+    file. Must never crash drafting a real candidate reply."""
+    from human_bot import runtime_config as rc
+    rc.save_candidate_reply_templates(["Chào {ten_khong_hop_le}, nhắn mình nhé."])
+    candidate = {"attributes": {"desiredJobField": "cơ khí", "preferredRegion": "Tokyo"}}
+    text = data_sync._draft_candidate_reply_placeholder(candidate)
+    assert any(text == t.format(field="cơ khí", region_clause=" ở khu vực Tokyo")
+               for t in data_sync._CANDIDATE_REPLY_TEMPLATES_DEFAULT)

@@ -672,13 +672,60 @@ auto-post nhóm Facebook cạnh tranh trực tiếp (NinjaPoster, Group Posting)
 đã xem và **chốt ghi nhận cả 6 ý để bàn thêm**, chưa cái nào được lên kế hoạch
 triển khai cụ thể:**
 
-1. **[Owner đánh giá "chính xác", ưu tiên bàn trước]** Trình soạn "kho câu chữ"
-   ngay trên Admin UI — hiện toàn bộ opener/CTA/câu thiếu visa-lương/tên visa/
-   mẫu bình luận đều là hằng số cứng trong code (`content_strategist.py`,
-   `data_sync.py`), sửa 1 câu chữ phải đi qua code + test + commit (đúng như
-   vừa xảy ra ở mục ngay trên). Đề xuất: thêm tab "Kho nội dung" ở
-   `/admin/config`, sửa được các danh sách này và lưu vào `runtime_config.json`,
-   không cần deploy lại.
+1. **[Owner đánh giá "chính xác", ưu tiên bàn trước — ĐÃ LÀM 2026-10-01]**
+   Trình soạn "kho câu chữ" ngay trên Admin UI — tab mới "📝 Kho nội dung" ở
+   `/admin/config`, sửa trực tiếp 5 danh sách (câu mở đầu bài đăng nhóm có
+   kèm giới hạn visa tuỳ chọn, câu mời nhắn tin, câu khi thiếu visa/lương,
+   mẫu bình luận trả lời ứng viên, tên gọi các loại visa) và lưu vào
+   `runtime_config.json`, có hiệu lực ngay cho lần đăng tiếp theo — không
+   cần sửa code/chạy test/commit/deploy như trước. Có chặn lưu nếu dữ liệu
+   nguy hiểm (danh sách rỗng, mẫu bình luận dùng sai placeholder, opener
+   không còn dòng nào dùng được cho visa khác) — không bao giờ để 1 lần lưu
+   sai làm sập việc đăng bài/bình luận thật. 18 test mới, verify thêm bằng
+   tay toàn bộ chuỗi Admin UI → file cấu hình → bài đăng thật. Chi tiết đầy
+   đủ ở `tasks.md`, mục "Kho nội dung — trình soạn câu chữ ngay trên Admin
+   UI (2026-10-01)".
+   **Tự soát lại (owner yêu cầu đóng vai tester) phát hiện thêm 5 lỗ hổng
+   thật** (đáng chú ý nhất: mẫu bình luận dùng sai placeholder nếu file
+   cấu hình bị sửa tay/hỏng sẽ CRASH ngay lúc đăng bình luận — đã thêm
+   lưới an toàn rơi về mẫu mặc định, không khác gì cách mọi nhánh AI khác
+   trong dự án đã làm) và 2 chỗ giao diện chưa thuận tiện (dropdown hiện
+   mã visa thô khó đọc; 5 mục liệt kê ~40 dòng input cùng lúc không thu
+   gọn được) — đã sửa hết, xem chi tiết đầy đủ ở `tasks.md`.
+   **Owner tự mở trình duyệt thật dùng thử, phát hiện thêm 2 lỗi chỉ hiện
+   ra khi nhìn trang thật** (review HTML tĩnh ở bước trên không bắt
+   được): (1) thừa 1 nút — "Lưu cấu hình" (nút chung cho cả form) và "Lưu
+   Kho nội dung" (nút riêng) cùng hiện, đã ẩn nút chung khi ở tab này;
+   (2) tên gọi visa dài (vừa thêm ở bước trên) làm ô chọn "Giới hạn visa"
+   nở rộng ra, ép ô nhập câu co lại gần như biến mất và đẩy nút "Xoá"
+   tràn ra ngoài khung — đã giới hạn chiều rộng ô chọn + đặt sàn tối
+   thiểu cho ô nhập + cho xuống dòng nếu vẫn không đủ chỗ. Đã sửa cả 2,
+   thêm test hồi quy, chi tiết ở `tasks.md`.
+   **Owner hỏi "Giới hạn visa" có chọn được nhiều mã cùng lúc không (thay
+   vì đúng 1 mã như cũ) — hợp lý, đã đổi sang chọn nhiều.** Khi đổi, phát
+   hiện file cấu hình THẬT trên máy (không phải test, không commit vào
+   git) đã có sẵn dữ liệu owner lưu thử qua UI từ trước (bằng chứng khớp
+   với lỗi "2 nút Lưu" ở trên — service lúc đó chạy code cũ) — đã viết
+   script chuyển đổi 1 lần sang cấu trúc mới, không mất nội dung. Tiện
+   thể phát hiện thêm 1 lỗ hổng trong CHÍNH quy trình viết test: vài bài
+   test âm thầm đọc thẳng file cấu hình thật thay vì bản cô lập riêng cho
+   test (đúng điều dự án luôn tránh) — chỉ lộ ra khi owner lưu dữ liệu
+   thật làm 1 test tự nhiên fail. Đã sửa tận gốc cho cả file test liên
+   quan, không chỉ vá từng chỗ lẻ. Toàn bộ chi tiết ở `tasks.md`.
+   **Owner chê giao diện `<select multiple>` "xấu quá" và báo nút "Lưu
+   cấu hình" vẫn còn sau khi đã restart server — sửa cả 2.** (1) Đổi hộp
+   chọn nhiều nhìn cũ kỹ (phải giữ Ctrl/Cmd mới chọn được nhiều) sang
+   đúng kiểu dropdown đẹp đã dùng sẵn ở mọi nơi khác trong trang — bấm
+   thường là bật/tắt lựa chọn ngay, không cần biết phím tắt gì. (2) Hoá
+   ra việc "restart vẫn không hết" không phải lỗi code Python — nút vẫn
+   đúng là có đánh dấu "ẩn" trong mã nguồn, nhưng 1 rule CSS khác của
+   trang (tự đặt kiểu hiển thị riêng) vô tình đè mất tác dụng ẩn đó, nên
+   nút không bao giờ thật sự biến mất trên màn hình dù code đã đúng —
+   cùng đúng loại lỗi từng gặp 1 lần trước đây ở chỗ khác của trang và đã
+   tự sửa, giờ gặp lại ở chỗ mới. Rút kinh nghiệm: bài test tự động trước
+   đó chỉ kiểm tra có chữ "ẩn" trong mã nguồn hay không, không kiểm được
+   việc có ẩn thật trên màn hình hay không, nên không bắt được lỗi này dù
+   đã chạy pass nhiều lần. Chi tiết đầy đủ ở `tasks.md`.
 2. Kênh báo động (Slack/Telegram) khi tài khoản bị khoá hoặc service ngừng
    chạy — cùng nhóm với ý đã ghi ở mục ngay trên (sự cố downtime 14h37 phút),
    nhưng xếp lại thành đề xuất chính thức thay vì chỉ "nêu ý".

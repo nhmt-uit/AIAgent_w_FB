@@ -16,6 +16,22 @@ def deterministic_random(monkeypatch):
     monkeypatch.setattr(cs.random, "choice", lambda seq: seq[0])
 
 
+@pytest.fixture(autouse=True)
+def _auto_isolate_runtime_config(isolated_runtime_config):
+    """Every get_*() this module's drafting functions call (openers/CTA/
+    suffixes/visa names/reply templates) falls back to runtime_config.json
+    when no override is explicitly passed via save_*() in a given test —
+    without this, a test exercising _draft_job_post_placeholder()/
+    _visa_line() with no override of its own would silently read whatever
+    is ACTUALLY saved in the real project's runtime_config.json (found
+    2026-10-01: several tests here had no isolation at all and passed only
+    by coincidence until the owner saved real "Kho nội dung" content via
+    the live admin UI, which then made test_draft_job_post_placeholder_
+    talent_opener_restricted_to_engineer_visa fail against real local
+    state). autouse — see feedback_no_live_config_test_writes: tests must
+    never depend on or write to the live runtime_config.json."""
+
+
 # --- _format_man --------------------------------------------------------
 
 def test_format_man_whole_number():
@@ -201,8 +217,8 @@ def test_draft_job_post_placeholder_opener_keyed_by_variant_seed():
     text1 = cs._draft_job_post_placeholder(job, variant_seed=1)
     opener0 = text0.split("\n")[0].split(" - ")[0]
     opener1 = text1.split("\n")[0].split(" - ")[0]
-    assert opener0 == cs._JOB_POST_OPENERS[0]
-    assert opener1 == cs._JOB_POST_OPENERS[1]
+    assert opener0 == cs._JOB_POST_OPENERS_DEFAULT[0]["text"]
+    assert opener1 == cs._JOB_POST_OPENERS_DEFAULT[1]["text"]
 
 
 def test_draft_job_post_placeholder_talent_opener_restricted_to_engineer_visa():
@@ -212,14 +228,14 @@ def test_draft_job_post_placeholder_talent_opener_restricted_to_engineer_visa():
     job = _job(visaType="tokutei")
     openers_seen = {
         cs._draft_job_post_placeholder(job, variant_seed=i).split("\n")[0].split(" - ")[0]
-        for i in range(len(cs._JOB_POST_OPENERS))
+        for i in range(len(cs._JOB_POST_OPENERS_DEFAULT))
     }
     assert "TÌM NHÂN TÀI" not in openers_seen
 
     job_no_visa = _job()
     openers_seen_no_visa = {
         cs._draft_job_post_placeholder(job_no_visa, variant_seed=i).split("\n")[0].split(" - ")[0]
-        for i in range(len(cs._JOB_POST_OPENERS))
+        for i in range(len(cs._JOB_POST_OPENERS_DEFAULT))
     }
     assert "TÌM NHÂN TÀI" not in openers_seen_no_visa
 
@@ -228,9 +244,76 @@ def test_draft_job_post_placeholder_talent_opener_available_for_engineer_visa():
     job = _job(visaType="gijinkoku")
     openers_seen = {
         cs._draft_job_post_placeholder(job, variant_seed=i).split("\n")[0].split(" - ")[0]
-        for i in range(len(cs._JOB_POST_OPENERS))
+        for i in range(len(cs._JOB_POST_OPENERS_DEFAULT))
     }
     assert "TÌM NHÂN TÀI" in openers_seen
+
+
+# --- runtime_config overrides (admin-editable "Kho nội dung", 2026-10-01) ---
+
+def test_draft_job_post_placeholder_uses_runtime_config_opener_override(isolated_runtime_config):
+    from human_bot import runtime_config as rc
+    rc.save_job_post_openers([{"text": "ĐANG CẦN GẤP", "visa_restrictions": []}])
+    job = _job()
+    text = cs._draft_job_post_placeholder(job, variant_seed=0)
+    assert text.startswith("ĐANG CẦN GẤP")
+
+
+def test_draft_job_post_placeholder_opener_override_still_honors_visa_restriction(isolated_runtime_config):
+    from human_bot import runtime_config as rc
+    rc.save_job_post_openers([
+        {"text": "CHO MỌI VISA", "visa_restrictions": []},
+        {"text": "CHỈ KỸ SƯ", "visa_restrictions": ["gijinkoku"]},
+    ])
+    job_other_visa = _job(visaType="tokutei")
+    openers_seen = {
+        cs._draft_job_post_placeholder(job_other_visa, variant_seed=i).split("\n")[0].split(" - ")[0]
+        for i in range(4)
+    }
+    assert openers_seen == {"CHO MỌI VISA"}
+
+
+def test_draft_job_post_placeholder_opener_can_be_restricted_to_multiple_visas(isolated_runtime_config):
+    """2026-10-01, owner's request: generalized from 1 optional visa code
+    per opener to a list, so one opener can fit several visa types."""
+    from human_bot import runtime_config as rc
+    rc.save_job_post_openers([
+        {"text": "KỸ SƯ HOẶC CHẤT LƯỢNG CAO", "visa_restrictions": ["gijinkoku", "koudo_jinzai"]},
+    ])
+    for visa in ("gijinkoku", "koudo_jinzai"):
+        job = _job(visaType=visa)
+        text = cs._draft_job_post_placeholder(job, variant_seed=0)
+        assert text.startswith("KỸ SƯ HOẶC CHẤT LƯỢNG CAO")
+    job_other = _job(visaType="tokutei")
+    text_other = cs._draft_job_post_placeholder(job_other, variant_seed=0)
+    assert text_other.startswith(cs._FALLBACK_OPENER)
+
+
+def test_draft_job_post_placeholder_falls_back_when_no_unrestricted_opener_left(isolated_runtime_config):
+    """Defense-in-depth (admin.py's save route should already block saving
+    this shape) — drafting must never crash just because every saved opener
+    happens to be visa-restricted and this job's visa doesn't match any."""
+    from human_bot import runtime_config as rc
+    rc.save_job_post_openers([{"text": "CHỈ KỸ SƯ", "visa_restrictions": ["gijinkoku"]}])
+    job = _job(visaType="tokutei")
+    text = cs._draft_job_post_placeholder(job, variant_seed=0)
+    assert text.startswith(cs._FALLBACK_OPENER)
+
+
+def test_draft_job_post_placeholder_uses_runtime_config_cta_and_suffix_override(isolated_runtime_config):
+    from human_bot import runtime_config as rc
+    rc.save_contact_cta(["Liên hệ ngay nhé"])
+    rc.save_missing_info_suffixes(["hỏi thêm nha"])
+    job = _job(company="X Co", location="Tokyo")  # no visa/salary -> missing-info line
+    text = cs._draft_job_post_placeholder(job, variant_seed=0)
+    assert "Liên hệ ngay nhé" in text
+    assert "hỏi thêm nha" in text
+
+
+def test_visa_line_uses_runtime_config_visa_type_names_override(isolated_runtime_config):
+    from human_bot import runtime_config as rc
+    rc.save_visa_type_names({"gijinkoku": ["Tên Mới Cho Gijinkoku"]})
+    assert "Tên Mới Cho Gijinkoku" in cs._visa_line("gijinkoku")
 
 
 # --- template_variants -------------------------------------------------------
@@ -244,7 +327,7 @@ def test_template_variants_one_per_group_keyed_by_group_index_not_job_index():
     assert len(variants) == 3
     for idx, text in enumerate(variants):
         opener = text.split("\n")[0].split(" - ")[0]
-        assert opener == cs._JOB_POST_OPENERS[idx % len(cs._JOB_POST_OPENERS)]
+        assert opener == cs._JOB_POST_OPENERS_DEFAULT[idx % len(cs._JOB_POST_OPENERS_DEFAULT)]["text"]
 
 
 # --- _extract_json ------------------------------------------------------

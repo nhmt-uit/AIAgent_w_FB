@@ -68,7 +68,13 @@ import random
 from typing import TYPE_CHECKING, Any
 
 from human_bot.ai_client import call_ai_text
-from human_bot.runtime_config import get_active_ai_provider_config
+from human_bot.runtime_config import (
+    get_active_ai_provider_config,
+    get_contact_cta,
+    get_job_post_openers,
+    get_missing_info_suffixes,
+    get_visa_type_names,
+)
 
 if TYPE_CHECKING:
     from human_bot.config import GroupRef
@@ -119,29 +125,39 @@ _MAX_AI_POST_LENGTH = 800
 # exists for.
 
 # 5-10 recruitment-style openers to rotate through — replaces the old
-# fixed "[Tin tuyển dụng]" bracket-and-colon style entirely.
-_JOB_POST_OPENERS = [
-    "TÌM ĐỒNG ĐỘI",
-    "TÌM NHÂN SỰ",
-    "TÌM NHÂN TÀI",
-    "TÌM ỨNG VIÊN",
-    "TUYỂN GẤP",
-    "TIN TUYỂN DỤNG",
-    "CƠ HỘI VIỆC LÀM",
-    "CẦN TUYỂN",
-    "TÌM ĐỒNG CAM CỘNG KHỔ",
-]
-
+# fixed "[Tin tuyển dụng]" bracket-and-colon style entirely. Admin-editable
+# via /admin/config's "Kho nội dung" tab (human_bot.runtime_config's
+# get_job_post_openers()/save_job_post_openers()) — this is the CODE
+# DEFAULT, used whenever no override has been saved. Each item's
+# `visa_restrictions` (a list of visaType codes, e.g. ["gijinkoku"]) limits
+# that opener to jobs whose visa is ONE OF these — empty list means no
+# restriction (2026-10-01: generalized from a single optional code to a
+# list, owner's request, so one opener can fit several visa types at
+# once instead of exactly one or none).
 # "TÌM NHÂN TÀI" ("looking for talent") over-promises for anything other
-# than the engineer-tier visa — owner's explicit rule (2026-09-30):
-# restricted to jobs whose visaType is "gijinkoku" (_VISA_TYPE_NAMES'
-# "Kỹ Sư"/technical-humanities-international visa). Filtered OUT of the
-# rotation entirely for any other visa (including missing/unknown), not
-# just skipped-when-picked — keeps the group-index cycling in
+# than the engineer-tier visa (owner's explicit rule, 2026-09-30), so it's
+# restricted to "gijinkoku" (_VISA_TYPE_NAMES_DEFAULT's "Kỹ Sư"). Filtered
+# OUT of the rotation entirely for any other visa (including missing/
+# unknown), not just skipped-when-picked — keeps the group-index cycling in
 # _draft_job_post_placeholder()/template_variants() stable (no gaps to
 # re-roll around).
-_ENGINEER_ONLY_OPENERS = {"TÌM NHÂN TÀI"}
-_ENGINEER_VISA_CODE = "gijinkoku"
+_JOB_POST_OPENERS_DEFAULT: list[dict[str, Any]] = [
+    {"text": "TÌM ĐỒNG ĐỘI", "visa_restrictions": []},
+    {"text": "TÌM NHÂN SỰ", "visa_restrictions": []},
+    {"text": "TÌM NHÂN TÀI", "visa_restrictions": ["gijinkoku"]},
+    {"text": "TÌM ỨNG VIÊN", "visa_restrictions": []},
+    {"text": "TUYỂN GẤP", "visa_restrictions": []},
+    {"text": "TIN TUYỂN DỤNG", "visa_restrictions": []},
+    {"text": "CƠ HỘI VIỆC LÀM", "visa_restrictions": []},
+    {"text": "CẦN TUYỂN", "visa_restrictions": []},
+    {"text": "TÌM ĐỒNG CAM CỘNG KHỔ", "visa_restrictions": []},
+]
+
+# Hard safety net if an admin-saved override somehow leaves zero
+# unrestricted openers (the admin UI's own save validation should already
+# block this — see admin.py's content-library save route) — never let
+# drafting crash outright for lack of an opener.
+_FALLBACK_OPENER = "TIN TUYỂN DỤNG"
 
 # "<opener> - <title>" fits on one line up to this many characters; past
 # it, splits into "<opener>" then "<title>" on their own lines instead
@@ -153,7 +169,7 @@ _HEADER_MAX_LEN = 65
 # 2026-09-10) — a bare Facebook link inside a group post reads as spam/
 # scraped content; these invite a DM instead, picked at random so 10
 # broadcasts of different jobs don't all end identically.
-_CONTACT_CTA = [
+_CONTACT_CTA_DEFAULT = [
     "Nhắn tin mình để biết thêm chi tiết nha",
     "Inbox mình để được tư vấn kỹ hơn",
     "Ai quan tâm nhắn tin mình nhé",
@@ -173,7 +189,7 @@ _CONTACT_CTA = [
 # (owner's explicit call, 2026-09-10): a missing jlpt value still just
 # omits its own line, same as before.
 _MISSING_INFO_LABELS = {"visa": "visa", "salary": "lương"}
-_MISSING_INFO_SUFFIXES = [
+_MISSING_INFO_SUFFIXES_DEFAULT = [
     "Trao đổi thêm trong ib nha",
     "Trao đổi thêm",
     "Thông tin thêm trong ib",
@@ -195,7 +211,7 @@ _LOCATION_LABELS = ["Địa điểm", "Địa điểm làm việc", "Địa ch�
 # term — one is picked at random per post. Extend this dict as new
 # visaType codes show up in real side-B data; an unknown code just prints
 # as-is (capitalized), same as before this feature existed.
-_VISA_TYPE_NAMES: dict[str, list[str]] = {
+_VISA_TYPE_NAMES_DEFAULT: dict[str, list[str]] = {
     "gijinkoku": ["Gijinkoku", "Kỹ Sư", "技術・人文知識・国際業務"],
     "tokutei": ["Tokutei", "Kỹ Năng Đặc Định", "特定技能"],
     "ginou": ["Ginou", "Kỹ Năng", "技能"],
@@ -219,7 +235,8 @@ _VISA_LINE_TEMPLATES = [
 
 
 def _visa_line(visa_code: str) -> str:
-    names = _VISA_TYPE_NAMES.get(str(visa_code).strip().lower())
+    visa_type_names = get_visa_type_names(_VISA_TYPE_NAMES_DEFAULT)
+    names = visa_type_names.get(str(visa_code).strip().lower())
     name = random.choice(names) if names else str(visa_code).strip().capitalize()
     return random.choice(_VISA_LINE_TEMPLATES).format(name=name)
 
@@ -233,7 +250,7 @@ _SALARY_ABOUT_ONLY_LABEL = "Về tay"
 
 # "Nenshuu"/"年収" (Japanese for annual income) — added 2026-09-10 per
 # owner request, common loanwords in Vietnamese-for-Japan-jobs communities
-# (same spirit as the visa kanji in _VISA_TYPE_NAMES below). ONLY valid
+# (same spirit as the visa kanji in _VISA_TYPE_NAMES_DEFAULT above). ONLY valid
 # for period == "year" — unlike the general pool above, calling a monthly
 # or hourly wage "Nenshuu" would be factually wrong, not just a style
 # choice, so this extends (not replaces) _SALARY_LABELS only when the
@@ -381,11 +398,13 @@ def sanitize_job(job: dict) -> dict:
 def _draft_job_post_placeholder(job: dict, variant_seed: int = 0) -> str:
     attrs = job.get("attributes") or {}
     visa = attrs.get("visaType")
-    is_engineer_visa = str(visa).strip().lower() == _ENGINEER_VISA_CODE
-    openers = _JOB_POST_OPENERS if is_engineer_visa else [
-        o for o in _JOB_POST_OPENERS if o not in _ENGINEER_ONLY_OPENERS
+    visa_code = str(visa).strip().lower() if visa else None
+    openers_cfg = get_job_post_openers(_JOB_POST_OPENERS_DEFAULT)
+    eligible_openers = [
+        o["text"] for o in openers_cfg
+        if not o.get("visa_restrictions") or visa_code in o["visa_restrictions"]
     ]
-    opener = openers[variant_seed % len(openers)]
+    opener = eligible_openers[variant_seed % len(eligible_openers)] if eligible_openers else _FALLBACK_OPENER
     title = _join_list_or_str(job.get("title") or attrs.get("jobField")) or "vị trí đang tuyển"
 
     header = f"{opener} - {title}"
@@ -412,9 +431,10 @@ def _draft_job_post_placeholder(job: dict, variant_seed: int = 0) -> str:
         if not (visa if key == "visa" else salary_text)
     ]
     if missing:
-        lines.append(f"Thông tin {'/'.join(missing)} — {random.choice(_MISSING_INFO_SUFFIXES)}")
+        suffix = random.choice(get_missing_info_suffixes(_MISSING_INFO_SUFFIXES_DEFAULT))
+        lines.append(f"Thông tin {'/'.join(missing)} — {suffix}")
 
-    lines.append(random.choice(_CONTACT_CTA))
+    lines.append(random.choice(get_contact_cta(_CONTACT_CTA_DEFAULT)))
     return "\n".join(lines)
 
 

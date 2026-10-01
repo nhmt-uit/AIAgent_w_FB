@@ -562,6 +562,132 @@ def save_joined_groups(account_id: str, groups: list["GroupRef"]) -> None:
     )
 
 
+# --- Content library (admin-editable wording for drafted posts/comments) ---
+#
+# content_strategist.py/data_sync.py's drafting functions used to read these
+# straight off module-level constants — editing a single opener/CTA/suffix
+# string meant a code change + test run + commit + deploy (2026-09-30
+# incident: owner asked for 2 small wording tweaks, both required exactly
+# that round-trip). These getters let /admin/config's "Kho nội dung" tab
+# override them from runtime_config.json instead, same precedence rule as
+# every other section in this file: an override here wins, an absent/empty/
+# malformed override falls back to the `default` the caller passes in
+# (content_strategist.py's/data_sync.py's own `_..._DEFAULT` constants) —
+# never raises, never returns something a caller could index into and get
+# IndexError from (callers still guard against an empty list themselves,
+# this is belt-and-suspenders).
+#
+# `default` is a parameter rather than imported here so this module doesn't
+# need to import content_strategist.py/data_sync.py — same dependency
+# direction as every other get_*() in this file (those two modules import
+# FROM runtime_config.py, never the other way).
+
+_JOB_POST_OPENERS_KEY = "content_job_post_openers"
+_CONTACT_CTA_KEY = "content_contact_cta"
+_MISSING_INFO_SUFFIXES_KEY = "content_missing_info_suffixes"
+_CANDIDATE_REPLY_TEMPLATES_KEY = "content_candidate_reply_templates"
+_VISA_TYPE_NAMES_KEY = "content_visa_type_names"
+
+
+def _get_list_override(key: str, default: list) -> list:
+    val = _read_all().get(key)
+    return val if isinstance(val, list) and val else default
+
+
+def _save_list_override(key: str, values: list) -> None:
+    data = _read_all()
+    data[key] = values
+    RUNTIME_CONFIG_PATH.write_text(
+        json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8"
+    )
+    notify_config_changed()
+
+
+def get_job_post_openers(default: list[dict]) -> list[dict]:
+    """Each item: {"text": str, "visa_restrictions": list[str]} — empty
+    list means no restriction, a non-empty list means "any ONE of these
+    visa codes" (2026-10-01: generalized from a single optional code to a
+    list). See content_strategist.py's _draft_job_post_placeholder()."""
+    return _get_list_override(_JOB_POST_OPENERS_KEY, default)
+
+
+def save_job_post_openers(values: list[dict]) -> None:
+    _save_list_override(_JOB_POST_OPENERS_KEY, values)
+
+
+def get_contact_cta(default: list[str]) -> list[str]:
+    return _get_list_override(_CONTACT_CTA_KEY, default)
+
+
+def save_contact_cta(values: list[str]) -> None:
+    _save_list_override(_CONTACT_CTA_KEY, values)
+
+
+def get_missing_info_suffixes(default: list[str]) -> list[str]:
+    return _get_list_override(_MISSING_INFO_SUFFIXES_KEY, default)
+
+
+def save_missing_info_suffixes(values: list[str]) -> None:
+    _save_list_override(_MISSING_INFO_SUFFIXES_KEY, values)
+
+
+def get_candidate_reply_templates(default: list[str]) -> list[str]:
+    return _get_list_override(_CANDIDATE_REPLY_TEMPLATES_KEY, default)
+
+
+def save_candidate_reply_templates(values: list[str]) -> None:
+    _save_list_override(_CANDIDATE_REPLY_TEMPLATES_KEY, values)
+
+
+def get_visa_type_names(default: dict[str, list[str]]) -> dict[str, list[str]]:
+    val = _read_all().get(_VISA_TYPE_NAMES_KEY)
+    return val if isinstance(val, dict) and val else default
+
+
+def save_visa_type_names(values: dict[str, list[str]]) -> None:
+    data = _read_all()
+    data[_VISA_TYPE_NAMES_KEY] = values
+    RUNTIME_CONFIG_PATH.write_text(
+        json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8"
+    )
+    notify_config_changed()
+
+
+def _delete_key(key: str) -> None:
+    """"Khôi phục mặc định" removes the override key entirely rather than
+    writing the current default values back as an override — if the code
+    default ever changes later, a reset-to-default admin override should
+    pick that up automatically next read, not stay pinned to whatever the
+    default happened to be at reset time."""
+    data = _read_all()
+    if key in data:
+        del data[key]
+        RUNTIME_CONFIG_PATH.write_text(
+            json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8"
+        )
+        notify_config_changed()
+
+
+def reset_job_post_openers() -> None:
+    _delete_key(_JOB_POST_OPENERS_KEY)
+
+
+def reset_contact_cta() -> None:
+    _delete_key(_CONTACT_CTA_KEY)
+
+
+def reset_missing_info_suffixes() -> None:
+    _delete_key(_MISSING_INFO_SUFFIXES_KEY)
+
+
+def reset_candidate_reply_templates() -> None:
+    _delete_key(_CANDIDATE_REPLY_TEMPLATES_KEY)
+
+
+def reset_visa_type_names() -> None:
+    _delete_key(_VISA_TYPE_NAMES_KEY)
+
+
 # --- Registered accounts (admin-added, no code edit needed) ----------------
 #
 # human_bot/config.py's ACCOUNTS dict is still the code-level default (fine

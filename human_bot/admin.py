@@ -66,7 +66,18 @@ from human_bot.config import (
     get_all_accounts,
     new_group_id,
 )
-from human_bot.data_sync import apply_quiet_hours, get_all_sync_statuses, _format_attr
+from human_bot.data_sync import (
+    apply_quiet_hours,
+    get_all_sync_statuses,
+    _format_attr,
+    _CANDIDATE_REPLY_TEMPLATES_DEFAULT,
+)
+from human_bot.content_strategist import (
+    _JOB_POST_OPENERS_DEFAULT,
+    _CONTACT_CTA_DEFAULT,
+    _MISSING_INFO_SUFFIXES_DEFAULT,
+    _VISA_TYPE_NAMES_DEFAULT,
+)
 from human_bot.data_sync_config import DataSyncConfig
 from human_bot.scheduling_config import SchedulingConfig
 from human_bot.media import MediaConfig
@@ -125,6 +136,21 @@ from human_bot.runtime_config import (
     get_secrets_config,
     save_secrets_overrides,
     get_active_ai_provider_config,
+    get_job_post_openers,
+    save_job_post_openers,
+    reset_job_post_openers,
+    get_contact_cta,
+    save_contact_cta,
+    reset_contact_cta,
+    get_missing_info_suffixes,
+    save_missing_info_suffixes,
+    reset_missing_info_suffixes,
+    get_candidate_reply_templates,
+    save_candidate_reply_templates,
+    reset_candidate_reply_templates,
+    get_visa_type_names,
+    save_visa_type_names,
+    reset_visa_type_names,
     add_mod_user,
     delete_mod_user,
     get_mod_user,
@@ -527,6 +553,291 @@ def _ai_provider_card_html(flash: str = "") -> str:
 </div>"""
 
 
+# --- Content library tab ("Kho nội dung", 2026-10-01) -----------------------
+#
+# Lets an admin edit, from the web UI, the wording pools
+# content_strategist.py/data_sync.py used to only read from hardcoded
+# constants (owner incident that prompted this: 2 small wording tweaks in
+# one session both required a code change + test run + commit + deploy).
+# Standalone htmx card (not a nested `<form>`, same reason as
+# _ai_provider_card_html above — /admin/config is already one big `<form>`).
+# Repeatable rows reuse initRepeatableBlocks (generalized above to handle
+# N pre-rendered rows, not just /admin/post's always-1-blank-row case).
+
+def _repeatable_rows_html(blocks_html: str, add_label: str) -> str:
+    return f"""
+<div data-repeatable-blocks style="margin-top:8px;">
+  <div data-block-list>{blocks_html}</div>
+  <button type="button" class="btn-secondary btn-small" data-add-block style="margin-top:8px;">{html.escape(add_label)}</button>
+</div>"""
+
+
+def _text_row_block_html(field_name: str, idx: int, value: str, placeholder: str = "") -> str:
+    return f"""
+<div class="content-block" data-block style="display:flex; flex-wrap:wrap; gap:8px; align-items:center; margin-bottom:8px;">
+  <input type="text" name="{field_name}_{idx}" value="{html.escape(value)}" placeholder="{html.escape(placeholder)}" style="flex:1 1 240px; min-width:160px;">
+  <button type="button" class="btn-secondary btn-small" data-remove-block style="flex-shrink:0;">Xoá</button>
+</div>"""
+
+
+def _textarea_row_block_html(field_name: str, idx: int, value: str, placeholder: str = "") -> str:
+    return f"""
+<div class="content-block" data-block style="display:flex; flex-wrap:wrap; gap:8px; align-items:flex-start; margin-bottom:8px;">
+  <textarea name="{field_name}_{idx}" rows="2" placeholder="{html.escape(placeholder)}" style="flex:1 1 240px; min-width:160px; font-family:inherit;">{html.escape(value)}</textarea>
+  <button type="button" class="btn-secondary btn-small" data-remove-block style="flex-shrink:0;">Xoá</button>
+</div>"""
+
+
+def _opener_row_block_html(idx: int, text: str, visa_restrictions: list[str], visa_names: dict[str, list[str]]) -> str:
+    # Multi-select (2026-10-01, owner's request): no "Không giới hạn"
+    # option — selecting NOTHING means unrestricted, same as an empty
+    # `visa_restrictions` list; selecting 1+ codes means "any ONE of
+    # these". If a restriction references a code no longer in "Tên gọi
+    # visa" (deleted after being selected), keep it as an extra option
+    # instead of letting it silently drop off the rendered <select> — a
+    # native <select> can only submit a value that's actually one of its
+    # own <option>s, so losing this would silently un-restrict the opener
+    # from that code the next time this form is saved.
+    all_codes = list(visa_names.keys())
+    for code in visa_restrictions:
+        if code not in all_codes:
+            all_codes.append(code)
+    options = []
+    for code in all_codes:
+        selected = " selected" if code in visa_restrictions else ""
+        # First configured display name (if any) alongside the raw code —
+        # a bare lowercase code list ("gijinkoku", "tokutei"...) reads a
+        # lot less friendly than "Kỹ Sư (gijinkoku)".
+        names = visa_names.get(code)
+        label = f"{names[0]} ({code})" if names else code
+        options.append(f'<option value="{html.escape(code)}"{selected}>{html.escape(label)}</option>')
+    # Owner-reported 2026-10-01: a plain <select multiple> listbox "nhìn
+    # xấu" (looks dated/ugly) and silently required knowing to hold Ctrl/
+    # Cmd to pick more than one. Rendered instead as this app's existing
+    # single-line "cselect" dropdown look (same CSS classes every other
+    # dropdown here uses), generalized to a multi-select variant
+    # (initCSelectMulti in the page script below) — a real <select
+    # multiple name="opener_visa_{idx}"> still backs it for the form
+    # submit, just visually hidden; clicking an option in the panel
+    # toggles it and keeps the panel open, no modifier key needed.
+    trigger_label = ", ".join(
+        (visa_names.get(c) or [c])[0] for c in visa_restrictions
+    ) if visa_restrictions else "Không giới hạn"
+    cselect_html = f"""<div class="cselect" data-cselect-multi data-cselect-empty-label="Không giới hạn" style="min-width:160px; max-width:200px;">
+  <select name="opener_visa_{idx}" multiple class="cselect-native">{"".join(options)}</select>
+  <button type="button" class="cselect-trigger"><span class="cselect-trigger-label">{html.escape(trigger_label)}</span><span class="chevron">▾</span></button>
+  <div class="cselect-panel"></div>
+</div>"""
+    return f"""
+<div class="content-block" data-block style="display:flex; flex-wrap:wrap; gap:8px; align-items:flex-start; margin-bottom:8px;">
+  <input type="text" name="opener_text_{idx}" value="{html.escape(text)}" placeholder="VD: TÌM NHÂN SỰ" style="flex:1 1 240px; min-width:160px;">
+  <div style="flex:0 1 200px; max-width:200px;">
+    {cselect_html}
+    <div class="field-key" style="margin-top:2px;">Giới hạn visa (tuỳ chọn) — không chọn gì = mọi visa.</div>
+  </div>
+  <button type="button" class="btn-secondary btn-small" data-remove-block style="flex-shrink:0;">Xoá</button>
+</div>"""
+
+
+def _visa_name_row_block_html(idx: int, code: str, names: list[str]) -> str:
+    return f"""
+<div class="content-block" data-block style="display:flex; flex-wrap:wrap; gap:8px; align-items:flex-start; margin-bottom:8px;">
+  <input type="text" name="visa_code_{idx}" value="{html.escape(code)}" placeholder="VD: gijinkoku" style="flex:0 0 160px; font-family:monospace;">
+  <textarea name="visa_names_{idx}" rows="2" placeholder="Mỗi dòng 1 cách gọi" style="flex:1 1 240px; min-width:160px;">{html.escape(chr(10).join(names))}</textarea>
+  <button type="button" class="btn-secondary btn-small" data-remove-block style="flex-shrink:0;">Xoá</button>
+</div>"""
+
+
+def _content_library_reset_btn_html(list_name: str, label: str) -> str:
+    confirm = html.escape(f'Khôi phục "{label}" về mặc định gốc trong code? Mất mọi chỉnh sửa đã lưu cho riêng danh sách này.')
+    return (
+        f'<button type="button" class="btn-secondary btn-small" '
+        f'hx-post="/admin/config/content-library/reset" hx-vals=\'{{"list_name": "{list_name}"}}\' '
+        f'hx-target="#content-library-card" hx-swap="outerHTML" '
+        f'hx-confirm="{confirm}">Khôi phục mặc định</button>'
+    )
+
+
+def _content_library_section_html(
+    title: str, count: int, desc_html: str, body_html: str, reset_btn_html: str, *, open_by_default: bool,
+) -> str:
+    """One collapsible <details> block per list — 5 sections (up to ~40
+    rows total between them) is a lot to scroll past at once if every row
+    renders expanded; <details> is the same no-JS disclosure pattern
+    already used elsewhere in this file (e.g. job-report cards), so
+    collapsed sections still work with 0 extra JS."""
+    open_attr = " open" if open_by_default else ""
+    return f"""
+<details{open_attr} style="border:1px solid #e5e7eb; border-radius:8px; padding:10px 14px; margin-bottom:14px;">
+  <summary style="cursor:pointer; font-weight:600;">{html.escape(title)} <span class="badge">{count}</span></summary>
+  <div style="margin-top:10px;">
+    {desc_html}
+    {body_html}
+    {reset_btn_html}
+  </div>
+</details>"""
+
+
+def _content_library_card_html(
+    openers: list[dict], cta: list[str], suffixes: list[str],
+    reply_templates: list[str], visa_names: dict[str, list[str]], flash: str = "", *, expand_all: bool = False,
+) -> str:
+    opener_blocks = "".join(
+        _opener_row_block_html(i, o.get("text", ""), o.get("visa_restrictions") or [], visa_names)
+        for i, o in enumerate(openers)
+    ) or _opener_row_block_html(0, "", [], visa_names)
+    cta_blocks = "".join(_text_row_block_html("cta", i, v) for i, v in enumerate(cta)) \
+        or _text_row_block_html("cta", 0, "")
+    suffix_blocks = "".join(_text_row_block_html("suffix", i, v) for i, v in enumerate(suffixes)) \
+        or _text_row_block_html("suffix", 0, "")
+    reply_blocks = "".join(_textarea_row_block_html("reply_template", i, v) for i, v in enumerate(reply_templates)) \
+        or _textarea_row_block_html("reply_template", 0, "")
+    visa_blocks = "".join(_visa_name_row_block_html(i, code, names) for i, (code, names) in enumerate(visa_names.items())) \
+        or _visa_name_row_block_html(0, "", [])
+
+    visa_section = _content_library_section_html(
+        "Tên gọi các loại visa", len(visa_names),
+        '<p class="page-desc">Mỗi mã visa (VD gijinkoku, tokutei — khớp đúng dữ liệu bên B gửi sang) có thể có nhiều cách gọi, hệ thống chọn ngẫu nhiên 1 cách mỗi lần đăng. Mã không có trong danh sách vẫn đăng được, chỉ in nguyên mã viết hoa chữ đầu. <b>Mục "Câu mở đầu bài đăng nhóm" ngay dưới dùng đúng danh sách mã ở đây</b> — nếu vừa thêm mã mới, bấm "Lưu Kho nội dung" 1 lần trước để mã đó hiện ra trong lựa chọn "Giới hạn visa".</p>',
+        _repeatable_rows_html(visa_blocks, "+ Thêm mã visa"),
+        _content_library_reset_btn_html("visa_names", "Tên gọi các loại visa"),
+        open_by_default=expand_all,  # bulkiest/least-often-touched section — tucked away by default
+    )
+    opener_section = _content_library_section_html(
+        "Câu mở đầu bài đăng nhóm", len(openers),
+        '<p class="page-desc">Mỗi bài chọn 1 câu, xoay vòng theo nhóm. "Giới hạn visa" (tuỳ chọn, chọn được nhiều mã) chỉ dùng câu đó cho đúng (các) loại visa đã chọn — không chọn mã nào nghĩa là dùng được cho mọi tin. Phải còn ít nhất 1 câu không giới hạn.</p>',
+        _repeatable_rows_html(opener_blocks, "+ Thêm câu mở đầu"),
+        _content_library_reset_btn_html("openers", "Câu mở đầu bài đăng nhóm"),
+        open_by_default=True,
+    )
+    cta_section = _content_library_section_html(
+        "Câu mời nhắn tin (CTA)", len(cta), "",
+        _repeatable_rows_html(cta_blocks, "+ Thêm câu mời nhắn tin"),
+        _content_library_reset_btn_html("cta", "Câu mời nhắn tin"),
+        open_by_default=True,
+    )
+    suffix_section = _content_library_section_html(
+        "Câu khi thiếu visa/lương", len(suffixes), "",
+        _repeatable_rows_html(suffix_blocks, "+ Thêm câu"),
+        _content_library_reset_btn_html("suffixes", "Câu khi thiếu visa/lương"),
+        open_by_default=True,
+    )
+    reply_section = _content_library_section_html(
+        "Mẫu bình luận trả lời ứng viên", len(reply_templates),
+        '<p class="page-desc">Dùng được {field} (ngành ứng viên muốn làm) và {region_clause} (khu vực, có thể rỗng) — không dùng dấu {} nào khác, hệ thống sẽ từ chối lưu nếu sai cú pháp.</p>',
+        _repeatable_rows_html(reply_blocks, "+ Thêm mẫu bình luận"),
+        _content_library_reset_btn_html("reply_templates", "Mẫu bình luận trả lời ứng viên"),
+        open_by_default=True,
+    )
+
+    return f"""
+<div class="card" id="content-library-card">
+  <h2>📝 Kho nội dung</h2>
+  <p class="page-desc">Câu chữ hệ thống dùng khi tự soạn bài đăng nhóm/bình luận trả lời ứng viên (human_bot/content_strategist.py, human_bot/data_sync.py). Lưu ở đây có hiệu lực ngay cho lần đăng tiếp theo, không cần sửa code/khởi động lại.</p>
+  {flash}
+  {visa_section}
+  {opener_section}
+  {cta_section}
+  {suffix_section}
+  {reply_section}
+  <div class="form-actions" style="margin-top:20px;">
+    <button type="button" hx-post="/admin/config/content-library" hx-include="#content-library-card"
+      hx-target="#content-library-card" hx-swap="outerHTML">Lưu Kho nội dung</button>
+  </div>
+</div>"""
+
+
+def _indices_for_prefix(form, prefix: str) -> list[str]:
+    """Scans submitted form keys like "<prefix>_<i>" (initRepeatableBlocks'
+    naming — see post_schedule_groups()'s identical pattern) for whatever
+    indices are actually present, sorted numerically — removing a row in
+    the browser never desyncs this from what the server expects."""
+    return sorted(
+        {key[len(prefix) + 1:] for key in form.keys() if key.startswith(prefix + "_")},
+        key=lambda s: int(s) if s.isdigit() else 0,
+    )
+
+
+def _parse_content_library_form(form) -> tuple[list[dict], list[str], list[str], list[str], dict[str, list[str]], list[str]]:
+    """Parses the raw submitted fields into the 5 lists this tab edits,
+    dropping blank rows. Returns (openers, cta, suffixes, reply_templates,
+    visa_names, extra_errors) — extra_errors covers the one row-level
+    validation that doesn't fit the "just drop it" pattern (a visa code
+    typed with no names given at all, see _visa_name_row_block_html)."""
+    openers = []
+    for idx in _indices_for_prefix(form, "opener_text"):
+        text = str(form.get(f"opener_text_{idx}", "")).strip()
+        if not text:
+            continue
+        # Multi-select (2026-10-01) — a native <select multiple> submits
+        # one value per selected <option> under the SAME field name.
+        visa_codes = [str(v).strip().lower() for v in form.getlist(f"opener_visa_{idx}") if str(v).strip()]
+        openers.append({"text": text, "visa_restrictions": visa_codes})
+
+    cta = [v for idx in _indices_for_prefix(form, "cta")
+           if (v := str(form.get(f"cta_{idx}", "")).strip())]
+    suffixes = [v for idx in _indices_for_prefix(form, "suffix")
+                if (v := str(form.get(f"suffix_{idx}", "")).strip())]
+    reply_templates = [v for idx in _indices_for_prefix(form, "reply_template")
+                        if (v := str(form.get(f"reply_template_{idx}", "")).strip())]
+
+    visa_names: dict[str, list[str]] = {}
+    extra_errors: list[str] = []
+    for idx in _indices_for_prefix(form, "visa_code"):
+        code = str(form.get(f"visa_code_{idx}", "")).strip().lower()
+        if not code:
+            continue
+        names = [n.strip() for n in str(form.get(f"visa_names_{idx}", "")).splitlines() if n.strip()]
+        if not names:
+            extra_errors.append(f'Mã visa "{code}" chưa có cách gọi nào — xoá dòng này hoặc thêm ít nhất 1 cách gọi.')
+            continue
+        if code in visa_names:
+            # Silently letting the later row win would lose the earlier
+            # row's names with no indication why — reject instead so the
+            # admin notices and merges/renames by hand.
+            extra_errors.append(f'Mã visa "{code}" bị lặp lại ở nhiều dòng — gộp lại thành 1 dòng hoặc đổi tên.')
+            continue
+        visa_names[code] = names
+
+    return openers, cta, suffixes, reply_templates, visa_names, extra_errors
+
+
+def _validate_content_library(
+    openers: list[dict], cta: list[str], suffixes: list[str], reply_templates: list[str],
+    visa_names: dict[str, list[str]], extra_errors: list[str],
+) -> list[str]:
+    errors = list(extra_errors)
+    if not openers:
+        errors.append("Câu mở đầu bài đăng nhóm: cần ít nhất 1 dòng.")
+    elif not any(not o["visa_restrictions"] for o in openers):
+        errors.append(
+            "Câu mở đầu bài đăng nhóm: cần ít nhất 1 dòng KHÔNG giới hạn visa — "
+            "nếu không, 1 tin thiếu/khác visa sẽ không còn câu mở đầu nào dùng được."
+        )
+    if not cta:
+        errors.append("Câu mời nhắn tin: cần ít nhất 1 dòng.")
+    if not suffixes:
+        errors.append("Câu khi thiếu visa/lương: cần ít nhất 1 dòng.")
+    if not reply_templates:
+        errors.append("Mẫu bình luận trả lời ứng viên: cần ít nhất 1 dòng.")
+    else:
+        for t in reply_templates:
+            try:
+                t.format(field="x", region_clause="")
+            except (KeyError, IndexError, ValueError) as exc:
+                errors.append(
+                    f'Mẫu bình luận "{t}" dùng sai placeholder ({exc}) — chỉ được dùng {{field}}/{{region_clause}}.'
+                )
+    if not visa_names:
+        # Not a crash risk on its own (_visa_line() falls back to the raw
+        # code capitalized when the dict is empty) — required anyway so
+        # "xoá hết rồi lưu" gives a clear error instead of silently
+        # reverting to the code default next render (an empty dict isn't
+        # a usable override, same rule as the other 4 lists) with no
+        # indication why the admin's edit appeared to do nothing.
+        errors.append("Tên gọi các loại visa: cần ít nhất 1 mã.")
+    return errors
+
+
 _MEDIA_LABELS: dict[str, str] = {
     "attach_random_meme_default": (
         "Tự động đính kèm ảnh ngẫu nhiên từ media/memes/ khi bài đăng chưa có ảnh riêng "
@@ -664,6 +975,16 @@ _PAGE_STYLE = """
   .warning-inline { @apply bg-amber-50 border border-amber-200 text-amber-800 rounded-xl px-3 py-2 mt-2 mb-2 text-sm flex items-center gap-2; }
 
   .form-actions { @apply mt-2 flex justify-end; }
+  /* Owner-reported 2026-10-01 — found the real cause after a server
+     restart didn't fix it: `.form-actions`'s own `display:flex` (an
+     AUTHOR stylesheet rule) silently overrides the `hidden` attribute's
+     implicit `display:none` (just a UA-stylesheet default — author rules
+     always win, tie-specificity or not), so `hidden` alone never actually
+     hides a `.form-actions` element despite the attribute being correctly
+     present in the HTML. Same bug class `.tab-panel[hidden]` below was
+     already added for — content-library's `#config-generic-save-actions`
+     is the first `.form-actions` that also needs `hidden` to work. */
+  .form-actions[hidden] { @apply hidden; }
 
   .badge { @apply inline-block text-xs font-semibold px-2.5 py-0.5 rounded-full bg-indigo-50 text-indigo-600; }
 
@@ -807,6 +1128,73 @@ _PAGE_STYLE = """
     render();
   }
 
+  // Multi-select variant of the cselect dropdown above (2026-10-01, owner
+  // feedback: the plain <select multiple> listbox "nhìn xấu" and required
+  // knowing to hold Ctrl/Cmd to pick more than one — this keeps the same
+  // single-line trigger + dropdown-panel LOOK as every other dropdown in
+  // this app, backed by a real <select multiple name="...">, but clicking
+  // an option just TOGGLES it and leaves the panel open instead of
+  // replacing the value and closing — needed because picking several
+  // options one at a time with a normal click only works if the panel
+  // stays put between clicks. `emptyLabel` is shown when nothing is
+  // selected (e.g. "Không giới hạn") instead of a blank trigger.
+  function initCSelectMulti(wrap) {
+    if (wrap.dataset.cselectInit) return;
+    wrap.dataset.cselectInit = "1";
+    var select = wrap.querySelector("select.cselect-native");
+    var trigger = wrap.querySelector(".cselect-trigger");
+    var label = trigger.querySelector(".cselect-trigger-label");
+    var panel = wrap.querySelector(".cselect-panel");
+    if (!select || !trigger || !panel) return;
+    // Read from a data attribute, not a 2nd function argument — this runs
+    // via `querySelectorAll(...).forEach(initCSelectMulti)` in 2 places
+    // (initDynamicScope below, and initRepeatableBlocks' clone handler),
+    // and Array.forEach's own 2nd callback argument is the array INDEX,
+    // which would silently clobber a real 2nd parameter here.
+    var emptyLabel = wrap.dataset.cselectEmptyLabel || "";
+
+    function selectedOptions() {
+      return Array.prototype.filter.call(select.options, function (o) { return o.selected; });
+    }
+
+    function updateLabel() {
+      var chosen = selectedOptions();
+      label.textContent = chosen.length
+        ? chosen.map(function (o) { return o.textContent; }).join(", ")
+        : (emptyLabel || "");
+    }
+
+    function render() {
+      panel.innerHTML = "";
+      Array.prototype.forEach.call(select.options, function (opt) {
+        var item = document.createElement("div");
+        item.className = "cselect-option" + (opt.selected ? " selected" : "");
+        item.textContent = (opt.selected ? "✓ " : "") + opt.textContent;
+        item.addEventListener("click", function (e) {
+          e.stopPropagation();
+          opt.selected = !opt.selected;
+          select.dispatchEvent(new Event("change"));
+          updateLabel();
+          render();
+        });
+        panel.appendChild(item);
+      });
+    }
+
+    trigger.addEventListener("click", function (e) {
+      e.stopPropagation();
+      var wasOpen = panel.classList.contains("open");
+      closeAllCSelects();
+      if (!wasOpen) {
+        panel.classList.add("open");
+        trigger.classList.add("open");
+      }
+    });
+
+    updateLabel();
+    render();
+  }
+
   document.addEventListener("click", closeAllCSelects);
 
   // Modal: Escape closes whichever .modal-backdrop is currently open
@@ -872,22 +1260,37 @@ _PAGE_STYLE = """
     root.appendChild(backdrop);
   });
 
-  // Repeatable content blocks for /admin/post's "Đăng vào nhóm" form
-  // (human_bot/admin.py's post_form/post_schedule_groups): each block is
-  // a content_<i>/groups_<i> field pair — see post_schedule_groups()'s
-  // comment for why the server scans for whatever indices are present
-  // instead of assuming 0..N. Cloning the first block (always literally
-  // index "0" in the server-rendered markup) and bumping its field names
-  // to a fresh, never-reused index is enough; removing a block never
-  // needs to renumber anything else.
+  // Repeatable content blocks — originally /admin/post's "Đăng vào nhóm"
+  // form only (human_bot/admin.py's post_form/post_schedule_groups): each
+  // block there is a content_<i>/groups_<i> field pair — see
+  // post_schedule_groups()'s comment for why the server scans for
+  // whatever indices are present instead of assuming 0..N. Cloning
+  // block[0] (always literally index "0" in the server-rendered markup)
+  // and bumping its field names to a fresh, never-reused index is enough;
+  // removing a block never needs to renumber anything else.
+  //
+  // Generalized 2026-10-01 for /admin/config's "Kho nội dung" tab, which
+  // (unlike /admin/post's always-blank compose form) pre-renders however
+  // many rows are already saved — N blocks at page load, not just 1 — so
+  // this now wires EVERY pre-rendered block's remove button (not just
+  // block[0]) and seeds `nextIndex` from the highest index actually
+  // present, instead of assuming the template is the only block and the
+  // next free index is always 1.
   function initRepeatableBlocks(container) {
     if (container.dataset.repeatableInit) return;
     container.dataset.repeatableInit = "1";
     var addBtn = container.querySelector("[data-add-block]");
     var list = container.querySelector("[data-block-list]");
-    var template = list ? list.querySelector("[data-block]") : null;
+    var existingBlocks = list ? list.querySelectorAll("[data-block]") : [];
+    var template = existingBlocks.length ? existingBlocks[0] : null;
     if (!addBtn || !list || !template) return;
     var nextIndex = 1;
+    existingBlocks.forEach(function (block) {
+      block.querySelectorAll("[name]").forEach(function (el) {
+        var m = el.name.match(/_(\\d+)$/);
+        if (m) nextIndex = Math.max(nextIndex, parseInt(m[1], 10) + 1);
+      });
+    });
 
     // With only 1 block left, its "Xoá khối này" button is HIDDEN rather
     // than left clickable-but-silently-doing-nothing — a form can't be
@@ -930,16 +1333,43 @@ _PAGE_STYLE = """
       clone.querySelectorAll("[name]").forEach(function (el) {
         el.name = el.name.replace(/_0$/, "_" + index);
         if (el.tagName === "TEXTAREA") el.value = "";
+        if (el.tagName === "INPUT" && el.type !== "checkbox") el.value = "";
         if (el.type === "checkbox") el.checked = false;
+        // Plain <select> (none left on this page as of 2026-10-01, kept
+        // for any future one): reset to its first option. A <select
+        // multiple> (opener's "Giới hạn visa") has no such "blank/
+        // default" option any more — selectedIndex=0 would leave it
+        // cloned with option[0] silently selected (restricting the new
+        // row to a random visa code instead of leaving it unrestricted),
+        // so every option is explicitly deselected instead.
+        if (el.tagName === "SELECT") {
+          if (el.multiple) {
+            Array.prototype.forEach.call(el.options, function (o) { o.selected = false; });
+          } else {
+            el.selectedIndex = 0;
+          }
+        }
       });
+      // cloneNode() also copies any cselect/cselect-multi dropdown's
+      // ALREADY-rendered trigger label + option panel, plus the "already
+      // initialized" dataset flag that's meant to stop a 2nd init — left
+      // alone, the cloned row's dropdown would show the ORIGINAL row's
+      // label frozen in place and never respond to clicks. The native
+      // <select> options were just reset above, so re-initializing from
+      // scratch here picks that up correctly (empty selection -> empty
+      // label).
+      clone.querySelectorAll("[data-cselect]").forEach(function (w) { delete w.dataset.cselectInit; initCSelect(w); });
+      clone.querySelectorAll("[data-cselect-multi]").forEach(function (w) { delete w.dataset.cselectInit; initCSelectMulti(w); });
       wireRemove(clone);
       wireSelectAll(clone);
       list.appendChild(clone);
       updateRemoveVisibility();
     });
 
-    wireRemove(template);
-    wireSelectAll(template);
+    existingBlocks.forEach(function (block) {
+      wireRemove(block);
+      wireSelectAll(block);
+    });
     updateRemoveVisibility();
   }
 
@@ -1046,6 +1476,18 @@ _PAGE_STYLE = """
         container.querySelectorAll(".tab-panel").forEach(function (panel) {
           panel.hidden = panel.id !== target;
         });
+        // /admin/config's generic "Lưu cấu hình" submit only ever saves
+        // dataclass-backed fields (_CONFIG_SECTIONS) — meaningless (and
+        // confusing next to a 2nd, different "Lưu ..." button) on the
+        // "Kho nội dung" tab, which has its own dedicated htmx save
+        // button and no dataclass fields of its own at all (owner-
+        // reported 2026-10-01). Tab switching here is pure client-side
+        // (no page reload — see the comment on this function's own
+        // click handler above), so this has to be toggled here rather
+        // than only once server-side at initial render. No-op (element
+        // doesn't exist) on every other page sharing this helper.
+        var genericSave = document.getElementById("config-generic-save-actions");
+        if (genericSave) genericSave.hidden = (target === "tab-content");
       });
     });
   }
@@ -1122,6 +1564,7 @@ _PAGE_STYLE = """
 
   function initDynamicScope(root) {
     root.querySelectorAll("[data-cselect]").forEach(initCSelect);
+    root.querySelectorAll("[data-cselect-multi]").forEach(initCSelectMulti);
     root.querySelectorAll("[data-repeatable-blocks]").forEach(initRepeatableBlocks);
     root.querySelectorAll("[data-schedule-field]").forEach(initScheduleField);
     root.querySelectorAll("[data-local-dt]").forEach(initLocalDateTime);
@@ -1904,7 +2347,7 @@ async def config_form(request: Request, saved: bool = False, tab: str = "behavio
     behavior_cards = "".join(card for key, card in sections_html if key != "data_sync")
     sync_cards = "".join(card for key, card in sections_html if key == "data_sync")
 
-    active_tab = tab if tab in ("behavior", "sync", "ai") else "behavior"
+    active_tab = tab if tab in ("behavior", "sync", "ai", "content") else "behavior"
 
     def tab_btn(key: str, label: str) -> str:
         cls = "tab-btn active" if key == active_tab else "tab-btn"
@@ -1923,6 +2366,7 @@ async def config_form(request: Request, saved: bool = False, tab: str = "behavio
     {tab_btn("behavior", "🧑 Cấu hình hành vi")}
     {tab_btn("sync", "🔄 Đồng bộ dữ liệu")}
     {tab_btn("ai", "🤖 AI")}
+    {tab_btn("content", "📝 Kho nội dung")}
   </div>
 
   <div class="tab-panel" id="tab-behavior"{panel_attrs("behavior")}>
@@ -1939,8 +2383,18 @@ async def config_form(request: Request, saved: bool = False, tab: str = "behavio
     {_ai_provider_card_html()}
     {ai_toggle_card}
   </div>
+
+  <div class="tab-panel" id="tab-content"{panel_attrs("content")}>
+    {_content_library_card_html(
+        get_job_post_openers(_JOB_POST_OPENERS_DEFAULT),
+        get_contact_cta(_CONTACT_CTA_DEFAULT),
+        get_missing_info_suffixes(_MISSING_INFO_SUFFIXES_DEFAULT),
+        get_candidate_reply_templates(_CANDIDATE_REPLY_TEMPLATES_DEFAULT),
+        get_visa_type_names(_VISA_TYPE_NAMES_DEFAULT),
+    )}
+  </div>
 </div>
-<div class="form-actions"><button type="submit">Lưu cấu hình</button></div>
+<div class="form-actions" id="config-generic-save-actions"{' hidden' if active_tab == "content" else ''}><button type="submit">Lưu cấu hình</button></div>
 </form>
 """, active="config", current_user=_build_current_user(request))
 
@@ -2038,6 +2492,54 @@ async def config_ai_provider_clear_key(request: Request, _: None = Depends(_requ
     reset."""
     save_secrets_overrides({})
     return _ai_provider_card_html(flash='<p class="flash">✅ Đã xoá — quay lại dùng cấu hình trong .env (nếu có) hoặc không dùng AI.</p>')
+
+
+@router.post("/config/content-library", response_class=HTMLResponse)
+async def config_content_library_save(request: Request, _: None = Depends(_require_login)) -> str:
+    form = await request.form()
+    openers, cta, suffixes, reply_templates, visa_names, extra_errors = _parse_content_library_form(form)
+    errors = _validate_content_library(openers, cta, suffixes, reply_templates, visa_names, extra_errors)
+    if errors:
+        flash = '<div class="error">' + "<br>".join(html.escape(e) for e in errors) + "</div>"
+        return _content_library_card_html(openers, cta, suffixes, reply_templates, visa_names, flash=flash, expand_all=True)
+
+    save_job_post_openers(openers)
+    save_contact_cta(cta)
+    save_missing_info_suffixes(suffixes)
+    save_candidate_reply_templates(reply_templates)
+    save_visa_type_names(visa_names)
+    return _content_library_card_html(
+        get_job_post_openers(_JOB_POST_OPENERS_DEFAULT),
+        get_contact_cta(_CONTACT_CTA_DEFAULT),
+        get_missing_info_suffixes(_MISSING_INFO_SUFFIXES_DEFAULT),
+        get_candidate_reply_templates(_CANDIDATE_REPLY_TEMPLATES_DEFAULT),
+        get_visa_type_names(_VISA_TYPE_NAMES_DEFAULT),
+        flash='<p class="flash">✅ Đã lưu Kho nội dung.</p>',
+    )
+
+
+@router.post("/config/content-library/reset", response_class=HTMLResponse)
+async def config_content_library_reset(request: Request, _: None = Depends(_require_login)) -> str:
+    form = await request.form()
+    list_name = str(form.get("list_name", "")).strip()
+    resetters = {
+        "openers": reset_job_post_openers,
+        "cta": reset_contact_cta,
+        "suffixes": reset_missing_info_suffixes,
+        "reply_templates": reset_candidate_reply_templates,
+        "visa_names": reset_visa_type_names,
+    }
+    reset_fn = resetters.get(list_name)
+    if reset_fn:
+        reset_fn()
+    return _content_library_card_html(
+        get_job_post_openers(_JOB_POST_OPENERS_DEFAULT),
+        get_contact_cta(_CONTACT_CTA_DEFAULT),
+        get_missing_info_suffixes(_MISSING_INFO_SUFFIXES_DEFAULT),
+        get_candidate_reply_templates(_CANDIDATE_REPLY_TEMPLATES_DEFAULT),
+        get_visa_type_names(_VISA_TYPE_NAMES_DEFAULT),
+        flash='<p class="flash">✅ Đã khôi phục mặc định.</p>' if reset_fn else '<div class="error">Danh sách không hợp lệ.</div>',
+    )
 
 
 def _account_id_error(account_id: str, existing: dict) -> str | None:

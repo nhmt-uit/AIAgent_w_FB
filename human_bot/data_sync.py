@@ -43,6 +43,7 @@ False.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import random
 import re
@@ -57,8 +58,15 @@ from human_bot import content_strategist, daily_limits, db, schedule_store
 from human_bot.config import AccountConfig, GroupRef, get_account
 from human_bot.data_sync_config import DataSyncConfig
 from human_bot.scheduling_config import SchedulingConfig
-from human_bot.runtime_config import get_data_sync_config, get_joined_groups, get_scheduling_config
+from human_bot.runtime_config import (
+    get_candidate_reply_templates,
+    get_data_sync_config,
+    get_joined_groups,
+    get_scheduling_config,
+)
 from human_bot.safety import RateLimiter
+
+logger = logging.getLogger("human_bot.data_sync")
 
 CACHE_ROOT = Path(__file__).resolve().parent.parent / "data_sync_cache"
 STATE_PATH = CACHE_ROOT / "_state.json"
@@ -1049,7 +1057,7 @@ def _format_attr(value: Any) -> str:
 # Each template takes `field` (desiredJobField, always non-empty) and
 # `region_clause` (either "" or " ở khu vực X" — built once by the
 # caller so no template needs its own empty-region branch).
-_CANDIDATE_REPLY_TEMPLATES = [
+_CANDIDATE_REPLY_TEMPLATES_DEFAULT = [
     "Chào bạn, mình thấy bạn đang tìm {field}{region_clause}, bên mình đang có một số vị trí có thể phù hợp, bạn nhắn tin trao đổi thêm nhé.",
     "Hii, bên mình đang tuyển {field}{region_clause}, ib mình gửi chi tiết nhé.",
     "Hi bạn, thấy bạn cần {field}{region_clause}, bên mình có vài vị trí đang tuyển, bạn inbox mình trao đổi thêm nha.",
@@ -1068,8 +1076,17 @@ def _draft_candidate_reply_placeholder(candidate: dict) -> str:
     field_wanted = _format_attr(attrs.get("desiredJobField")) or "công việc phù hợp"
     region = _format_attr(attrs.get("preferredRegion"))
     region_clause = f" ở khu vực {region}" if region else ""
-    template = random.choice(_CANDIDATE_REPLY_TEMPLATES)
-    return template.format(field=field_wanted, region_clause=region_clause)
+    template = random.choice(get_candidate_reply_templates(_CANDIDATE_REPLY_TEMPLATES_DEFAULT))
+    try:
+        return template.format(field=field_wanted, region_clause=region_clause)
+    except (KeyError, IndexError, ValueError):
+        # admin.py's save route already rejects a template with a bad
+        # placeholder — this only fires if runtime_config.json was edited
+        # by hand/corrupted outside that route. Same "never crash posting"
+        # stance as every other admin-editable value in this project: fall
+        # back to a known-good code default rather than raising here.
+        logger.exception("data_sync: candidate reply template had a bad placeholder, falling back to default")
+        return random.choice(_CANDIDATE_REPLY_TEMPLATES_DEFAULT).format(field=field_wanted, region_clause=region_clause)
 
 
 async def _fetch_candidate_reply(source_id: str, cfg: DataSyncConfig) -> str | None:

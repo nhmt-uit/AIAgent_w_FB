@@ -15,7 +15,22 @@ from fastapi.testclient import TestClient
 from starlette.middleware.sessions import SessionMiddleware
 
 from human_bot.admin import NotLoggedIn, router as admin_router
-from human_bot.runtime_config import get_mouse_overrides, get_secrets_overrides
+from human_bot.runtime_config import (
+    get_mouse_overrides,
+    get_secrets_overrides,
+    get_job_post_openers,
+    get_contact_cta,
+    get_missing_info_suffixes,
+    get_candidate_reply_templates,
+    get_visa_type_names,
+)
+from human_bot.content_strategist import (
+    _JOB_POST_OPENERS_DEFAULT,
+    _CONTACT_CTA_DEFAULT,
+    _MISSING_INFO_SUFFIXES_DEFAULT,
+    _VISA_TYPE_NAMES_DEFAULT,
+)
+from human_bot.data_sync import _CANDIDATE_REPLY_TEMPLATES_DEFAULT
 
 
 def _make_test_app() -> FastAPI:
@@ -55,9 +70,42 @@ def test_config_page_renders(client):
 
 
 def test_config_page_each_tab_renders(client):
-    for tab in ("behavior", "sync", "ai"):
+    for tab in ("behavior", "sync", "ai", "content"):
         resp = client.get(f"/admin/config?tab={tab}")
         assert resp.status_code == 200
+
+
+def test_config_generic_save_button_hidden_on_content_tab_only(client):
+    """Owner-reported 2026-10-01: the "Kho nội dung" tab has its own
+    dedicated htmx save button and no dataclass-backed fields of its own
+    at all — the generic full-page "Lưu cấu hình" submit (which only ever
+    saves _CONFIG_SECTIONS fields) did nothing useful there and just
+    confused "which button saves what". Initial server render must hide
+    it only for tab=content; "ai" still needs it (its 2 AI on/off
+    switches ARE real DataSyncConfig fields saved by that button, only
+    the key/model card has its own separate htmx button). The client-side
+    JS toggle for switching tabs WITHOUT a page reload isn't covered here
+    — pytest doesn't execute browser JS — see initTabs()'s own comment."""
+    for tab, expect_hidden in (("behavior", False), ("sync", False), ("ai", False), ("content", True)):
+        resp = client.get(f"/admin/config?tab={tab}")
+        has_hidden_attr = 'id="config-generic-save-actions" hidden' in resp.text
+        assert has_hidden_attr == expect_hidden, f"tab={tab}"
+
+
+def test_form_actions_hidden_attribute_is_not_overridden_by_display_flex(client):
+    """Regression test for the REAL root cause of the bug above surviving
+    a server restart (owner-reported 2026-10-01): `.form-actions { display:
+    flex }` is an AUTHOR stylesheet rule, which overrides the `hidden`
+    attribute's implicit UA-stylesheet `display:none` regardless of
+    specificity — so the attribute alone never actually hid the button,
+    even though it was correctly present in the HTML the whole time (the
+    test above only checked for the attribute string, not real visibility,
+    which is why it kept passing while the bug was still live). pytest
+    can't render CSS to verify real visibility, so this checks the
+    override rule itself is present — same fix pattern `.tab-panel[hidden]`
+    already uses elsewhere on this page."""
+    resp = client.get("/admin/config?tab=behavior")
+    assert ".form-actions[hidden]" in resp.text
 
 
 def test_config_save_int_field_survives_as_real_int_not_float(client):
@@ -195,3 +243,183 @@ def test_ai_provider_clear_key_reverts_the_whole_bundle_to_default(client):
     active = get_active_ai_provider_config()
     assert active.provider == "anthropic"
     assert active.model == ""
+
+
+# --- "Kho nội dung" tab (2026-10-01) -----------------------------------------
+
+_VALID_CONTENT_LIBRARY_FORM = {
+    "opener_text_0": "TÌM NHÂN SỰ MỚI",
+    "opener_visa_0": "",
+    "opener_text_1": "CHỈ DÀNH CHO KỸ SƯ",
+    "opener_visa_1": "gijinkoku",
+    "cta_0": "Nhắn tin ngay nhé",
+    "suffix_0": "hỏi thêm nha",
+    "reply_template_0": "Chào {field}{region_clause}, nhắn mình nhé.",
+    "visa_code_0": "gijinkoku",
+    "visa_names_0": "Kỹ Sư\nGijinkoku",
+}
+
+
+def test_content_library_save_persists_all_five_lists(client):
+    resp = client.post("/admin/config/content-library", data=_VALID_CONTENT_LIBRARY_FORM)
+    assert resp.status_code == 200
+    assert "Đã lưu Kho nội dung" in resp.text
+
+    assert get_job_post_openers([]) == [
+        {"text": "TÌM NHÂN SỰ MỚI", "visa_restrictions": []},
+        {"text": "CHỈ DÀNH CHO KỸ SƯ", "visa_restrictions": ["gijinkoku"]},
+    ]
+    assert get_contact_cta([]) == ["Nhắn tin ngay nhé"]
+    assert get_missing_info_suffixes([]) == ["hỏi thêm nha"]
+    assert get_candidate_reply_templates([]) == ["Chào {field}{region_clause}, nhắn mình nhé."]
+    assert get_visa_type_names({}) == {"gijinkoku": ["Kỹ Sư", "Gijinkoku"]}
+
+
+def test_content_library_opener_restricted_to_multiple_visas(client):
+    """2026-10-01, owner's request: a native <select multiple> submits one
+    value per selected <option> under the same field name — a list value
+    in httpx's `data=` dict is how the test client reproduces that (NOT a
+    list of (key, value) tuples, which this httpx version mis-encodes as
+    an empty body — caught while verifying this end-to-end by hand)."""
+    resp = client.post("/admin/config/content-library", data={
+        "opener_text_0": "KỸ SƯ HOẶC CHẤT LƯỢNG CAO",
+        "opener_visa_0": ["gijinkoku", "koudo_jinzai"],
+        "opener_text_1": "MỌI VISA",
+        "cta_0": "ib mình nha",
+        "suffix_0": "hỏi thêm",
+        "reply_template_0": "Yo {field}{region_clause}",
+        "visa_code_0": "gijinkoku", "visa_names_0": "Kỹ Sư",
+        "visa_code_1": "koudo_jinzai", "visa_names_1": "Chất Lượng Cao",
+    })
+    assert resp.status_code == 200
+    assert "Đã lưu Kho nội dung" in resp.text, resp.text
+    assert get_job_post_openers([]) == [
+        {"text": "KỸ SƯ HOẶC CHẤT LƯỢNG CAO", "visa_restrictions": ["gijinkoku", "koudo_jinzai"]},
+        {"text": "MỌI VISA", "visa_restrictions": []},
+    ]
+
+    from human_bot import content_strategist as cs
+    for visa in ("gijinkoku", "koudo_jinzai"):
+        job = {"title": "T", "attributes": {"visaType": visa}}
+        openers_seen = {cs._draft_job_post_placeholder(job, variant_seed=i).split(" - ")[0] for i in range(4)}
+        assert "KỸ SƯ HOẶC CHẤT LƯỢNG CAO" in openers_seen
+    job_other = {"title": "T", "attributes": {"visaType": "tokutei"}}
+    openers_seen_other = {cs._draft_job_post_placeholder(job_other, variant_seed=i).split(" - ")[0] for i in range(4)}
+    assert openers_seen_other == {"MỌI VISA"}
+
+
+def test_content_library_save_rejects_empty_cta_list_and_saves_nothing(client):
+    form = dict(_VALID_CONTENT_LIBRARY_FORM)
+    form["cta_0"] = "   "  # blank after strip -> list ends up empty
+    resp = client.post("/admin/config/content-library", data=form)
+    assert resp.status_code == 200
+    assert "Câu mời nhắn tin: cần ít nhất 1 dòng" in resp.text
+    # Nothing saved — not even the other 4 valid lists in the same submit,
+    # same "all or nothing" stance as every other save route in this file.
+    assert get_contact_cta(_CONTACT_CTA_DEFAULT) == _CONTACT_CTA_DEFAULT
+    assert get_job_post_openers(_JOB_POST_OPENERS_DEFAULT) == _JOB_POST_OPENERS_DEFAULT
+
+
+def test_content_library_save_rejects_reply_template_with_bad_placeholder(client):
+    form = dict(_VALID_CONTENT_LIBRARY_FORM)
+    form["reply_template_0"] = "Chào {ten_khong_hop_le}, nhắn mình nhé."
+    resp = client.post("/admin/config/content-library", data=form)
+    assert resp.status_code == 200
+    assert "dùng sai placeholder" in resp.text
+    assert get_candidate_reply_templates(_CANDIDATE_REPLY_TEMPLATES_DEFAULT) == _CANDIDATE_REPLY_TEMPLATES_DEFAULT
+
+
+def test_content_library_save_rejects_openers_all_visa_restricted(client):
+    form = dict(_VALID_CONTENT_LIBRARY_FORM)
+    form["opener_visa_0"] = "gijinkoku"  # both rows now restricted -> 0 unrestricted left
+    resp = client.post("/admin/config/content-library", data=form)
+    assert resp.status_code == 200
+    assert "cần ít nhất 1 dòng KHÔNG giới hạn visa" in resp.text
+    assert get_job_post_openers(_JOB_POST_OPENERS_DEFAULT) == _JOB_POST_OPENERS_DEFAULT
+
+
+def test_content_library_save_rejects_visa_code_with_no_names(client):
+    form = dict(_VALID_CONTENT_LIBRARY_FORM)
+    form["visa_names_0"] = "   \n  "  # blank after stripping each line
+    resp = client.post("/admin/config/content-library", data=form)
+    assert resp.status_code == 200
+    assert "chưa có cách gọi nào" in resp.text
+    assert get_visa_type_names(_VISA_TYPE_NAMES_DEFAULT) == _VISA_TYPE_NAMES_DEFAULT
+
+
+def test_content_library_save_rejects_empty_visa_names_and_saves_nothing(client):
+    """Empty dict isn't a usable override (get_visa_type_names() treats it
+    same as "no override saved" and falls back to default) — rejecting
+    this loudly avoids a silent "my edit did nothing" surprise."""
+    form = dict(_VALID_CONTENT_LIBRARY_FORM)
+    form["visa_code_0"] = ""  # the only visa row, now blank -> dict ends up empty
+    resp = client.post("/admin/config/content-library", data=form)
+    assert resp.status_code == 200
+    assert "Tên gọi các loại visa: cần ít nhất 1 mã" in resp.text
+    assert get_visa_type_names(_VISA_TYPE_NAMES_DEFAULT) == _VISA_TYPE_NAMES_DEFAULT
+    # All-or-nothing — the otherwise-valid opener/cta/... edits in the same
+    # submit must not have been saved either.
+    assert get_contact_cta(_CONTACT_CTA_DEFAULT) == _CONTACT_CTA_DEFAULT
+
+
+def test_content_library_save_rejects_duplicate_visa_code_and_saves_nothing(client):
+    form = dict(_VALID_CONTENT_LIBRARY_FORM)
+    form["visa_code_1"] = "gijinkoku"  # same code as visa_code_0
+    form["visa_names_1"] = "Tên Khác"
+    resp = client.post("/admin/config/content-library", data=form)
+    assert resp.status_code == 200
+    assert "bị lặp lại" in resp.text
+    assert get_visa_type_names(_VISA_TYPE_NAMES_DEFAULT) == _VISA_TYPE_NAMES_DEFAULT
+
+
+def test_content_library_opener_select_keeps_orphaned_visa_restriction_visible(client):
+    """A restriction referencing a visa code no longer in "Tên gọi visa"
+    must still show up as its own <option> (and stay selected) — a native
+    <select> can only submit one of its own <option> values, so losing
+    this would silently un-restrict the opener on the next unrelated
+    save."""
+    resp = client.get("/admin/config?tab=content")
+    assert resp.status_code == 200
+    import re
+    from human_bot.runtime_config import save_job_post_openers, save_visa_type_names
+    save_job_post_openers([
+        {"text": "CHỈ CHO MÃ ĐÃ XOÁ", "visa_restrictions": ["mot_ma_khong_con_ton_tai"]},
+        {"text": "KHÔNG GIỚI HẠN", "visa_restrictions": []},
+    ])
+    save_visa_type_names({"gijinkoku": ["Kỹ Sư"]})  # the orphaned code is NOT in here
+    resp = client.get("/admin/config?tab=content")
+    assert resp.status_code == 200
+    assert re.search(
+        r'<option value="mot_ma_khong_con_ton_tai" selected>', resp.text,
+    ), "orphaned visa_restriction must still render as a selected option, not silently fall back to 'Không giới hạn'"
+
+
+def test_content_library_opener_row_select_and_input_have_bounded_widths(client):
+    """Owner-reported 2026-10-01: long visa labels (e.g. "Nhân Lực Chất
+    Lượng Cao (koudo_jinzai)") on the <select> with no width cap, paired
+    with the text input having no min-width, squeezed the input down to
+    near-nothing and pushed "Xoá" past the row's edge. Regression-checks
+    the 3 CSS properties that fix it, not just that the page renders."""
+    resp = client.get("/admin/config?tab=content")
+    assert "max-width:200px" in resp.text  # caps the <select>'s own width
+    assert "min-width:160px" in resp.text  # floor so the text input can't collapse away
+    assert "flex-wrap:wrap" in resp.text   # last resort: wrap instead of overflow
+
+
+def test_content_library_reset_restores_default_and_removes_override(client, isolated_runtime_config):
+    client.post("/admin/config/content-library", data=_VALID_CONTENT_LIBRARY_FORM)
+    assert get_contact_cta(_CONTACT_CTA_DEFAULT) == ["Nhắn tin ngay nhé"]
+
+    resp = client.post("/admin/config/content-library/reset", data={"list_name": "cta"})
+    assert resp.status_code == 200
+    assert "Đã khôi phục mặc định" in resp.text
+    assert get_contact_cta(_CONTACT_CTA_DEFAULT) == _CONTACT_CTA_DEFAULT
+
+    import json
+    stored = json.loads(isolated_runtime_config.read_text())
+    assert "content_contact_cta" not in stored  # key removed outright, not reset-to-default-value
+    # Resetting one list must not touch the others saved in the same submit.
+    assert get_job_post_openers([]) == [
+        {"text": "TÌM NHÂN SỰ MỚI", "visa_restrictions": []},
+        {"text": "CHỈ DÀNH CHO KỸ SƯ", "visa_restrictions": ["gijinkoku"]},
+    ]

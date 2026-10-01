@@ -543,3 +543,57 @@ def test_resolve_login_returns_none_with_nothing_configured(isolated_runtime_con
     monkeypatch.delenv("ADMIN_USERNAME", raising=False)
     monkeypatch.delenv("ADMIN_PASSWORD", raising=False)
     assert rc.resolve_login("anyone", "anything") is None
+
+
+# --- Content library (admin-editable wording, 2026-10-01) -------------------
+
+_DEFAULT_LIST = ["mặc định A", "mặc định B"]
+
+
+def test_content_list_getters_fall_back_to_default_when_no_override(isolated_runtime_config):
+    assert rc.get_contact_cta(_DEFAULT_LIST) == _DEFAULT_LIST
+    assert rc.get_missing_info_suffixes(_DEFAULT_LIST) == _DEFAULT_LIST
+    assert rc.get_candidate_reply_templates(_DEFAULT_LIST) == _DEFAULT_LIST
+    assert rc.get_job_post_openers([{"text": "x", "visa_restriction": None}]) == [
+        {"text": "x", "visa_restriction": None}
+    ]
+    assert rc.get_visa_type_names({"gijinkoku": ["Kỹ Sư"]}) == {"gijinkoku": ["Kỹ Sư"]}
+
+
+def test_save_contact_cta_then_get_reflects_override(isolated_runtime_config):
+    rc.save_contact_cta(["câu mới 1", "câu mới 2"])
+    assert rc.get_contact_cta(_DEFAULT_LIST) == ["câu mới 1", "câu mới 2"]
+
+
+def test_save_content_list_replaces_whole_list_not_merges(isolated_runtime_config):
+    rc.save_contact_cta(["a", "b", "c"])
+    rc.save_contact_cta(["z"])
+    assert rc.get_contact_cta(_DEFAULT_LIST) == ["z"]
+
+
+def test_get_content_list_falls_back_to_default_when_override_is_empty_list(isolated_runtime_config):
+    """An empty list is never a usable override (random.choice([]) raises
+    IndexError at a real posting call site) — treated same as "no override
+    saved", not as "the admin wants zero items"."""
+    rc.save_contact_cta([])
+    assert rc.get_contact_cta(_DEFAULT_LIST) == _DEFAULT_LIST
+
+
+def test_save_job_post_openers_round_trip_preserves_visa_restriction(isolated_runtime_config):
+    openers = [
+        {"text": "TÌM ĐỒNG ĐỘI", "visa_restriction": None},
+        {"text": "TÌM NHÂN TÀI", "visa_restriction": "gijinkoku"},
+    ]
+    rc.save_job_post_openers(openers)
+    assert rc.get_job_post_openers([]) == openers
+
+
+def test_save_visa_type_names_round_trip(isolated_runtime_config):
+    names = {"gijinkoku": ["Gijinkoku", "Kỹ Sư"], "tokutei": ["Tokutei"]}
+    rc.save_visa_type_names(names)
+    assert rc.get_visa_type_names({}) == names
+
+
+def test_get_visa_type_names_falls_back_to_default_when_override_is_empty_dict(isolated_runtime_config):
+    rc.save_visa_type_names({})
+    assert rc.get_visa_type_names({"gijinkoku": ["Kỹ Sư"]}) == {"gijinkoku": ["Kỹ Sư"]}

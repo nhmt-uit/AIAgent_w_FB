@@ -5133,11 +5133,10 @@ Greenhouse/Bullhorn (nền tảng tuyển dụng đa kênh), và Hootsuite/FastS
 cùng loại ở mảng chống phát hiện (mouse/scroll giả người, fingerprint riêng
 theo tài khoản, AI viết N bản/N nhóm) — không đề xuất thêm ở mảng đó.
 
-- [ ] **[Owner: "chính xác", ưu tiên bàn trước]** Trình soạn "kho câu chữ"
-      ngay trên Admin UI (tab mới ở `/admin/config`, sửa được
-      opener/CTA/câu thiếu visa-lương/tên visa/mẫu bình luận, lưu vào
-      `runtime_config.json`) — thay vì phải sửa code + test + commit mỗi
-      lần đổi 1 câu chữ như vừa xảy ra ở mục ngay trên.
+- [x] **[Owner: "chính xác", ưu tiên bàn trước — ĐÃ LÀM 2026-10-01]** Trình
+      soạn "kho câu chữ" ngay trên Admin UI. Xem chi tiết đầy đủ ở mục mới
+      "Kho nội dung — trình soạn câu chữ ngay trên Admin UI (2026-10-01)"
+      phía dưới.
 - [ ] Kênh báo động (Slack/Telegram) khi tài khoản bị khoá hoặc service
       ngừng chạy.
 - [ ] Bảng "sức khoẻ tài khoản" ngay trang chủ (mở rộng sync-status sẵn
@@ -5166,3 +5165,248 @@ theo tài khoản, AI viết N bản/N nhóm) — không đề xuất thêm ở 
 đọc trang); tự động phát hiện trùng lặp văn bản giữa các bài AI viết (cùng
 rủi ro báo sai với quyết định đã chốt ở mục 5 tài liệu nghiên cứu, không tự
 nhận diện tin trùng).
+
+## Kho nội dung — trình soạn câu chữ ngay trên Admin UI (2026-10-01)
+
+Lên kế hoạch qua Plan Mode (nghiên cứu code trước, hỏi owner 2 câu về phạm
+vi/thiết kế, duyệt kế hoạch rồi mới code) — ý số 1 trong 10 ý tưởng ở mục
+ngay trên. Owner chốt phạm vi: **5 danh sách** — opener (có ràng buộc visa
+tuỳ chọn), CTA, câu thiếu visa/lương, mẫu bình luận ứng viên, tên gọi visa.
+
+- [x] **`human_bot/runtime_config.py`**: thêm lớp lưu trữ mới theo đúng
+      pattern `joined_groups` (flat top-level key trong `runtime_config.json`,
+      replace toàn bộ khi lưu). 5 cặp `get_*`/`save_*` + 5 hàm `reset_*`
+      (xoá hẳn key override — không ghi lại giá trị default, để nếu code
+      default đổi sau này thì tự động áp dụng lại, không bị "ghim" vào
+      default cũ). `default` truyền vào qua tham số, không import ngược từ
+      `content_strategist.py`/`data_sync.py` — giữ đúng hướng phụ thuộc cũ.
+- [x] **`content_strategist.py`/`data_sync.py`**: đổi 5 hằng số cũ
+      (`_JOB_POST_OPENERS`, `_CONTACT_CTA`, `_MISSING_INFO_SUFFIXES`,
+      `_VISA_TYPE_NAMES`, `_CANDIDATE_REPLY_TEMPLATES`) thành `_..._DEFAULT`,
+      đọc qua `get_*()` tại đúng điểm dùng (giống cách
+      `get_active_ai_provider_config()` đã dùng). Opener đổi cấu trúc từ
+      `list[str]` + set giới hạn riêng (`_ENGINEER_ONLY_OPENERS`) thành
+      `list[dict]` với field `visa_restriction` ngay trong từng dòng —
+      tổng quát hoá đúng luật "TÌM NHÂN TÀI chỉ dùng cho Kỹ Sư" vừa thêm
+      hôm 30/09, owner giờ tự thêm được opener mới kèm giới hạn visa riêng
+      qua UI mà không cần sửa code nữa. Có lưới an toàn `_FALLBACK_OPENER`
+      ("TIN TUYỂN DỤNG") cho trường hợp lý thuyết 0 opener không-giới-hạn
+      lọt qua được validate.
+- [x] **`human_bot/admin.py`**: tab mới "📝 Kho nội dung" ở `/admin/config`.
+      Card htmx riêng (không phải `<form>` lồng — cả trang `/admin/config`
+      đã là 1 `<form>` lớn, giống tiền lệ card "Cấu hình AI"), route
+      `POST /config/content-library` (lưu cả 5 danh sách cùng lúc) +
+      `POST /config/content-library/reset` (khôi phục 1 danh sách, nhận
+      `list_name`). Mỗi dòng dùng lại `initRepeatableBlocks` (JS có sẵn,
+      trước đây chỉ dùng cho form soạn bài nhóm ở `/admin/post`) —
+      **tổng quát hoá thêm**: JS cũ chỉ wire nút xoá cho đúng 1 block đầu
+      tiên và luôn giả định `nextIndex = 1` (đúng cho form soạn bài luôn
+      bắt đầu trống), giờ wire TẤT CẢ block đã render sẵn (N dòng đã lưu)
+      và tính `nextIndex` từ chỉ số lớn nhất đang có — không đổi hành vi
+      cũ ở `/admin/post` (vẫn luôn đúng 1 block lúc đầu).
+      Validate trước khi lưu (chặn hoàn toàn, không lưu gì nếu sai):
+      mỗi danh sách phải còn ≥ 1 dòng sau khi bỏ dòng trống; opener phải
+      còn ≥ 1 dòng KHÔNG giới hạn visa; mẫu bình luận mỗi dòng thử
+      `.format(field="x", region_clause="")` trong try/except — chặn
+      placeholder sai cú pháp (VD `{xyz}`) trước khi nó có cơ hội crash
+      lúc đăng bình luận thật; mã visa phải có ≥ 1 tên gọi. Lỗi hiển thị
+      kèm giữ nguyên toàn bộ dữ liệu vừa gõ (không mất khi submit sai).
+- [x] **Test**: 18 test mới — `test_runtime_config.py` (round-trip 5 cặp
+      get/save, replace-not-merge, fallback khi override rỗng/sai kiểu),
+      `test_content_strategist.py`/`test_data_sync.py` (xác nhận
+      `_draft_job_post_placeholder()`/`_draft_candidate_reply_placeholder()`
+      dùng đúng override, luật giới hạn visa vẫn đúng khi opener đến từ
+      override), `test_admin_config.py` (render tab, lưu hợp lệ, 4 ca lưu
+      sai bị chặn đúng + không lưu gì, reset xoá hẳn key). Sửa 4 test cũ
+      tuần trước (gọi thẳng `cs._JOB_POST_OPENERS` — hằng số đã đổi tên/cấu
+      trúc) để khớp API mới. **Toàn bộ suite: 461/461 pass** (từ 441).
+      Verify thêm bằng tay (ngoài test tự động): gọi thật route lưu qua
+      `TestClient` rồi gọi `_draft_job_post_placeholder()` xác nhận bài
+      đăng ra đúng câu/visa vừa sửa — xác nhận đúng toàn bộ chuỗi
+      Admin UI → `runtime_config.json` → bài đăng thật, không cần sửa
+      code/khởi động lại. Chưa chạy qua trình duyệt thật, chưa commit.
+
+- [x] **Đóng vai tester soát lại toàn bộ — phát hiện 5 lỗ hổng thật + 2 vấn
+      đề UX, sửa hết (2026-10-01).** Không có browser tool trong môi trường
+      này nên verify qua: đọc lại diff dòng-theo-dòng, `TestClient` gọi
+      thật route + render HTML ra để soi, và script Python gọi thẳng hàm
+      đăng bài sau khi lưu qua UI.
+      1. **Lỗ hổng thật — có thể crash lúc đăng bình luận:**
+         `_draft_candidate_reply_placeholder()` gọi `.format()` thẳng,
+         không có lưới an toàn — nếu `runtime_config.json` bị sửa tay/hỏng
+         có mẫu bình luận dùng placeholder sai (validate ở UI chỉ chặn
+         được khi lưu QUA UI, không chặn được file bị sửa tay), hàm sẽ
+         crash ngay lúc đăng bình luận thật. Đã thêm `try/except` quanh
+         `.format()`, rơi về đúng 1 mẫu mặc định trong code nếu lỗi — khớp
+         đúng triết lý "không bao giờ crash lúc đăng" mọi chỗ khác trong
+         dự án. Thêm luôn `logger` cho `data_sync.py` (file này trước giờ
+         chưa có logger nào, chỉ `except Exception: return None` âm thầm
+         ở chỗ khác — chỗ mới thêm log lại vì đây là dấu hiệu dữ liệu
+         cấu hình hỏng, đáng được biết, không phải lỗi mạng vặt).
+      2. **Thiếu validate: "Tên gọi visa" có thể lưu RỖNG mà không báo
+         lỗi** — khác 4 danh sách kia (đều bắt buộc ≥ 1 dòng), phần này
+         trước đó không bị chặn dù về mặt kỹ thuật không crash (dict rỗng
+         tự rơi về mặc định) — hệ quả: owner xoá hết rồi lưu, thấy
+         "Đã lưu" nhưng load lại thấy y hệt danh sách cũ, không hiểu vì
+         sao "lưu không có tác dụng". Đã thêm validate bắt buộc ≥ 1 mã.
+      3. **Thiếu validate: 2 dòng cùng chung 1 mã visa thì dòng sau âm
+         thầm ghi đè dòng trước, không báo gì** — đã thêm chặn lưu +
+         báo lỗi rõ "mã X bị lặp lại".
+      4. **Lỗi hiển thị: xoá 1 mã visa đang bị 1 opener tham khảo (qua
+         "Giới hạn visa") làm dropdown của opener đó ngầm hiện "Không
+         giới hạn"** (vì `<select>` chỉ chọn được đúng 1 trong các
+         `<option>` đang có) — lưu lại lần sau sẽ ÂM THẦM gỡ giới hạn
+         visa của opener đó dù owner không hề đụng tới nó. Đã sửa: mã bị
+         tham khảo nhưng không còn trong "Tên gọi visa" vẫn được giữ lại
+         làm 1 `<option>` riêng (không mất), có test riêng xác nhận.
+      5. **Lỗi cú pháp Python: regex JS `/_(\d+)$/` viết thẳng trong
+         chuỗi Python thường (không phải raw string) khiến `\d` bị cảnh
+         báo `DeprecationWarning: invalid escape sequence`** (sẽ thành
+         lỗi cứng ở Python bản sau) — phát hiện qua chạy lại test thấy
+         warning mới xuất hiện so với trước khi sửa (`git stash` so
+         sánh). Sửa thành `\\d`.
+      6. **[UX]** Dropdown "Giới hạn visa" ở mỗi opener trước đó hiện
+         nguyên mã viết thường (`gijinkoku`, `tokutei`...) — khó đọc.
+         Đổi sang hiện kèm tên thân thiện lấy từ "Tên gọi visa", VD
+         "Gijinkoku (gijinkoku)", "Thực Tập Sinh (jisshu)".
+      7. **[UX]** Mục "Tên gọi visa" (nguồn cho dropdown ở ý 6) trước đó
+         nằm SAU mục "Câu mở đầu" (nơi dùng dropdown đó) — đổi vị trí lên
+         trước + thêm ghi chú "vừa thêm mã mới thì lưu 1 lần trước để nó
+         hiện ra trong dropdown". Đồng thời gói mỗi mục (opener/CTA/câu
+         thiếu info/mẫu bình luận/tên visa — tổng ~40 dòng input cùng
+         lúc) vào `<details>` thu gọn được kèm đếm số dòng, dùng lại đúng
+         pattern `<details>` đã có sẵn ở trang Báo cáo — đỡ phải cuộn qua
+         hết 1 lần. "Tên gọi visa" (dài nhất, ít sửa nhất) thu gọn sẵn;
+         4 mục còn lại mở sẵn; khi lưu bị lỗi thì MỞ HẾT để không giấu
+         mất chỗ đang sai.
+      Thêm 6 test mới cho các lỗ hổng 1-4 (24/465 → 465 test cho riêng
+      tính năng này). Verify lại toàn bộ chuỗi end-to-end 1 lần nữa sau
+      khi sửa — vẫn đúng. **Toàn bộ suite: 465/465 pass.** Vẫn chưa chạy
+      qua trình duyệt thật (môi trường này không có browser tool), chưa
+      commit.
+
+- [x] **Owner tự mở trình duyệt thật, phát hiện thêm 2 lỗi — sửa ngay
+      (2026-10-01).** Đúng kiểu lỗi chỉ hiện ra khi nhìn trang thật, review
+      HTML tĩnh (như mục ngay trên) không bắt được.
+      1. **"Vì sao vừa có nút 'Lưu Kho nội dung' vừa có nút 'Lưu cấu
+         hình'?"** — nút "Lưu cấu hình" ở cuối trang là nút submit chung
+         cho CẢ `<form>` lớn (mọi tab dùng chung 1 form), chỉ thực sự lưu
+         được field kiểu dataclass (`_CONFIG_SECTIONS`: tab "Cấu hình hành
+         vi"/"Đồng bộ dữ liệu", và 2 công tắc bật/tắt AI ở tab "AI").
+         Riêng tab "Kho nội dung" không có field dataclass nào — nút đó
+         với tab này hoàn toàn thừa và gây hiểu lầm "2 nút lưu khác nhau
+         để làm gì". Sửa: ẩn nút chung khi đang ở tab Kho nội dung (tab AI
+         vẫn cần giữ vì 2 công tắc bật/tắt kia vẫn phải lưu qua nó).
+         **Lưu ý kỹ thuật phát hiện khi sửa:** chuyển tab là xử lý THUẦN
+         PHÍA TRÌNH DUYỆT (JS ẩn/hiện panel, không reload trang, không đổi
+         URL) — nên chỉ ẩn 1 lần lúc server render ban đầu (dựa theo
+         `?tab=` trên URL) là CHƯA ĐỦ: bấm đổi tab bằng tay (không qua
+         URL) thì nút vẫn hiện sai. Phải sửa thêm trong `initTabs()` để
+         ẩn/hiện nút này mỗi lần bấm đổi tab, không chỉ lúc tải trang.
+      2. **"Câu mở đầu bài đăng nhóm: Ô input quá hẹp không thấy gì, ô
+         input thì quá rộng, nút xoá bị tràn ra ngoài"** — lỗi do chính
+         sửa đổi UX trước đó: thêm tên gọi thân thiện vào dropdown "Giới
+         hạn visa" (VD "Nhân Lực Chất Lượng Cao (koudo_jinzai)") làm
+         `<select>` rộng ra theo nội dung, mà `<select>` lại đặt
+         `flex-shrink:0` (không bao giờ co lại) — ép ô nhập chữ (vốn có
+         thể co) co gần về 0, đẩy nút "Xoá" tràn ra khỏi khung. Sửa: giới
+         hạn `max-width` cho `<select>` (co được, chữ dài tự rút gọn bằng
+         `text-overflow:ellipsis`), đặt `min-width` sàn cho ô nhập chữ
+         (không co quá mức), thêm `flex-wrap:wrap` cho cả 4 kiểu dòng (áp
+         dụng luôn cho CTA/câu thiếu info/mẫu bình luận/tên visa, không
+         chỉ riêng opener) làm lưới an toàn cuối — nếu vẫn không đủ chỗ
+         thì xuống dòng thay vì tràn ra ngoài.
+      Thêm 3 test hồi quy (ẩn/hiện đúng nút theo tab lúc render ban đầu;
+      xác nhận đúng 3 thuộc tính CSS đã sửa còn trong HTML). Có 1 giới hạn
+      không test tự động được: hành vi JS khi bấm đổi tab bằng tay (pytest
+      không chạy JS trình duyệt) — đã ghi rõ trong docstring test, owner tự
+      xác nhận lại bằng tay trên trình duyệt thật đã dùng để phát hiện cả
+      2 lỗi này. **Toàn bộ suite: 467/467 pass.** Chưa commit.
+
+- [x] **Đổi "Giới hạn visa" từ chọn 1 mã sang chọn nhiều mã (multi-select),
+      theo yêu cầu owner (2026-10-01).** Owner hỏi "Select có thể là multi
+      select không?" — hợp lý, 1 opener giờ dùng được cho N loại visa cùng
+      lúc (VD "TÌM NHÂN TÀI" cho cả Kỹ Sư lẫn Nhân Lực Chất Lượng Cao) thay
+      vì đúng 1 hoặc không giới hạn gì.
+      - Đổi field `visa_restriction` (1 mã hoặc `None`) thành
+        `visa_restrictions` (list mã, rỗng = không giới hạn) ở
+        `content_strategist.py` (`_JOB_POST_OPENERS_DEFAULT`,
+        `_draft_job_post_placeholder()`), `admin.py` (render/parse/
+        validate), test liên quan.
+      - UI: `<select>` đổi thành `<select multiple size="...">`, bỏ hẳn
+        option "Không giới hạn" (không chọn gì = không giới hạn, đúng ngữ
+        nghĩa multi-select hơn). `size` tự tính theo số mã đang có (tối đa
+        4 dòng hiển thị, có cuộn). Thêm ghi chú "Giữ Ctrl/Cmd để chọn
+        nhiều" ngay dưới ô chọn.
+      - Sửa JS `initRepeatableBlocks`: dòng mới nhân bản ra phải **bỏ chọn
+        hết** các option (không còn "Không giới hạn" ở vị trí 0 để reset
+        về nữa) — nếu không, dòng mới sẽ vô tình bị giới hạn theo đúng mã
+        đầu tiên trong danh sách thay vì để trống.
+      - **Phát hiện khi migrate: file `runtime_config.json` THẬT (local,
+        gitignored) đã có sẵn dữ liệu "Kho nội dung" do owner lưu thử qua
+        UI trước đó (đúng bằng chứng service đang chạy code cũ, khớp lỗi 2
+        nút Lưu ở mục trên)** — opener trong đó dùng schema cũ
+        (`visa_restriction`). Đã viết script migrate 1 lần, chuyển đúng 9
+        dòng sang schema mới (`null` → `[]`, `"gijinkoku"` → `["gijinkoku"]`)
+        — nội dung giữ nguyên y hệt, không mất gì (owner lưu đúng y hệt
+        mặc định lúc thử, không có tuỳ chỉnh riêng nào).
+      - **Phát hiện thêm qua migrate: 1 lỗ hổng cô lập test có thật** —
+        nhiều test gọi `_draft_job_post_placeholder()`/`_visa_line()`/
+        `_draft_candidate_reply_placeholder()` mà KHÔNG dùng fixture
+        `isolated_runtime_config`, nên âm thầm đọc thẳng `runtime_config.json`
+        **thật** suốt từ lúc viết (chỉ pass vì trước đó không có override
+        nào thật). Đến khi owner lưu dữ liệu thật qua UI, 1 test bắt đầu
+        fail vì đọc trúng dữ liệu thật đó. Vi phạm đúng quy tắc dự án
+        "test không bao giờ được phụ thuộc runtime_config.json thật". Sửa
+        tận gốc: thêm fixture `autouse=True` cô lập runtime_config cho
+        toàn bộ `test_content_strategist.py` (không sửa từng test lẻ, dễ
+        sót), và bổ sung fixture còn thiếu cho 1 test tương tự ở
+        `test_data_sync.py`.
+      - Thêm 2 test mới (multi-select lưu/đọc đúng, vẫn dùng được cho N
+        visa). Verify tay end-to-end qua `TestClient` xác nhận opener giới
+        hạn 2 mã dùng được cho cả 2, và không dùng được cho mã thứ 3.
+      **Toàn bộ suite: 469/469 pass.** Chưa commit.
+
+- [x] **Owner chê giao diện `<select multiple>` "xấu quá" + nút "Lưu cấu
+      hình" vẫn còn sau khi đã restart server — sửa cả 2 (2026-10-01).**
+      1. **Đổi `<select multiple>` gốc (nhìn như hộp liệt kê cũ, phải giữ
+         Ctrl/Cmd mới chọn được nhiều) sang đúng kiểu dropdown đẹp đã
+         dùng sẵn ở mọi nơi khác trong trang** (`_custom_select()`/
+         `initCSelect` — nút bấm 1 dòng + panel xổ xuống khi bấm). Thêm
+         bản multi-select của component này: `initCSelectMulti()` (JS) —
+         khác bản gốc ở chỗ bấm 1 lựa chọn chỉ BẬT/TẮT nó (không đóng
+         panel lại), vì chọn nhiều cái liên tiếp cần panel đứng yên giữa
+         các lần bấm. Vẫn dùng đúng `<select multiple>` thật đứng sau
+         (ẩn đi bằng CSS, không phải bỏ hẳn) nên không cần đổi gì ở phía
+         server (route lưu/đọc) — chỉ đổi phần hiển thị. Không cần biết
+         Ctrl/Cmd nữa, bấm thường là bật/tắt được ngay.
+         Phải sửa thêm `initRepeatableBlocks`'s hàm nhân bản dòng mới:
+         `cloneNode()` copy luôn cả nhãn/panel ĐÃ render sẵn của dòng gốc
+         và cờ "đã khởi tạo rồi" — dòng mới nếu không xử lý sẽ bị kẹt
+         hiện nhãn của dòng gốc, không phản hồi khi bấm. Đã thêm bước xoá
+         cờ + khởi tạo lại từ đầu cho mọi widget cselect/cselect-multi
+         bên trong dòng vừa nhân bản.
+      2. **Lỗi thật phía sau việc "restart vẫn không hết" nút "Lưu cấu
+         hình"**: không phải lỗi logic — `hidden` đã đúng trong HTML, xác
+         nhận lại bằng test vẫn pass. Lỗi thật là **CSS**: `.form-actions`
+         tự đặt `display:flex` (style do trang tự định nghĩa) — đè lên
+         hẳn `display:none` ngầm định của thuộc tính `hidden` (rule do
+         trang tự viết luôn thắng rule mặc định của trình duyệt, bất kể
+         độ ưu tiên CSS bên nào cao hơn). Nút vẫn "có `hidden`" trong mã
+         nguồn nhưng KHÔNG BAO GIỜ thật sự biến mất trên màn hình — giải
+         thích đúng vì sao restart server không giải quyết được gì (đây
+         không phải lỗi code Python). Cùng đúng loại lỗi `.tab-panel` đã
+         từng dính và tự sửa trước đây (`.tab-panel[hidden]` rule có sẵn)
+         — chỉ là `.form-actions` chưa từng cần `hidden` cho tới tính
+         năng này. Sửa: thêm `.form-actions[hidden] { display:none }`.
+         **Bài học quy trình**: test tự động trước đó chỉ kiểm tra CHUỖI
+         `"hidden"` có trong HTML hay không — không kiểm tra được việc nó
+         có thật sự ẩn trên màn hình hay không (test không chạy CSS).
+         Luôn pass dù bug vẫn còn nguyên — ghi lại đây để nhớ giới hạn
+         thật của loại test này.
+      Thêm 1 test hồi quy xác nhận rule CSS override đã có trong trang
+      (không kiểm được hiển thị thật vì không chạy CSS — đã ghi rõ giới
+      hạn này trong docstring test). Verify tay: POST qua `TestClient`
+      với đúng cấu trúc field mới (ẩn sau cselect) vẫn lưu đúng y hệt
+      trước, không cần đổi gì phía server. **Toàn bộ suite: 470/470
+      pass.** Chưa commit.
