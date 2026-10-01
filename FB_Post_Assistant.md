@@ -500,6 +500,25 @@ liệu thật hằng ngày và yêu cầu kiểm tra chéo lại mọi thứ tr�
   chữ mẫu đăng bài nhóm").
 - **Rà soát Admin UI + đối chiếu công cụ tương tự trên thị trường, owner
   chốt ghi nhận cả 6 ý tưởng để bàn thêm (chưa làm, xem mục 6 bên dưới).**
+- **Làm xong tính năng "Kho nội dung"** — trang quản trị giờ có chỗ tự sửa
+  câu chữ hệ thống dùng khi đăng bài/bình luận (câu mở đầu, câu mời nhắn
+  tin, mẫu bình luận, tên gọi visa...) mà không cần nhờ sửa code mỗi lần
+  đổi 1 câu — kèm theo vài vòng owner tự dùng thử phát hiện lỗi thật
+  (nút thừa, giao diện chọn nhiều lựa chọn xấu, 1 lỗi CSS khiến nút không
+  ẩn được dù code đã đúng) và đã sửa hết. Chi tiết đầy đủ ở `tasks.md`.
+- **Bug thật: bài đăng không lên, báo lỗi `post_button_still_visible_after_click`
+  (nhtu00, 14:24 01/10) — owner tự kiểm tra trên Facebook xác nhận bài
+  thật sự KHÔNG lên, không phải báo nhầm.** Tra lại cho thấy đây là lần
+  đầu tiên lỗi này xuất hiện kể từ khi có cơ chế "chờ nút Đăng biến mất
+  mới tin là thành công" (thêm từ 02-07/09, tới giờ mới gặp ca thật đầu
+  tiên). Ảnh chụp lúc lỗi cho thấy khung soạn bài bị kẹt đang tải, không
+  phải Facebook từ chối bài. Cùng tài khoản này ~1h45 sau bị đóng hẳn
+  trình duyệt rồi tự mở lại đăng tiếp bình thường — một tài khoản khác
+  vẫn đăng bình thường đúng lúc đó, nên không phải lỗi mạng chung mà có
+  vẻ là phiên trình duyệt riêng của `nhtu00` hôm đó tự nhiên trục trặc.
+  **Chưa sửa gì** — mới 1 lần, cần theo dõi thêm vài ngày xem có lặp lại
+  không trước khi quyết định sửa (đúng cách đã làm với lỗi timeout bình
+  luận trước đây). Chi tiết đầy đủ ở `tasks.md`.
 
 ---
 

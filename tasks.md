@@ -5409,4 +5409,64 @@ tuỳ chọn), CTA, câu thiếu visa/lương, mẫu bình luận ứng viên, t
       hạn này trong docstring test). Verify tay: POST qua `TestClient`
       với đúng cấu trúc field mới (ẩn sau cselect) vẫn lưu đúng y hệt
       trước, không cần đổi gì phía server. **Toàn bộ suite: 470/470
-      pass.** Chưa commit.
+      pass.** Đã commit (`3f62733`).
+
+## Bug thật: `post_button_still_visible_after_click` — nhtu00, 14:24 01-10-2026 (đang theo dõi)
+
+- [ ] **Owner báo lỗi qua số báo cáo lỗi `post_button_still_visible_after_click`
+      — đã tra, owner tự kiểm tra lại xác nhận bài thật sự KHÔNG lên (không
+      phải báo thất bại nhầm).** Tra `action_log` id **226**
+      (`2026-10-01T05:24:53Z` = 14:24:53 JST, account `nhtu00`,
+      `post_to_group`, job 740 "TÌM NHÂN TÀI - kỹ sư CAD/CAM", nhóm
+      "Chuyển việc kỹ sư"). Đây là lần ĐẦU TIÊN và DUY NHẤT message này
+      từng xuất hiện trong toàn bộ `action_log` kể từ khi cơ chế xác minh
+      "chờ nút Đăng biến mất" được thêm (2026-09-07, xem mục "Chụp
+      screenshot bằng chứng" phía trên) — cơ chế đó chưa từng được xác
+      nhận sống thật cho tới bây giờ.
+      **Bằng chứng đã xem:**
+      1. Code: [actions.py:767-775](human_bot/actions.py#L767-L775) — sau
+         khi bấm "Đăng", chờ tối đa 15s cho nút biến mất; hết giờ thì kiểm
+         tra có phải checkpoint/khoá tài khoản không
+         (`_check_anomaly_or_raise`) — **không phải** (nếu là checkpoint
+         thì message khác) — nên báo thất bại thật đúng bằng message này.
+      2. Ảnh chụp (`screenshots/nhtu00/20261001T052453592Z_post_to_group_fail.png`):
+         khung "Tạo bài viết" vẫn đang mở, phần nội dung hiện chấm loading
+         "⋯" thay vì chữ đã gõ, nút "Đăng" xám — khung soạn bài bị **kẹt
+         đang tải lại**, không phải Facebook từ chối bài hay có lỗi
+         validate rõ ràng nào.
+      3. **Đối chiếu lịch sử xung quanh (cùng ngày):** ~1h45 sau
+         (07:09:59), cùng tài khoản `nhtu00` dính lỗi khác —
+         `Page.wait_for_timeout: Target page, context or browser has been
+         closed` (trình duyệt/phiên của riêng nhtu00 đóng thật). 11 phút
+         sau đó (07:20:52) `nhtu00` đăng lại bình thường thành công — khớp
+         cơ chế tự phát hiện phiên chết + tự mở lại có sẵn
+         (`browser_pool.py`). Tài khoản khác (`tu_iizuki`) đăng thành
+         công bình thường lúc 07:00:39 — **ngay giữa** khoảng nhtu00 đang
+         gặp sự cố — loại trừ khả năng mạng/máy lỗi chung, vấn đề nằm
+         riêng ở phiên trình duyệt của `nhtu00` tại thời điểm đó.
+      **Nhận định ban đầu (chưa chắc chắn, cần theo dõi thêm):** nhiều khả
+      năng đây là 1 chặng trong chuỗi phiên trình duyệt `nhtu00` đang
+      xuống cấp dần (05:24 mới treo/tải chậm, tới 07:09 đóng hẳn, rồi tự
+      mở lại) — không phải lỗi chọn sai selector hay code hỏng. Cơ chế
+      xác minh "chờ nút Đăng biến mất" đã làm đúng việc — từ chối báo
+      thành công giả khi khung soạn bài rõ ràng chưa đóng — **nhưng lần
+      này nó đúng theo nghĩa khác: bài thật sự KHÔNG lên (owner xác nhận
+      trực tiếp trên Facebook), nên đây không phải chuyện "khung tải chậm
+      rồi vẫn đăng thành công" — khung đã thực sự KẸT, không tự hồi
+      phục trong 15 giây đó.**
+      **Task gốc vẫn còn nguyên trong `scheduled/failed/20261001T044234Z_66efdfd4.json`,
+      chưa ai bấm "Đăng lại".**
+      **Chưa sửa gì — đang theo dõi.** Chỉ 1 lần xảy ra, chưa đủ dữ liệu
+      để biết có lặp lại không hay chỉ là sự cố đơn lẻ của phiên nhtu00
+      hôm đó. Đúng tinh thần đã áp dụng với lỗi `comment_on_group_post`
+      timeout trước đây (xem mục ở trên, dòng ~1177) — **không vội sửa
+      timeout/selector dựa trên 1 lần xảy ra**, cần theo dõi `action_log`
+      (lọc `post_to_group`/`post_to_own_profile` +
+      `post_button_still_visible_after_click`) qua nhiều ngày/nhiều lần
+      chạy thật tiếp theo trước khi quyết định có cần vá gì không (tăng
+      15s lên bao nhiêu, hay đổi hẳn cách xác minh). Nếu lặp lại, đặc
+      biệt chú ý xem có luôn đi kèm/báo trước 1 lần "browser closed" của
+      cùng tài khoản trong vài giờ sau không — nếu đúng mẫu đó lặp lại,
+      hướng sửa đúng sẽ là cải thiện phát hiện phiên sắp chết SỚM HƠN
+      (trước khi nó kịp làm hỏng 1 lượt đăng), không phải tăng timeout
+      15 giây.
