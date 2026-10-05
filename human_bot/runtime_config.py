@@ -36,6 +36,7 @@ from human_bot.config import ACCOUNT_AGE_TIERS, COOLDOWN_WEEK2_STEP_UP_TIER, Rat
 from human_bot.data_sync_config import DataSyncConfig
 from human_bot.scheduling_config import SchedulingConfig
 from human_bot.media import MediaConfig
+from human_bot.telegram_config import TelegramConfig
 from human_bot.retention_config import RetentionConfig
 from human_bot.safety_cooldown_config import SafetyCooldownConfig
 from human_bot.secrets_config import SecretsConfig
@@ -466,6 +467,26 @@ def get_media_config() -> MediaConfig:
 
 def save_media_overrides(values: dict[str, Any]) -> None:
     _save_overrides("media", EDITABLE_MEDIA_FIELDS, values)
+
+
+# --- Telegram alerts on/off (bot token/chat_id stay in .env — see
+# human_bot/telegram_notify.py) -----------------------------------------
+
+EDITABLE_TELEGRAM_FIELDS: list[str] = [
+    "enabled",
+]
+
+
+def get_telegram_overrides() -> dict[str, Any]:
+    return _get_overrides("telegram", EDITABLE_TELEGRAM_FIELDS)
+
+
+def get_telegram_config() -> TelegramConfig:
+    return _get_config(TelegramConfig, "telegram", EDITABLE_TELEGRAM_FIELDS)
+
+
+def save_telegram_overrides(values: dict[str, Any]) -> None:
+    _save_overrides("telegram", EDITABLE_TELEGRAM_FIELDS, values)
 
 
 # --- Safety cooldown (reduced limits right after an account is resumed) -----

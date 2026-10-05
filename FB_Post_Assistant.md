@@ -79,8 +79,9 @@ năng.
   hỏng ngầm khi sửa code sau này.
 
 🔜 **Chưa làm / đang cân nhắc:**
-- Chưa có kênh báo động tự động (VD nhắn Slack/email) khi một tài khoản bị Facebook
-  khoá — hiện phải tự vào trang quản trị để thấy.
+- Kênh báo động tự động qua Telegram đã làm xong (2026-10-05, xem Tuần 5 ở
+  mục 4) — chỉ còn thiếu owner cung cấp 1 bot Telegram thật để thử gửi/nhận
+  tin sống lần cuối trước khi coi là hoàn tất 100%.
 - Chưa thuê IP/proxy riêng cho từng tài khoản Facebook (khi mở rộng quy mô nhiều
   tài khoản, đây sẽ là việc quan trọng để tránh bị Facebook liên kết các tài khoản
   với nhau).
@@ -541,6 +542,45 @@ liệu thật hằng ngày và yêu cầu kiểm tra chéo lại mọi thứ tr�
   **Owner xem qua trình duyệt thật, yêu cầu chỉnh layout**: 1 tài khoản
   thì thẻ giãn hết chiều ngang, 2 tài khoản thì chia đôi mỗi bên — đã
   đổi sang cách xếp tự co giãn theo đúng số tài khoản đang có.
+- **Làm xong báo động qua Telegram + hỏi-đáp 2 chiều** (owner tự đề
+  xuất sau khi xem "Bảng sức khoẻ tài khoản" ở trên — muốn được báo chủ
+  động qua điện thoại, không phải tự mở trang quản trị ra xem). 3 phần
+  đúng như owner yêu cầu:
+  1. **Báo cáo âm thầm mọi lượt đăng/bình luận thật** — thành công hay
+     thất bại đều có tin: tài khoản nào, đăng nội dung gì, vào nhóm
+     nào, lý do nếu thất bại, kèm ảnh chụp bằng chứng nếu có. Loại tin
+     này luôn "âm thầm" (điện thoại không kêu/rung) vì số lượng nhiều,
+     chỉ để xem lại khi cần.
+  2. **Báo động (có kêu) cho 5 loại sự cố thật**: tài khoản bị tạm dừng;
+     đồng bộ dữ liệu với bên B lỗi liên tục (kèm lỗi); tài khoản im
+     lặng quá 48 giờ không có lượt đăng/bình luận nào thành công; phiên
+     đăng nhập Facebook sắp hết hạn (dưới 14 ngày); và cùng 1 hành động
+     thất bại liên tiếp 3 lần. Mỗi loại chỉ báo đúng 1 lần ngay lúc vừa
+     xảy ra, không báo lặp lại liên tục làm phiền trong khi sự cố vẫn
+     còn đó.
+  3. **Hỏi-đáp 2 chiều**: nhắn bất kỳ tin gì vào bot Telegram, hệ thống
+     trả lời ngay bằng đúng bảng sức khoẻ hiện tại của mọi tài khoản
+     (giống hệt thông tin hiện trên trang chủ quản trị). Chỉ trả lời
+     đúng số điện thoại/tài khoản Telegram đã đăng ký, người lạ nhắn
+     vào không được trả lời.
+  Có thêm 1 công tắc bật/tắt ngay trên trang quản trị (mục Cấu hình) để
+  owner tự tắt hết báo động bất cứ lúc nào mà không cần nhờ sửa code.
+  **Tự kiểm tra lại code 5 vòng trước khi báo xong** (đúng quy trình đã
+  thống nhất — không tin tưởng ngay lần viết đầu, tự rà soát lại như
+  một người kiểm tra độc lập): tổng cộng phát hiện và sửa nhiều lỗi
+  thật qua 5 vòng rà soát liên tiếp (danh sách đầy đủ ở `tasks.md`),
+  đáng chú ý nhất là 1 lỗi khiến tài khoản đã hết hạn phiên đăng nhập
+  THẬT SỰ (cần đăng nhập lại ngay) lại chỉ nhận được tin Telegram nói
+  nhẹ "sắp hết hạn" thay vì đúng mức báo động khẩn — gốc là do code
+  cảnh báo Telegram tự chép lại logic của trang quản trị thay vì dùng
+  lại đúng 1 chỗ, nên 2 nơi lệch nhau. Đã sửa tận gốc (gộp về đúng 1
+  hàm dùng chung), không còn lệch nữa. Thêm 19 test mới riêng cho các
+  lỗi phát hiện ở vòng kiểm tra lại này. Toàn bộ 538/538 test pass.
+  Chi tiết đầy đủ từng lỗi ở `tasks.md`.
+  **Chưa có token Telegram thật (tạo qua @BotFather) để thử gửi/nhận
+  tin sống** — mới dừng ở mức kiểm tra tự động (giả lập), cần owner cho
+  biết đã có bot Telegram thật hay chưa trước khi thử tay lần cuối.
+  Chưa commit.
 
 ---
 
@@ -575,8 +615,9 @@ Một vài lựa chọn thiết kế đáng chú ý, được cân nhắc kỹ c
 - **[ĐÃ XÁC NHẬN SỐNG, 2026-09-28]** Chạy thử ưu tiên "tin trả tiền" với dữ
   liệu thật — xem mục "Kiểm tra lần lấy bài từ bên B (28/09)" ở Tuần 5:
   tin sponsor được xếp sớm nhất và chia đều cho 2 tài khoản, đúng thiết kế.
-- Thêm kênh báo động (Slack/email) khi có tài khoản bị Facebook khoá, thay vì phải
-  tự vào xem trang quản trị.
+- **[ĐÃ LÀM XONG, 2026-10-05, CHƯA THỬ SỐNG]** Kênh báo động qua Telegram —
+  xem Tuần 5 ở mục 4. Chỉ còn thiếu owner cung cấp bot token thật để thử
+  gửi/nhận tin sống lần cuối.
 - Cân nhắc mua proxy/IP riêng cho từng tài khoản nếu mở rộng quy mô.
 - Chuyển giao diện Facebook của tài khoản `nhtu00` sang tiếng Anh theo đúng quy
   định (mục 5) — đây vẫn là hướng xử lý chính; phần "hiểu cả tiếng Việt" vừa thêm
@@ -768,9 +809,12 @@ triển khai cụ thể:**
    đó chỉ kiểm tra có chữ "ẩn" trong mã nguồn hay không, không kiểm được
    việc có ẩn thật trên màn hình hay không, nên không bắt được lỗi này dù
    đã chạy pass nhiều lần. Chi tiết đầy đủ ở `tasks.md`.
-2. Kênh báo động (Slack/Telegram) khi tài khoản bị khoá hoặc service ngừng
-   chạy — cùng nhóm với ý đã ghi ở mục ngay trên (sự cố downtime 14h37 phút),
-   nhưng xếp lại thành đề xuất chính thức thay vì chỉ "nêu ý".
+2. **[ĐÃ LÀM, 2026-10-05, CHƯA THỬ SỐNG]** Kênh báo động qua Telegram khi
+   tài khoản bị khoá/đồng bộ lỗi/im lặng quá lâu/phiên sắp hết hạn/fail
+   liên tiếp, cộng thêm hỏi-đáp 2 chiều — xem Tuần 5 + `tasks.md` để biết
+   chi tiết. Chưa bao gồm riêng cảnh báo "service ngừng chạy hẳn" (downtime
+   14h37 phút hồi 24-25/09) — bot không tự báo được lúc chính service nó
+   chạy trên đó đã tắt; để sau nếu owner thấy cần.
 3. **[ĐÃ LÀM, 2026-10-02]** Bảng "sức khoẻ tài khoản" ngay trên trang chủ —
    xem Tuần 5 + `tasks.md` để biết chi tiết.
 4. Tìm kiếm (theo tên job/công ty/nhóm) + xuất CSV ở trang Báo cáo — hiện chỉ

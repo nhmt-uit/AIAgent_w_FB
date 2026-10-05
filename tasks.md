@@ -5553,3 +5553,213 @@ qua hỏi đáp trước khi code: **im lặng 48 giờ**, **phiên đăng nhậ
       đúng. **Toàn bộ suite vẫn 491/491 pass** (không cần sửa test, chỉ
       đổi CSS/layout, nội dung thẻ không đổi). Chưa chạy qua trình duyệt
       thật lần cuối, chưa commit.
+
+## Báo cáo/báo động qua Telegram + hỏi-đáp 2 chiều (2026-10-05)
+
+Owner chủ động đề xuất sau khi xem bảng "sức khoẻ tài khoản" (mục trên):
+muốn được báo **chủ động** qua điện thoại thay vì phải tự mở `/admin` để
+xem. 3 phần, đúng y nguyên yêu cầu owner: (1) báo cáo âm thầm MỌI lượt
+đăng/bình luận thật (thành công/thất bại, tài khoản, nội dung, nhóm, lý
+do, ảnh), (2) báo động ồn 5 loại sự cố thật, (3) hỏi-đáp 2 chiều — nhắn
+gì cũng được, trả lại đúng bảng sức khoẻ hiện tại. Hỏi đáp chọn nền tảng
+qua `AskUserQuestion` → owner chốt **Telegram** (không chọn Slack):
+`disable_notification` có sẵn đúng nhu cầu "báo âm thầm", và
+`getUpdates` long-polling chạy được từ máy không có IP công khai — không
+cần mở cổng/webhook như Slack.
+
+- [x] **Module mới `human_bot/telegram_notify.py`** — bọc
+      `sendMessage`/`sendPhoto`/`getUpdates` qua `httpx.AsyncClient`.
+      Token/chat_id (`TELEGRAM_BOT_TOKEN`/`TELEGRAM_CHAT_ID`) nằm trong
+      `.env` (credential cài 1 lần, đúng convention
+      `DATA_INGESTION_API_TOKEN`), còn công tắc bật/tắt
+      (`human_bot/telegram_config.py` → `TelegramConfig.enabled`, mặc
+      định BẬT) nằm ở `/admin/config` để owner tắt ngay không cần sửa
+      `.env`/khởi động lại service. Mọi hàm public best-effort — không
+      token/tắt công tắc/lỗi mạng/Telegram trả lỗi đều nuốt, không bao
+      giờ raise (đúng triết lý `db.log_action()`/`screenshots.capture()`
+      đã có) — một tin báo lỗi không bao giờ được làm hỏng tác vụ thật.
+- [x] **Báo cáo MỌI lượt đăng/bình luận (âm thầm)** — móc 1 điểm duy
+      nhất ngay trước `return TaskResult(...)` cuối cùng của
+      [agent.py](human_bot/agent.py)'s `run_task()` (hàm mới
+      `_notify_telegram_for_attempt()`), **chỉ cho lượt thử thật sự** —
+      bỏ qua đúng 3 nhánh early-return (tạm dừng/action không hỗ trợ/
+      rate-limited) vì chúng chưa hề chạm Facebook. Có ảnh chụp bằng
+      chứng (`screenshots.capture()`, đã có sẵn) thì gửi kèm
+      `send_photo()`, không thì `send_message()` — luôn `silent=True`.
+- [x] **5 loại báo động (ồn), mỗi loại tự chống spam riêng theo đúng bản
+      chất của nó** (không dùng 1 cơ chế chung cho cả 5):
+      1. **Tạm dừng tài khoản** — móc thẳng vào nhánh
+         `except AnomalyDetected` ([agent.py](human_bot/agent.py)), ngay
+         cạnh `set_account_paused()` đã có. Tự nhiên chỉ bắn đúng 1 lần
+         lúc chuyển trạng thái, không cần chống trùng thêm.
+      2. **N lần fail liên tiếp cùng 1 hành động** (N=3,
+         `_CONSECUTIVE_FAILURE_ALERT_THRESHOLD`) — hàm mới
+         `db.consecutive_failure_streak()` đếm NGƯỢC từ dòng mới nhất
+         của đúng `(account_id, action)` tới khi gặp 1 dòng thành công;
+         chỉ báo khi đếm ra **đúng bằng** N (không phải `>= N`) — tránh
+         báo lại ở lần fail thứ N+1, N+2...
+      3. **Đồng bộ bên B lỗi liên tục** — mở rộng
+         `data_sync._record_sync_status()` lưu thêm `consecutive_errors`
+         ngay trong `_sync_status.json` sẵn có (reset về 0 khi
+         `status="ok"`, +1 khi lỗi); hàm mới `_record_sync_status_and_alert()`
+         báo đúng 1 lần khi vừa chạm ngưỡng 3 (`_SYNC_ERROR_ALERT_THRESHOLD`),
+         kèm message lỗi thật.
+      4 & 5. **Im lặng > 48 giờ** / **phiên đăng nhập còn < 14 ngày** —
+         2 cái này KHÔNG có điểm móc tự nhiên (là tình trạng "vẫn đúng
+         theo thời gian", không phải 1 sự kiện) → vòng lặp nền mới
+         `_telegram_health_check_loop()` trong
+         [service.py](human_bot/service.py), quét mỗi 6 giờ, dùng
+         CHUNG đúng 2 ngưỡng owner đã chốt cho thẻ sức khoẻ trang chủ
+         (`admin._SILENCE_WARNING_HOURS`/`_SESSION_EXPIRY_WARNING_DAYS`)
+         để Telegram và `/admin` không bao giờ lệch nhau về lúc nào là
+         "cảnh báo". Chống spam: giữ `last_warned: dict[str, set[str]]`
+         trong bộ nhớ, chỉ báo khi vừa CHUYỂN từ ổn→cảnh báo so với lần
+         quét trước (restart service thì báo lại 1 lần cho cảnh báo còn
+         treo — chấp nhận được, còn hơn mất dấu 1 cảnh báo thật).
+- [x] **Refactor `admin.py` để dùng chung, không viết lại logic 5 chỉ số
+      lần 2**: tách `_account_health_card_html()` (vừa tính vừa render
+      HTML, code cũ từ 02/10) thành 3 hàm — `_account_health_signals()`
+      (tính thuần, trả `(severity, [(icon, text), ...])` không dính
+      HTML) làm lõi chung; `_account_health_card_html()` bọc HTML cho
+      `/admin`; `_account_health_telegram_text()` format text thường cho
+      Telegram (dùng ở cả vòng lặp mục 4&5 trên và lệnh hỏi-đáp dưới).
+- [x] **Hỏi-đáp 2 chiều** — vòng lặp nền mới `_telegram_listen_loop()`
+      ([service.py](human_bot/service.py)): long-poll `getUpdates()`,
+      nhắn gì cũng được (không cần lệnh `/` riêng ở v1, đúng ý owner
+      "nhắn gì cũng được") → trả lại đúng bảng sức khoẻ ghép từ
+      `_account_health_telegram_text()` của MỌI tài khoản. Chỉ trả lời
+      tin từ đúng `TELEGRAM_CHAT_ID` đã cấu hình — bỏ qua tin từ chat
+      khác (tránh người lạ biết được username bot cũng hỏi được).
+      Cả 2 vòng lặp mới đã nối vào `lifespan()` đúng mẫu 5 vòng lặp nền
+      có sẵn (`create_task`/`.cancel()`/`await` dọn dẹp khi service tắt).
+- [x] Đăng ký `TelegramConfig` vào `admin.py`'s `_CONFIG_SECTIONS` → thẻ
+      "📨 Báo động Telegram" (công tắc bật/tắt) tự xuất hiện ở tab
+      "Cấu hình hành vi" của `/admin/config`, đúng mẫu thẻ `media`/
+      `safety_cooldown` đã có — không cần thêm tab riêng.
+- [x] **Test mới (28 test)**: `tests/test_telegram_notify.py` (14 test —
+      mock `httpx.AsyncClient` qua `httpx.MockTransport`, đúng mẫu
+      `tests/test_ai_client.py` đã dùng cho `ai_client.py`; xác nhận
+      không token/tắt công tắc → không gọi mạng, payload đúng, cắt
+      4096 ký tự, nuốt lỗi mạng/HTTP non-200, `send_photo` fallback về
+      `send_message` khi file ảnh không đọc được);
+      `tests/test_account_health_signals.py` (4 test — xác nhận
+      `_account_health_card_html()`/`_account_health_telegram_text()`
+      luôn ra nội dung tương đương nhau từ CÙNG 1 input của
+      `_account_health_signals()`); `tests/test_agent.py` (6 test, file
+      mới — trước giờ `run_task()` thật chưa từng có test riêng, chỉ bị
+      mock hẳn qua `no_real_run_task` ở test của `admin.py`: xác nhận cả
+      3 nhánh early-return KHÔNG gửi Telegram, 1 lượt thử thật gửi ĐÚNG
+      1 tin âm thầm, và cảnh báo "N lần fail liên tiếp" báo đúng 1 lần
+      lúc chạm ngưỡng — không báo lại ở lần N+1); 4 test mới trong
+      `tests/test_data_sync.py` (đếm/reset `consecutive_errors` đúng,
+      báo đúng 1 lần khi chạm ngưỡng, không báo lại). **Toàn bộ suite:
+      519/519 pass.**
+- [x] **Sự cố thật tự bắt được khi viết test đầu tiên cho
+      `_account_health_signals()` với tài khoản tạm dừng**: thiếu
+      fixture `isolated_runtime_config` trong 1 test khiến
+      `save_registered_account()`/`set_account_paused()` ghi THẬT vào
+      `runtime_config.json` sống của dự án (thêm tài khoản giả "acc-a"
+      + trạng thái tạm dừng giả) — đúng đúng loại lỗi
+      `feedback_no_live_config_test_writes` đã cảnh báo trước. Phát
+      hiện ngay (tài khoản "acc-a" lạ xuất hiện trong file thật khi dò
+      lại), xoá sạch đúng 2 đoạn vừa bị ghi nhầm (mục `accounts`/
+      `account_status`), xác nhận lại JSON hợp lệ + không còn dấu vết
+      "acc-a", rồi mới thêm fixture thiếu vào đúng test đó. Không có dữ
+      liệu thật nào (tài khoản/nhóm/token thật) bị mất — chỉ dữ liệu giả
+      do chính test này vừa tạo ra bị xoá lại.
+      **Chưa có token Telegram thật để verify sống** (gửi/nhận tin thật)
+      — mới dừng ở unit test (mock). Cần hỏi owner có bot token thật
+      (tạo qua @BotFather) + chat_id hay chưa trước khi verify tay.
+      Chưa chạy qua trình duyệt thật, chưa commit.
+
+### Tự rà soát code (`/code-review`) trước khi báo xong — 5 vòng, nhiều lỗi thật (2026-10-05)
+
+Theo đúng quy tắc đã lưu ("tự review code mới viết trước khi báo
+hoàn thành, vì test tự viết thường mù cùng điểm với code"), chạy
+`/code-review` nhiều vòng liên tiếp trên chính phần code Telegram vừa
+viết, sửa xong mỗi vòng rồi review lại — không dừng ở vòng đầu vì mỗi
+vòng vẫn tìm ra lỗi thật mới. Vòng 5 chạy 8 agent song song theo nhiều
+góc khác nhau, nhiều agent độc lập cùng phát hiện trùng lỗi quan trọng
+nhất — xác nhận lỗi đó là thật, không phải agent suy diễn sai.
+
+- [x] **Vòng 1 — 4 lỗi thật:**
+  1. `db.consecutive_failure_streak()` đếm luôn cả các dòng fail "giả"
+     (tài khoản tạm dừng/action không hỗ trợ/bị giới hạn tốc độ —
+     không hề chạm Facebook thật) vào chuỗi "N lần fail liên tiếp" →
+     có thể báo động nhầm dù chỉ có 1 lần fail thật. Sửa: bỏ qua các
+     dòng có tiền tố message đặc trưng của 3 nhánh early-return đó.
+  2. 3/4 test mới cho `_account_health_signals()` thiếu fixture
+     `isolated_runtime_config`/`isolated_accounts_dir` — đã bổ sung.
+  3. **Lỗi thật nghiêm trọng nhất**: nhánh `except AnomalyDetected` của
+     `run_task()` (tài khoản bị tạm dừng do checkpoint Facebook) không
+     `return` nên vẫn rơi tiếp xuống cuối hàm, gửi THÊM 1 tin báo cáo
+     âm thầm trùng lặp (và có thể cả cảnh báo "N lần liên tiếp" không
+     liên quan) cho đúng sự cố đã báo loud ở trên. Sửa: thêm cờ
+     `anomaly_paused`, bỏ qua tin báo cáo lần nữa khi cờ này bật.
+  4. Thẻ sức khoẻ `/admin` mất style "mờ" (`class="muted"`) cho 3 dòng
+     ⚪ "chưa có dữ liệu" — rơi mất trong lúc tách hàm render. Khôi
+     phục bằng cách suy ra từ icon (⚪ luôn là dòng "chưa có gì").
+     Cũng phát hiện: ngày giờ trong thẻ bị đổi sang giờ Nhật cố định
+     (`_fmt_jst`) thay vì giờ trình duyệt người xem thật (`_local_dt_html`
+     cũ) — khôi phục bằng cách để hàm tính logic trả về chuỗi ISO thô,
+     mỗi nơi hiển thị (HTML/Telegram) tự định dạng theo cách riêng.
+- [x] **Vòng 2 — 2 lỗi thật:** (a) `consecutive_failure_streak()` lấy
+      LIMIT SQL trước khi lọc dòng "giả" → cửa sổ hẹp (4 dòng, đúng giá
+      trị thật agent.py dùng) có thể bị dòng "giả" chiếm hết chỗ, đếm
+      thiếu dòng fail thật, không bao giờ báo động đúng lúc. Sửa: lấy
+      rộng hơn 5 lần rồi lọc. (b) `_telegram_listen_loop()` (vòng lặp
+      nhận tin nhắn hỏi-đáp) không hề `sleep` khi chưa cấu hình Telegram
+      → quay vòng lặp vô hạn ngay lập tức, ăn hết 1 lõi CPU. Sửa: thêm
+      sleep khi chưa cấu hình.
+- [x] **Vòng 3 — 1 lỗi thật:** lỗi (b) ở vòng 2 chỉ sửa đúng trường hợp
+      "chưa cấu hình" — nếu token SAI/hết hạn (vẫn coi là "đã cấu hình")
+      thì mỗi lần gọi Telegram đều lỗi nhanh, vẫn quay vòng lặp vô hạn
+      như cũ. Sửa: đo thời gian gọi, nếu quá nhanh (không phải đang chờ
+      lâu như long-poll thật) thì cũng ngủ.
+- [x] **Vòng 4 — 4 lỗi thật:** (a) cách đo thời gian ở vòng 3 lại ngủ
+      luôn cả khi CÓ tin nhắn thật trả về nhanh (vì tin đã có sẵn) — vô
+      tình làm chậm việc trả lời tin nhắn thật. Sửa: chỉ ngủ khi KHÔNG
+      có tin nào được trả lời. (b) docstring nói sai: viết "số lần fail
+      liên tiếp tăng mãi không dừng" nhưng code thực ra chặn ở đúng
+      max_rows — sửa lại chú thích cho đúng, kèm cảnh báo rõ lý do phải
+      luôn gọi với max_rows = ngưỡng+1. (c) vòng quét sức khoẻ 6 giờ
+      không hề báo động khi không đọc được phiên đăng nhập (file hỏng/
+      chưa đăng nhập) — chỉ báo khi phiên sắp hết hạn, bỏ sót đúng
+      trường hợp nghiêm trọng nhất. Sửa: thêm loại cảnh báo riêng. (d)
+      1 tài khoản lỗi dữ liệu (VD ngày giờ hỏng) làm bỏ qua luôn việc
+      kiểm tra MỌI tài khoản khác trong cùng 6 giờ đó — tách try/except
+      riêng cho từng tài khoản.
+- [x] **Vòng 5 (8 agent song song, nhiều agent cùng phát hiện) — lỗi
+      quan trọng nhất của cả 5 vòng:** vòng lặp cảnh báo Telegram
+      (`_telegram_health_check_loop`) tự CHÉP LẠI logic tính "phiên sắp
+      hết hạn" của trang `/admin` thay vì GỌI LẠI đúng hàm đó — bản
+      chép thiếu đúng 1 nhánh ("đã hết hạn hẳn" khác với "sắp hết hạn"),
+      nên 1 tài khoản đã hết hạn phiên đăng nhập THẬT SỰ lại nhận được
+      tin Telegram nói nhẹ "sắp hết hạn" (vàng) trong khi trang `/admin`
+      cùng lúc đó hiện đúng màu đỏ "đã hết hạn" — ngược hẳn tinh thần
+      "Telegram và trang quản trị không bao giờ lệch nhau" đã ghi trong
+      chính docstring. Sửa tận gốc (không chỉ vá thêm 1 nhánh): tách
+      hẳn logic "có đang cảnh báo không" ra 1 hàm chung mới
+      `admin._account_warning_status()`, cả trang `/admin` và vòng lặp
+      Telegram đều gọi ĐÚNG hàm này — không còn 2 bản logic riêng có
+      thể lệch nhau nữa. Hàm mới cũng tự cách ly 2 phần kiểm tra độc
+      lập (im lặng; phiên đăng nhập) trong 2 try/except riêng, nên 1
+      phần lỗi không còn làm mất luôn kết quả đã tính đúng của phần kia
+      (lỗi tương tự vòng 4-d nhưng ở mức sâu hơn). Thêm 2 lỗi nhỏ khác
+      cùng vòng này: vòng lặp hỏi-đáp 2 chiều bị quay vô hạn nếu có
+      người lạ biết được tên bot rồi spam tin (tin có thật, trả về
+      nhanh, nhưng không khớp đúng người được cấu hình nên chẳng trả
+      lời ai — code cũ tưởng "có tin" là đủ để không cần ngủ); và owner
+      nhắn sticker/ảnh (không có chữ) bị lờ hẳn, ngược với tinh thần
+      "nhắn gì cũng được" ban đầu — cả 2 đã sửa.
+      **8 test mới xác nhận các lỗi vòng 4-5 không tái diễn. Toàn bộ
+      suite: 538/538 pass.** Không có thay đổi hành vi nào ở 2 trường
+      hợp owner đã xác nhận trước đó (báo cáo mọi lượt đăng/bình luận,
+      3 loại báo động còn lại) — chỉ riêng 2 loại cảnh báo "im lặng"/
+      "phiên hết hạn" và luồng hỏi-đáp 2 chiều bị ảnh hưởng bởi các lỗi
+      trên.
+      **Lưu ý quy trình**: 1 lần trong vòng 1, viết test thiếu đúng
+      fixture cô lập khiến 2 dòng dữ liệu giả ("acc-a") bị ghi thật vào
+      `runtime_config.json` sống của máy — phát hiện ngay qua kiểm tra
+      thời điểm sửa file + nội dung, xoá sạch 2 đoạn vừa ghi nhầm, xác
+      nhận lại JSON hợp lệ, rồi mới tiếp tục. Không mất dữ liệu thật nào.

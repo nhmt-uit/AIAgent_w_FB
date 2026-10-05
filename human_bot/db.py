@@ -651,3 +651,74 @@ def last_successful_action_per_account() -> dict[str, str]:
         return {row["account_id"]: row["last_at"] for row in cur.fetchall()}
     finally:
         conn.close()
+
+
+# Message prefixes run_task()'s 3 early-exit paths log (human_bot/agent.py
+# — "account_paused:{id}" / "unsupported_action:{action}" /
+# "rate_limited:{reason}") — these rows never touched Facebook at all (see
+# _log_result()'s own docstring: logged anyway so /admin/reports sees the
+# full picture), so consecutive_failure_streak() below must exclude them —
+# otherwise a paused/rate-limited account's routine rejections count
+# towards the SAME streak as genuine attempt failures, firing the "N lần
+# fail liên tiếp" Telegram alert off of rows that were never a real try.
+_EARLY_EXIT_MESSAGE_PREFIXES = ("account_paused:", "unsupported_action:", "rate_limited:")
+# How much wider than `max_rows` the raw SQL fetch window is, in
+# consecutive_failure_streak() below — gives early-exit rows interleaved
+# with genuine ones room to be skipped without running out of fetched
+# rows before `max_rows` GENUINE ones have been examined.
+_RAW_ROW_FETCH_MULTIPLIER = 5
+
+
+def consecutive_failure_streak(account_id: str, action: str, max_rows: int = 50) -> int:
+    """How many of the MOST RECENT GENUINE-ATTEMPT action_log rows for
+    this exact (account_id, action) are failures, counting back from the
+    newest until a success is hit or `max_rows` GENUINE rows have been
+    examined (whichever first) — for human_bot/agent.py's run_task()
+    "N lần fail liên tiếp" Telegram alert (2026-10-05). Skips the 3
+    early-exit message prefixes (_EARLY_EXIT_MESSAGE_PREFIXES above)
+    entirely — they never reached Facebook, so they're excluded from the
+    count, not treated as failures. The return value is capped at
+    `max_rows` — it can NEVER exceed it. The caller fires the alert only
+    when this comes back EXACTLY equal to the alert threshold, not "at
+    least": that only works because agent.py calls this with
+    max_rows=threshold+1, one row MORE than the threshold it checks
+    against — so once the streak passes the threshold, the capped return
+    value is threshold+1 (not threshold) and permanently differs from it,
+    rather than re-equaling it on every later failure. Passing
+    max_rows=threshold itself (instead of threshold+1) would make this
+    pin at exactly the threshold forever once reached, re-firing the
+    alert on every subsequent failure — callers must keep passing
+    max_rows one row past whatever threshold they compare against.
+
+    Fetches a RAW row window wider than `max_rows` (2026-10-05
+    self-review fix) — the SQL LIMIT has to run before the early-exit
+    filter below, so a tight LIMIT == max_rows could consume the whole
+    window on early-exit noise and undercount the true genuine-failure
+    streak (e.g. account called with max_rows=4 — the real production
+    value, agent.py's threshold+1 — whose last 5 rows interleave 2
+    early-exit rejections with 3 genuine failures would only see 2 of
+    those 3 genuine rows, never firing the alert at the real threshold).
+    _RAW_ROW_FETCH_MULTIPLIER gives early-exit noise generous room
+    without scanning a chronically-failing account's entire history."""
+    raw_row_limit = max_rows * _RAW_ROW_FETCH_MULTIPLIER
+    conn = _connect()
+    try:
+        cur = conn.execute(
+            "SELECT success, message FROM action_log WHERE account_id = ? AND action = ? "
+            "ORDER BY created_at DESC, id DESC LIMIT ?",
+            (account_id, action, raw_row_limit),
+        )
+        streak = 0
+        examined = 0
+        for row in cur.fetchall():
+            if (row["message"] or "").startswith(_EARLY_EXIT_MESSAGE_PREFIXES):
+                continue
+            if examined >= max_rows:
+                break
+            examined += 1
+            if row["success"]:
+                break
+            streak += 1
+        return streak
+    finally:
+        conn.close()

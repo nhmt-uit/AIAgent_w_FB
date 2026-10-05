@@ -44,6 +44,7 @@ import asyncio
 import dataclasses
 import html
 import json
+import logging
 import os
 import random
 import re
@@ -81,6 +82,7 @@ from human_bot.content_strategist import (
 from human_bot.data_sync_config import DataSyncConfig
 from human_bot.scheduling_config import SchedulingConfig
 from human_bot.media import MediaConfig
+from human_bot.telegram_config import TelegramConfig
 from human_bot.humanize import HumanMouseConfig, HumanPacingConfig, HumanScrollConfig, HumanTypingConfig
 from human_bot.runtime_config import (
     EDITABLE_HUMAN_TYPING_FIELDS,
@@ -91,6 +93,7 @@ from human_bot.runtime_config import (
     EDITABLE_SCHEDULING_FIELDS,
     EDITABLE_MEDIA_FIELDS,
     EDITABLE_SAFETY_COOLDOWN_FIELDS,
+    EDITABLE_TELEGRAM_FIELDS,
     get_data_sync_config,
     get_scheduling_config,
     get_human_typing_overrides,
@@ -102,6 +105,8 @@ from human_bot.runtime_config import (
     get_media_overrides,
     get_safety_cooldown_overrides,
     save_safety_cooldown_overrides,
+    get_telegram_overrides,
+    save_telegram_overrides,
     get_joined_groups,
     get_registered_accounts,
     save_human_typing_overrides,
@@ -161,6 +166,7 @@ from human_bot.runtime_config import (
 from human_bot.safety_cooldown_config import SafetyCooldownConfig
 
 router = APIRouter(prefix="/admin", tags=["admin"])
+logger = logging.getLogger("human_bot.admin")
 
 # Human-readable Vietnamese labels for internal snake_case keys shown
 # anywhere in the admin UI (dropdowns, tables) — the raw key (e.g.
@@ -877,6 +883,20 @@ _CONFIG_SECTIONS.append(
     ("safety_cooldown", "safety_cooldown", "Hạ nhiệt sau khi kích hoạt lại tài khoản",
      SafetyCooldownConfig, EDITABLE_SAFETY_COOLDOWN_FIELDS, _SAFETY_COOLDOWN_LABELS,
      get_safety_cooldown_overrides, save_safety_cooldown_overrides)
+)
+
+_TELEGRAM_LABELS: dict[str, str] = {
+    "enabled": (
+        "Bật báo cáo/báo động qua Telegram (cần khai báo TELEGRAM_BOT_TOKEN/"
+        "TELEGRAM_CHAT_ID trong .env — tắt ở đây để im lặng ngay không cần sửa .env/khởi động lại)"
+    ),
+}
+
+_ICONS["telegram"] = "📨"
+
+_CONFIG_SECTIONS.append(
+    ("telegram", "telegram", "Báo động Telegram", TelegramConfig, EDITABLE_TELEGRAM_FIELDS,
+     _TELEGRAM_LABELS, get_telegram_overrides, save_telegram_overrides)
 )
 
 _PAGE_STYLE = """
@@ -2224,97 +2244,208 @@ _SILENCE_WARNING_HOURS = 48  # owner's threshold, 2026-10-02
 _SESSION_EXPIRY_WARNING_DAYS = 14  # owner's threshold, 2026-10-02
 
 
-def _account_health_card_html(
+@dataclasses.dataclass
+class AccountWarningStatus:
+    """Machine-readable result of _account_warning_status() below —
+    `kinds` is a subset of {"silence", "session_unreadable",
+    "session_expired", "session_expiring_soon"}; `days_left` is the real
+    (possibly negative) days remaining on the session, or None when it
+    couldn't be determined at all (session_unreadable, or the check
+    itself failed) — kept alongside `kinds` so a caller that also needs
+    to DISPLAY the number (not just react to the threshold) doesn't have
+    to re-fetch bootstrap_login_sessions.get_session_expiry() a 2nd time."""
+    kinds: set[str]
+    days_left: float | None
+
+
+def _account_warning_status(
+    aid: str, account, last_success_map: dict[str, str],
+) -> AccountWarningStatus:
+    """The "im lặng"/"phiên đăng nhập" combination logic (paused/resting
+    suppression, the hours_ago/days_left thresholds) as a MACHINE-
+    READABLE set of named kinds — shared by _account_health_signals()
+    below (for /admin's dashboard card) AND service.py's
+    _telegram_health_check_loop() (for the Telegram alert), so the two
+    can never silently disagree about when one of these conditions
+    starts/stops being a warning (2026-10-05 self-review, round 5 — a
+    prior version had the Telegram loop hand-copy this logic a 2nd
+    time, and the copy was missing the "already expired" vs "expiring
+    soon" distinction this one has, understating urgency in the alert
+    text for an already-dead session).
+
+    The 2 checks below (silence; session) are independent signals from
+    different data sources — each is isolated in its OWN try/except so
+    one's failure can never discard the other's already-computed
+    result, and the caller can still reliably update its own
+    transition-tracking state afterwards (this function itself never
+    raises)."""
+    kinds: set[str] = set()
+    days_left: float | None = None
+    try:
+        is_paused = account.status == AccountStatus.PAUSED
+        is_resting = not is_paused and bool(get_resume_cooldown_info(aid))
+        last_success = last_success_map.get(aid)
+        if last_success and not is_paused and not is_resting:
+            last_dt = datetime.fromisoformat(last_success)
+            if last_dt.tzinfo is None:
+                last_dt = last_dt.replace(tzinfo=timezone.utc)
+            hours_ago = (datetime.now(timezone.utc) - last_dt).total_seconds() / 3600
+            if hours_ago > _SILENCE_WARNING_HOURS:
+                kinds.add("silence")
+    except Exception:  # noqa: BLE001 - must not block the independent session check below
+        logger.exception("_account_warning_status: silence check failed for %s", aid)
+    try:
+        expiry = bootstrap_login_sessions.get_session_expiry(aid)
+        if expiry is None:
+            kinds.add("session_unreadable")
+        else:
+            days_left = (expiry - datetime.now(timezone.utc)).total_seconds() / 86400
+            if days_left < 0:
+                kinds.add("session_expired")
+            elif days_left < _SESSION_EXPIRY_WARNING_DAYS:
+                kinds.add("session_expiring_soon")
+    except Exception:  # noqa: BLE001 - must not discard the silence check's already-good result
+        logger.exception("_account_warning_status: session check failed for %s", aid)
+    return AccountWarningStatus(kinds=kinds, days_left=days_left)
+
+
+def _account_health_signals(
     aid: str, account, sync_statuses: dict, last_success_map: dict[str, str],
-) -> tuple[int, str]:
-    """One "sức khoẻ tài khoản" card for /admin's home page (2026-10-02,
-    admin-UI improvement idea #3 — see tasks.md). Returns (severity, html):
-    severity 0 = cần chú ý ngay (đỏ), 1 = theo dõi (vàng), 2 = ổn (xanh) —
-    admin_home() sorts cards worst-first by this, same "xấu nhất lên đầu"
-    pattern RPA fleet dashboards use. Every line pairs an icon with a text
-    label (never color alone) — the "5-second rule" only works if a
-    glance is enough, and color alone isn't accessible/printable-safe."""
+) -> tuple[int, list[tuple[str, str]]]:
+    """The 5 "sức khoẻ tài khoản" signals (2026-10-02, admin-UI
+    improvement idea #3), as PLAIN DATA — (severity, [(icon, text), ...])
+    with `text` plain (no HTML markup) so this one computation is shared
+    by both /admin's home page (_account_health_card_html() below wraps
+    it in HTML) and the Telegram bot (_account_health_telegram_text(),
+    human_bot/telegram_notify.py's 2-way health query, added 2026-10-05)
+    — the 5-signal logic itself must only ever live in ONE place.
+    severity: 0 = cần chú ý ngay (đỏ), 1 = theo dõi (vàng), 2 = ổn (xanh)
+    — callers sort/prioritize worst-first by this, same "xấu nhất lên
+    đầu" pattern RPA fleet dashboards use. Any date embedded in `text` is
+    left as the RAW ISO string, not pre-formatted — each renderer below
+    formats it its own way: _account_health_card_html() swaps it for a
+    live viewer-local-time span (_localize_iso_timestamps_html(), the
+    same mechanism every other date on this admin page already uses —
+    restored 2026-10-05 after this refactor briefly hard-coded JST here
+    and silently dropped that live conversion for this one card),
+    _account_health_telegram_text() swaps it for fixed JST text instead
+    (_fmt_jst() — Telegram can't run the browser-local-time JS)."""
     severity = 2
-    rows: list[str] = []
+    rows: list[tuple[str, str]] = []
 
     is_paused = account.status == AccountStatus.PAUSED
     is_resting = False
     if is_paused:
         severity = 0
         info = get_pause_info(aid)
-        reason = html.escape((info or {}).get("reason") or "không rõ")
-        rows.append(f"<div>🔴 <b>Tạm dừng</b> — {reason}</div>")
+        reason = (info or {}).get("reason") or "không rõ"
+        rows.append(("🔴", f"Tạm dừng — {reason}"))
     else:
         cooldown = get_resume_cooldown_info(aid)
         if cooldown:
             is_resting = True
             severity = min(severity, 1)
-            until_txt = _local_dt_html(cooldown.get("until"))
-            rows.append(f"<div>🟡 Đang hạ nhiệt, xong vào {until_txt}</div>")
+            rows.append(("🟡", f"Đang hạ nhiệt, xong vào {cooldown.get('until') or '—'}"))
         else:
-            rows.append("<div>🟢 Hoạt động</div>")
+            rows.append(("🟢", "Hoạt động"))
 
     # Phiên trình duyệt — peek_session() (không tự tạo session mới chỉ vì
     # trang chủ được mở). None là bình thường (service mới khởi động/tài
     # khoản chưa từng chạy task nào), khác hẳn "đã có session nhưng chết".
     session = browser_pool.peek_session(aid)
     if session is None:
-        rows.append('<div class="muted">⚪ Chưa mở phiên trình duyệt nào</div>')
+        rows.append(("⚪", "Chưa mở phiên trình duyệt nào"))
     elif session.is_alive():
-        rows.append("<div>🟢 Phiên trình duyệt đang mở</div>")
+        rows.append(("🟢", "Phiên trình duyệt đang mở"))
     else:
         severity = 0
-        rows.append("<div>🔴 Phiên trình duyệt đã đóng — cần xem lại</div>")
+        rows.append(("🔴", "Phiên trình duyệt đã đóng — cần xem lại"))
 
     sync = sync_statuses.get(aid)
     if sync is None:
-        rows.append('<div class="muted">⚪ Chưa đồng bộ dữ liệu lần nào</div>')
+        rows.append(("⚪", "Chưa đồng bộ dữ liệu lần nào"))
     elif sync.get("status") == "ok":
-        rows.append(f"<div>🟢 Đồng bộ OK lúc {_local_dt_html(sync.get('last_run_at'))}</div>")
+        rows.append(("🟢", f"Đồng bộ OK lúc {sync.get('last_run_at') or '—'}"))
     else:
         severity = min(severity, 1)
-        rows.append(f"<div>🟡 Đồng bộ lỗi lúc {_local_dt_html(sync.get('last_run_at'))}</div>")
+        rows.append(("🟡", f"Đồng bộ lỗi lúc {sync.get('last_run_at') or '—'}"))
+
+    status = _account_warning_status(aid, account, last_success_map)
 
     # "Im lặng" chỉ có ý nghĩa cảnh báo khi tài khoản ĐANG LẼ RA phải hoạt
-    # động — Tạm dừng/Hạ nhiệt đã tự giải thích lý do im lặng rồi.
+    # động — Tạm dừng/Hạ nhiệt đã tự giải thích lý do im lặng rồi (đã áp
+    # dụng bên trong _account_warning_status() ở trên).
     last_success = last_success_map.get(aid)
     if last_success is None:
-        rows.append('<div class="muted">⚪ Chưa có lượt đăng/bình luận thành công nào</div>')
-    else:
+        rows.append(("⚪", "Chưa có lượt đăng/bình luận thành công nào"))
+    elif "silence" in status.kinds:
         last_dt = datetime.fromisoformat(last_success)
         if last_dt.tzinfo is None:
             last_dt = last_dt.replace(tzinfo=timezone.utc)
         hours_ago = (datetime.now(timezone.utc) - last_dt).total_seconds() / 3600
-        if not is_paused and not is_resting and hours_ago > _SILENCE_WARNING_HOURS:
-            severity = min(severity, 1)
-            rows.append(
-                f"<div>🟡 Im lặng {int(hours_ago)} giờ — lần thành công gần nhất "
-                f"{_local_dt_html(last_success)}</div>"
-            )
-        else:
-            rows.append(f"<div>🟢 Thành công gần nhất: {_local_dt_html(last_success)}</div>")
-
-    expiry = bootstrap_login_sessions.get_session_expiry(aid)
-    if expiry is None:
-        severity = 0
-        rows.append("<div>🔴 Không đọc được phiên đăng nhập (chưa đăng nhập/file hỏng)</div>")
+        severity = min(severity, 1)
+        rows.append(("🟡", f"Im lặng {int(hours_ago)} giờ — lần thành công gần nhất {last_success}"))
     else:
-        days_left = (expiry - datetime.now(timezone.utc)).total_seconds() / 86400
-        if days_left < 0:
-            severity = 0
-            rows.append("<div>🔴 Phiên đăng nhập đã hết hạn — cần đăng nhập lại</div>")
-        elif days_left < _SESSION_EXPIRY_WARNING_DAYS:
-            severity = min(severity, 1)
-            rows.append(f"<div>🟡 Phiên đăng nhập còn {int(days_left)} ngày</div>")
-        else:
-            rows.append(f"<div>🟢 Phiên đăng nhập còn {int(days_left)} ngày</div>")
+        rows.append(("🟢", f"Thành công gần nhất: {last_success}"))
 
+    if "session_unreadable" in status.kinds:
+        severity = 0
+        rows.append(("🔴", "Không đọc được phiên đăng nhập (chưa đăng nhập/file hỏng)"))
+    elif status.days_left is None:
+        # _account_warning_status()'s session check itself failed (caught
+        # there, logged) — fail safe to a neutral row rather than crash
+        # this whole page render over it.
+        rows.append(("⚪", "Không xác định được tình trạng phiên đăng nhập"))
+    elif "session_expired" in status.kinds:
+        severity = 0
+        rows.append(("🔴", "Phiên đăng nhập đã hết hạn — cần đăng nhập lại"))
+    elif "session_expiring_soon" in status.kinds:
+        severity = min(severity, 1)
+        rows.append(("🟡", f"Phiên đăng nhập còn {int(status.days_left)} ngày"))
+    else:
+        rows.append(("🟢", f"Phiên đăng nhập còn {int(status.days_left)} ngày"))
+
+    return severity, rows
+
+
+def _account_health_card_html(
+    aid: str, account, sync_statuses: dict, last_success_map: dict[str, str],
+) -> tuple[int, str]:
+    """HTML rendering of _account_health_signals() for /admin's home
+    page — every line pairs an icon with a text label (never color
+    alone), the "5-second rule" only works if a glance is enough, and
+    color alone isn't accessible/printable-safe. Runs each row through
+    _localize_iso_timestamps_html() (not a plain html.escape()) so any
+    raw ISO timestamp _account_health_signals() left in `text` renders
+    as the viewer's own browser-local time, same as every other date on
+    this admin page — also handles the escaping for the surrounding
+    text itself."""
+    severity, rows = _account_health_signals(aid, account, sync_statuses, last_success_map)
+    # ⚪ only ever marks "no data yet" (never mở session/đồng bộ/đăng thành
+    # công nào) — dim those via the same "muted" class the pre-refactor
+    # version used, restored 2026-10-05 after this refactor dropped it.
+    muted_attr = ' class="muted"'
+    rows_html = "".join(
+        f"<div{muted_attr if icon == '⚪' else ''}>{icon} {_localize_iso_timestamps_html(text)}</div>"
+        for icon, text in rows
+    )
     card_html = f"""
 <div class="card">
   <h3 style="margin:0 0 8px;">{html.escape(account.display_name)} <span class="row-url">({html.escape(aid)})</span></h3>
-  <div style="display:flex; flex-direction:column; gap:4px; font-size:14px;">{"".join(rows)}</div>
+  <div style="display:flex; flex-direction:column; gap:4px; font-size:14px;">{rows_html}</div>
 </div>"""
     return severity, card_html
+
+
+def _account_health_telegram_text(aid: str, account, sync_statuses: dict, last_success_map: dict[str, str]) -> str:
+    """Plain-text rendering of _account_health_signals() for Telegram —
+    human_bot/telegram_notify.py's 2-way health query (2026-10-05). Any
+    raw ISO timestamp _account_health_signals() left in a row's text is
+    swapped for fixed-JST text (_fmt_jst()) — Telegram can't run the
+    browser-local-time JS _account_health_card_html() uses instead."""
+    _severity, rows = _account_health_signals(aid, account, sync_statuses, last_success_map)
+    lines = "\n".join(f"{icon} {_ISO_DT_RE.sub(lambda m: _fmt_jst(m.group(0)), text)}" for icon, text in rows)
+    return f"{account.display_name} ({aid})\n{lines}"
 
 
 @router.get("", response_class=HTMLResponse)

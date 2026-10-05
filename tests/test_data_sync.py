@@ -168,6 +168,58 @@ def test_atomic_write_json_never_leaves_a_half_written_file(tmp_path, monkeypatc
     assert list(path.parent.glob(".*.tmp")) == []  # temp file cleaned up
 
 
+def test_record_sync_status_ok_resets_consecutive_errors(isolated_data_sync_cache):
+    data_sync._record_sync_status("acc-a", {"last_run_at": "t1", "status": "error", "error": "boom"})
+    should_alert = data_sync._record_sync_status("acc-a", {"last_run_at": "t2", "status": "ok"})
+    assert should_alert is False
+    assert data_sync.get_all_sync_statuses()["acc-a"]["consecutive_errors"] == 0
+
+
+def test_record_sync_status_counts_consecutive_errors_and_alerts_exactly_at_threshold(isolated_data_sync_cache):
+    first = data_sync._record_sync_status("acc-a", {"last_run_at": "t1", "status": "error", "error": "boom"})
+    second = data_sync._record_sync_status("acc-a", {"last_run_at": "t2", "status": "error", "error": "boom"})
+    third = data_sync._record_sync_status("acc-a", {"last_run_at": "t3", "status": "error", "error": "boom"})
+    fourth = data_sync._record_sync_status("acc-a", {"last_run_at": "t4", "status": "error", "error": "boom"})
+
+    assert (first, second, third, fourth) == (False, False, True, False)
+    assert data_sync.get_all_sync_statuses()["acc-a"]["consecutive_errors"] == 4
+
+
+def test_record_sync_status_error_after_ok_restarts_the_count_from_one(isolated_data_sync_cache):
+    data_sync._record_sync_status("acc-a", {"last_run_at": "t1", "status": "error", "error": "boom"})
+    data_sync._record_sync_status("acc-a", {"last_run_at": "t2", "status": "error", "error": "boom"})
+    data_sync._record_sync_status("acc-a", {"last_run_at": "t3", "status": "ok"})
+    should_alert = data_sync._record_sync_status("acc-a", {"last_run_at": "t4", "status": "error", "error": "boom"})
+
+    assert should_alert is False
+    assert data_sync.get_all_sync_statuses()["acc-a"]["consecutive_errors"] == 1
+
+
+async def test_record_sync_status_and_alert_sends_telegram_exactly_once_at_threshold(isolated_data_sync_cache, monkeypatch):
+    sent = []
+
+    async def fake_send_message(text, *, silent=False):
+        sent.append((text, silent))
+
+    monkeypatch.setattr(data_sync.telegram_notify, "send_message", fake_send_message)
+
+    for i in range(data_sync._SYNC_ERROR_ALERT_THRESHOLD - 1):
+        await data_sync._record_sync_status_and_alert("acc-a", {"last_run_at": f"t{i}", "status": "error", "error": "boom"})
+    assert sent == []
+
+    await data_sync._record_sync_status_and_alert(
+        "acc-a", {"last_run_at": "t-threshold", "status": "error", "error": "boom cuối"},
+    )
+    assert len(sent) == 1
+    assert sent[0][1] is False  # loud, not silent
+    assert "boom cuối" in sent[0][0]
+
+    await data_sync._record_sync_status_and_alert(
+        "acc-a", {"last_run_at": "t-after", "status": "error", "error": "boom"},
+    )
+    assert len(sent) == 1  # must not re-fire past the threshold
+
+
 def test_mark_seen_survives_via_atomic_write(isolated_data_sync_cache):
     data_sync._mark_seen("42", "candidate")
     seen = data_sync._load_seen_ids(45.0)

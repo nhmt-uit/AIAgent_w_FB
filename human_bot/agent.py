@@ -15,7 +15,7 @@ from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from typing import Awaitable, Callable
 
-from human_bot import actions, daily_limits, db, media, screenshots
+from human_bot import actions, daily_limits, db, media, screenshots, telegram_notify
 from human_bot.actions import ActionResult, _group_id_from_url
 from human_bot.browser_pool import get_session
 from human_bot.config import AccountStatus, get_account
@@ -27,6 +27,11 @@ from playwright.async_api import Page
 # like actions don't, so the random-meme auto-fill below (and side B's own
 # image, once that's wired in data_sync.py) only ever apply to these two.
 _MEDIA_CAPABLE_ACTIONS = {"post_to_own_profile", "post_to_group"}
+
+# "N lần fail liên tiếp" Telegram alert threshold (2026-10-05, owner's
+# request) — same (account_id, action) failing this many times in a row
+# is treated as "something is actually broken", not 1 random blip.
+_CONSECUTIVE_FAILURE_ALERT_THRESHOLD = 3
 
 
 @dataclass
@@ -180,6 +185,49 @@ def _log_result(request: TaskRequest, success: bool, message: str, screenshot_pa
         pass
 
 
+async def _notify_telegram_for_attempt(
+    request: TaskRequest, success: bool, message: str, screenshot_path: str | None,
+) -> None:
+    """Called ONLY for a genuine attempt (run_task()'s 3 early-exit paths
+    — paused/unsupported/rate_limited — never reached Facebook at all, so
+    they're not "a post" to report) — must run AFTER _log_result() so the
+    consecutive-failure count below includes this very attempt.
+    telegram_notify's own functions are already best-effort/never-raise,
+    so no extra try/except needed here."""
+    target = request.target_url or "(tường cá nhân)"
+    content_preview = (request.content or "").strip()
+    if len(content_preview) > 300:
+        content_preview = content_preview[:300] + "…"
+    icon = "✅" if success else "❌"
+    report = (
+        f"{icon} {request.account_id} · {request.action}\n"
+        f"Nhóm/Bài: {target}\n"
+        f"Nội dung: {content_preview or '(không có)'}"
+    )
+    if not success:
+        report += f"\nLý do: {message}"
+    # Alert type 2/5 ("mọi lượt đăng") — ALWAYS silent, per owner's request.
+    if screenshot_path:
+        await telegram_notify.send_photo(screenshot_path, caption=report, silent=True)
+    else:
+        await telegram_notify.send_message(report, silent=True)
+
+    # Alert type 3/5 ("N lần fail liên tiếp") — loud, fires exactly once
+    # right when the streak reaches the threshold (see
+    # db.consecutive_failure_streak()'s own docstring for why this can't
+    # just check ">=").
+    if not success:
+        streak = db.consecutive_failure_streak(
+            request.account_id, request.action, max_rows=_CONSECUTIVE_FAILURE_ALERT_THRESHOLD + 1,
+        )
+        if streak == _CONSECUTIVE_FAILURE_ALERT_THRESHOLD:
+            await telegram_notify.send_message(
+                f"🔴 {request.account_id} · {request.action} thất bại {streak} lần LIÊN TIẾP\n"
+                f"Lần gần nhất: {message}",
+                silent=False,
+            )
+
+
 async def run_task(request: TaskRequest) -> TaskResult:
     account = get_account(request.account_id)
 
@@ -239,6 +287,7 @@ async def run_task(request: TaskRequest) -> TaskResult:
     success = False
     message = ""
     session = None
+    anomaly_paused = False  # suppresses the redundant per-attempt report below — see its use site
     try:
         session = get_session(account)
         await session.ensure_started()
@@ -253,10 +302,18 @@ async def run_task(request: TaskRequest) -> TaskResult:
         # so it survives a service restart too — stays paused until a
         # human reviews and resumes it at /admin/accounts.
         message = str(e)
+        anomaly_paused = True
         try:
             set_account_paused(request.account_id, True, reason=message)
         except Exception:  # noqa: BLE001 — the task must still return a result even if this write fails
             pass
+        # Loud (not silent) Telegram alert — this is exactly the moment
+        # the account transitions to paused, so it naturally fires once,
+        # no dedup bookkeeping needed (2026-10-05, alert type 1/5).
+        await telegram_notify.send_message(
+            f"🔴 Tài khoản {request.account_id} đã bị TẠM DỪNG\nLý do: {message}",
+            silent=False,
+        )
     except Exception as e:  # noqa: BLE001 — surfaced to caller as a failed TaskResult
         message = f"error:{e}"
     finally:
@@ -305,6 +362,13 @@ async def run_task(request: TaskRequest) -> TaskResult:
         screenshot_path = await screenshots.capture(session.page, request.account_id, request.action, success)
 
     _log_result(request, success, message, screenshot_path)
+    # Skip the per-attempt report when AnomalyDetected already sent its own
+    # loud "TẠM DỪNG" alert above for this exact incident — otherwise the
+    # owner gets a redundant silent failure report (and possibly a 3rd,
+    # unrelated "N lần liên tiếp" alert) on top of the one that actually
+    # matters.
+    if not anomaly_paused:
+        await _notify_telegram_for_attempt(request, success, message, screenshot_path)
     return TaskResult(
         success=success,
         message=message,

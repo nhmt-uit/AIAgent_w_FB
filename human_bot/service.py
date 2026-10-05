@@ -48,11 +48,19 @@ import logging  # noqa: E402
 import os  # noqa: E402
 import secrets  # noqa: E402
 import sys  # noqa: E402
+import time  # noqa: E402
 from urllib.parse import quote  # noqa: E402
 from datetime import datetime, timezone  # noqa: E402
 
-from human_bot import data_sync, db, schedule_store, screenshots  # noqa: E402
-from human_bot.admin import NotLoggedIn, router as admin_router  # noqa: E402
+from human_bot import data_sync, db, schedule_store, screenshots, telegram_notify  # noqa: E402
+from human_bot.admin import (  # noqa: E402
+    NotLoggedIn,
+    _SESSION_EXPIRY_WARNING_DAYS,
+    _SILENCE_WARNING_HOURS,
+    _account_health_telegram_text,
+    _account_warning_status,
+    router as admin_router,
+)
 from human_bot.agent import TaskRequest, run_task  # noqa: E402
 from human_bot.browser_pool import close_all, warm_up  # noqa: E402
 from human_bot.config import AccountStatus, get_all_accounts  # noqa: E402
@@ -279,6 +287,180 @@ async def _resume_cooldown_maintenance_loop() -> None:
         await asyncio.sleep(SCHEDULE_CLEANUP_INTERVAL_SECONDS)
 
 
+# How often _telegram_health_check_loop() re-scans "im lặng quá lâu" /
+# "phiên đăng nhập sắp hết hạn" — these are slow-moving conditions (hours/
+# days), unlike every other Telegram alert type (paused, N-fail-streak,
+# sync errors), which all fire inline at the exact moment they happen —
+# see human_bot/agent.py's run_task()/human_bot/data_sync.py's
+# sync_all(). 6h is frequent enough that a condition crossing its
+# threshold overnight is still caught the same business day.
+_TELEGRAM_HEALTH_CHECK_INTERVAL_SECONDS = 6 * 60 * 60
+# How long _telegram_listen_loop() sleeps between checks while Telegram
+# isn't configured/enabled (or get_updates() comes back suspiciously
+# fast — see _TELEGRAM_LISTEN_MIN_POLL_SECONDS below) — short enough
+# that enabling it at runtime (no restart needed) picks up within half a
+# minute, long enough to never busy-spin the event loop in the meantime.
+_TELEGRAM_LISTEN_IDLE_SLEEP_SECONDS = 30
+# A genuine Telegram long-poll (telegram_notify.get_updates()'s own
+# _POLL_TIMEOUT=30s) either blocks close to that long, or returns near-
+# instantly because real messages were already waiting. Anything else
+# returning this fast — a revoked/typo'd token, DNS failure, any other
+# network error — hits get_updates()'s own try/except and returns []
+# without raising, so it looks identical to "not configured" from here
+# and needs the same idle sleep to avoid busy-spinning/hammering
+# Telegram (2026-10-05 self-review, round 3 — round 2's fix only covered
+# the literal "not configured" case).
+_TELEGRAM_LISTEN_MIN_POLL_SECONDS = 2
+
+
+async def _telegram_health_check_loop() -> None:
+    """Background loop: the "sức khoẻ tài khoản" signals that are a
+    slowly-true CONDITION rather than a one-off EVENT (2026-10-05, alert
+    types 4/5 and 5/5) — im lặng > admin._SILENCE_WARNING_HOURS, phiên
+    đăng nhập còn < admin._SESSION_EXPIRY_WARNING_DAYS ngày (hoặc đã hết
+    hạn hẳn, hoặc không đọc được). Calls human_bot/admin.py's
+    _account_warning_status() directly for the actual combination logic
+    (2026-10-05 self-review, round 5 — a prior version hand-copied that
+    logic here instead of calling it, and the copy had silently drifted
+    from admin.py's _account_health_signals(): it was missing the
+    "already expired" vs "expiring soon" distinction, so an already-dead
+    session got the milder "sắp hết hạn" wording here while /admin
+    correctly showed red "đã hết hạn" for the same account) — this is
+    what actually makes the Telegram alert and the /admin dashboard card
+    never disagree about when a condition starts/stops being a warning,
+    not just a shared pair of threshold constants.
+
+    Dedup: only alerts on the TRANSITION into a warning (compared against
+    `_last_warned`, in-memory — a service restart re-alerts once for any
+    condition still active, which is the right default: better one
+    redundant message after a restart than silently losing track of a
+    real, still-unresolved warning). Clears an account's entry the moment
+    it's no longer warning-worthy, so a LATER recurrence alerts again."""
+    last_warned: dict[str, set[str]] = {}
+    # (kind, message) in priority order — _account_warning_status()'s
+    # `kinds` set is the single source of truth for WHETHER each of
+    # these applies (2026-10-05 self-review, round 5); this loop only
+    # decides the Telegram WORDING for each kind.
+    alert_texts = (
+        ("silence", "🟡 {aid} im lặng quá {hours} giờ — chưa có lượt đăng/bình luận thành công nào gần đây."),
+        ("session_expiring_soon", "🟡 {aid}: phiên đăng nhập Facebook sắp hết hạn (dưới {days} ngày) — cần đăng nhập lại sớm."),
+        ("session_expired", "🔴 {aid}: phiên đăng nhập Facebook ĐÃ HẾT HẠN — cần đăng nhập lại ngay."),
+        ("session_unreadable", "🔴 {aid}: không đọc được phiên đăng nhập Facebook (chưa đăng nhập/file hỏng) — cần đăng nhập lại."),
+    )
+    while True:
+        try:
+            last_success_map = db.last_successful_action_per_account()
+            for aid, account in get_all_accounts().items():
+                # Isolated per-account (2026-10-05 self-review, round 4) —
+                # same pattern _resume_cooldown_maintenance_loop already
+                # uses: one account's bad data must not skip every OTHER
+                # account's check for this entire 6-hour cycle too.
+                # _account_warning_status() itself already isolates its
+                # own 2 independent sub-checks (round 5), so this outer
+                # try is now mostly a safety net for anything unexpected
+                # in the alert-sending loop below.
+                try:
+                    warnings_now = _account_warning_status(aid, account, last_success_map).kinds
+                    previously = last_warned.get(aid, set())
+                    new_warnings = warnings_now - previously
+                    for kind, template in alert_texts:
+                        if kind in new_warnings:
+                            await telegram_notify.send_message(
+                                template.format(aid=aid, hours=_SILENCE_WARNING_HOURS, days=_SESSION_EXPIRY_WARNING_DAYS),
+                                silent=False,
+                            )
+                    last_warned[aid] = warnings_now
+                except Exception:  # noqa: BLE001 - one bad account must not skip the rest
+                    logger.exception("_telegram_health_check_loop failed for account %s", aid)
+        except Exception:  # noqa: BLE001 - one bad scan must not kill the loop
+            logger.exception("_telegram_health_check_loop failed")
+        await asyncio.sleep(_TELEGRAM_HEALTH_CHECK_INTERVAL_SECONDS)
+
+
+async def _telegram_listen_loop() -> None:
+    """Background loop: long-polls Telegram for messages sent to the bot
+    (human_bot/telegram_notify.py's get_updates()) and replies to ANY of
+    them — ANY message type, not just text (2026-10-05 self-review,
+    round 5 fix: a prior version required `message.get("text")`, so a
+    sticker/photo/voice note got silently ignored, contradicting this
+    v1's own "no slash-command parsing... nhắn gì cũng được" design) —
+    with the same health snapshot /admin's home page shows, one account
+    per line-block (human_bot.admin._account_health_telegram_text()).
+    Ignores messages from any chat other than the configured
+    TELEGRAM_CHAT_ID — otherwise anyone who discovers the bot's username
+    could query it too.
+
+    get_updates() itself no-ops instantly (empty list, no network call)
+    when Telegram isn't configured/enabled, so this loop doesn't bother
+    pre-checking is_configured() itself (round 5 — a prior version did,
+    which just meant reading runtime_config.json from disk twice every
+    iteration for the same answer get_updates() already re-derives
+    internally). It ALSO returns near-instantly (still [], but via a
+    real failed network call this time) on a broken token/network error
+    — either way, and ALSO when real messages arrive but none of them
+    match TELEGRAM_CHAT_ID (round 5 — a stranger who discovered the
+    bot's username spamming it would otherwise keep this loop spinning
+    with zero delay, since `updates` being non-empty used to be enough
+    to skip the idle sleep even though nothing was actually replied to),
+    this loop must sleep itself rather than relying on get_updates()'s
+    own long-poll timeout for pacing, or it busy-spins the event loop
+    (pegging a CPU core, hammering Telegram) whenever a genuine ~30s
+    long-poll never actually happens (see _TELEGRAM_LISTEN_MIN_POLL_SECONDS)."""
+    offset: int | None = None
+    configured_chat_id = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
+    while True:
+        try:
+            poll_started_at = time.monotonic()
+            updates = await telegram_notify.get_updates(offset)
+            # Computed at most once per poll cycle (round 4), not once
+            # per matching message — a user sending several messages
+            # before the previous long-poll returns would otherwise
+            # re-run these same DB/file reads and rebuild the identical
+            # reply once per message. None until the first valid message
+            # in this batch needs it (most polls return 0 updates, or
+            # updates from the wrong chat, so skip the work entirely then).
+            reply = None
+            replied_to_anything = False
+            for update in updates:
+                offset = update["update_id"] + 1
+                message = update.get("message") or {}
+                chat_id = str((message.get("chat") or {}).get("id", ""))
+                if chat_id != configured_chat_id:
+                    continue
+                # Isolated per-message (round 4) — a failure building/
+                # sending the reply to ONE message (e.g. a DB hiccup)
+                # must not also abort every OTHER valid message already
+                # advanced past in this same batch.
+                try:
+                    if reply is None:
+                        sync_statuses = data_sync.get_all_sync_statuses()
+                        last_success_map = db.last_successful_action_per_account()
+                        accounts = get_all_accounts()
+                        reply = "\n\n".join(
+                            _account_health_telegram_text(aid, a, sync_statuses, last_success_map)
+                            for aid, a in accounts.items()
+                        ) or "Chưa có tài khoản nào."
+                    await telegram_notify.send_message(reply, silent=True)
+                    replied_to_anything = True
+                except Exception:  # noqa: BLE001 - one bad reply must not skip the rest of this batch
+                    logger.exception("_telegram_listen_loop failed to reply to update %s", update.get("update_id"))
+            # A genuine long-poll either blocks close to _POLL_TIMEOUT, or
+            # returns near-instantly because a message this loop actually
+            # replied to was already waiting — any OTHER fast return
+            # (not configured, a broken token/network error, or real
+            # traffic that never matched TELEGRAM_CHAT_ID) is the
+            # ambiguous case the idle sleep guards against; gating on
+            # `replied_to_anything` rather than bare `updates` (round 5)
+            # keeps back-to-back REAL queries from being throttled by
+            # this same guard, while still catching the "non-empty but
+            # nothing relevant" case round 4 missed.
+            if not replied_to_anything and time.monotonic() - poll_started_at < _TELEGRAM_LISTEN_MIN_POLL_SECONDS:
+                await asyncio.sleep(_TELEGRAM_LISTEN_IDLE_SLEEP_SECONDS)
+        except Exception:  # noqa: BLE001 - one bad poll cycle must not kill the loop
+            logger.exception("_telegram_listen_loop failed")
+            await asyncio.sleep(5)  # avoid a tight error loop hammering Telegram
+
+
 def _missing_auth_env_vars() -> list[str]:
     """.env is gitignored, so cloning/redeploying this project to a new
     machine starts with NONE of these set — and _require_auth()/
@@ -387,13 +569,25 @@ async def lifespan(app: FastAPI):
     cleanup_task = asyncio.create_task(_schedule_cleanup_loop())
     screenshot_cleanup_task = asyncio.create_task(_screenshot_cleanup_loop())
     resume_cooldown_task = asyncio.create_task(_resume_cooldown_maintenance_loop())
+    telegram_health_task = asyncio.create_task(_telegram_health_check_loop())
+    telegram_listen_task = asyncio.create_task(_telegram_listen_loop())
     yield
     poll_task.cancel()
     fire_task.cancel()
     cleanup_task.cancel()
     screenshot_cleanup_task.cancel()
     resume_cooldown_task.cancel()
-    for t in (poll_task, fire_task, cleanup_task, screenshot_cleanup_task, resume_cooldown_task):
+    telegram_health_task.cancel()
+    telegram_listen_task.cancel()
+    for t in (
+        poll_task,
+        fire_task,
+        cleanup_task,
+        screenshot_cleanup_task,
+        resume_cooldown_task,
+        telegram_health_task,
+        telegram_listen_task,
+    ):
         try:
             await t
         except asyncio.CancelledError:

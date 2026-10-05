@@ -315,3 +315,55 @@ def test_last_successful_action_per_account_omits_accounts_with_no_success(isola
 
 def test_last_successful_action_per_account_empty_when_no_rows(isolated_db):
     assert isolated_db.last_successful_action_per_account() == {}
+
+
+def test_consecutive_failure_streak_counts_back_to_last_success(isolated_db):
+    isolated_db.log_action(account_id="acc-a", action="post_to_group", success=True, message="ok", created_at="2026-10-01T00:00:00+00:00")
+    isolated_db.log_action(account_id="acc-a", action="post_to_group", success=False, message="boom", created_at="2026-10-02T00:00:00+00:00")
+    isolated_db.log_action(account_id="acc-a", action="post_to_group", success=False, message="boom", created_at="2026-10-03T00:00:00+00:00")
+
+    assert isolated_db.consecutive_failure_streak("acc-a", "post_to_group") == 2
+
+
+def test_consecutive_failure_streak_ignores_early_exit_rows(isolated_db):
+    """Regression test (2026-10-05 self-review): run_task()'s 3 early-exit
+    paths (account_paused/unsupported_action/rate_limited) log a failure
+    row too, but never actually touched Facebook — a string of them must
+    not count towards the "N lần fail liên tiếp" Telegram alert streak,
+    or a routinely-paused/rate-limited account falsely trips it."""
+    isolated_db.log_action(account_id="acc-a", action="post_to_group", success=False, message="boom thật", created_at="2026-10-01T00:00:00+00:00")
+    isolated_db.log_action(account_id="acc-a", action="post_to_group", success=False, message="rate_limited:too_many_today", created_at="2026-10-02T00:00:00+00:00")
+    isolated_db.log_action(account_id="acc-a", action="post_to_group", success=False, message="account_paused:acc-a", created_at="2026-10-03T00:00:00+00:00")
+
+    # Only 1 genuine failure in this history — the other 2 rows are
+    # early-exit noise and must be skipped, not counted as part of the streak.
+    assert isolated_db.consecutive_failure_streak("acc-a", "post_to_group") == 1
+
+
+def test_consecutive_failure_streak_skips_early_exit_rows_mixed_in(isolated_db):
+    isolated_db.log_action(account_id="acc-a", action="post_to_group", success=True, message="ok", created_at="2026-10-01T00:00:00+00:00")
+    isolated_db.log_action(account_id="acc-a", action="post_to_group", success=False, message="boom 1", created_at="2026-10-02T00:00:00+00:00")
+    isolated_db.log_action(account_id="acc-a", action="post_to_group", success=False, message="unsupported_action:post_to_group", created_at="2026-10-03T00:00:00+00:00")
+    isolated_db.log_action(account_id="acc-a", action="post_to_group", success=False, message="boom 2", created_at="2026-10-04T00:00:00+00:00")
+
+    # 2 genuine failures (boom 1, boom 2) with 1 early-exit row sandwiched
+    # in between, after the last real success — streak must be 2, not 3.
+    assert isolated_db.consecutive_failure_streak("acc-a", "post_to_group") == 2
+
+
+def test_consecutive_failure_streak_not_undercounted_when_early_exit_rows_fill_the_tight_production_window(isolated_db):
+    """Regression test (2026-10-05 self-review, round 2): agent.py's real
+    call site uses max_rows=_CONSECUTIVE_FAILURE_ALERT_THRESHOLD+1=4 — if
+    the raw SQL fetch were limited to exactly max_rows (as it originally
+    was), 2 early-exit rows interleaved among the last 5 rows would
+    consume that whole window before the 3rd genuine failure was ever
+    read, undercounting the streak as 2 instead of the true 3 and never
+    firing the alert at the real threshold."""
+    isolated_db.log_action(account_id="acc-a", action="post_to_group", success=True, message="ok", created_at="2026-10-01T00:00:00+00:00")
+    isolated_db.log_action(account_id="acc-a", action="post_to_group", success=False, message="rate_limited:too_many_today", created_at="2026-10-02T00:00:00+00:00")
+    isolated_db.log_action(account_id="acc-a", action="post_to_group", success=False, message="boom 1", created_at="2026-10-03T00:00:00+00:00")
+    isolated_db.log_action(account_id="acc-a", action="post_to_group", success=False, message="rate_limited:too_many_today", created_at="2026-10-04T00:00:00+00:00")
+    isolated_db.log_action(account_id="acc-a", action="post_to_group", success=False, message="boom 2", created_at="2026-10-05T00:00:00+00:00")
+    isolated_db.log_action(account_id="acc-a", action="post_to_group", success=False, message="boom 3", created_at="2026-10-06T00:00:00+00:00")
+
+    assert isolated_db.consecutive_failure_streak("acc-a", "post_to_group", max_rows=4) == 3

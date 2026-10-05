@@ -54,7 +54,7 @@ from typing import Any
 
 import httpx
 
-from human_bot import content_strategist, daily_limits, db, schedule_store
+from human_bot import content_strategist, daily_limits, db, schedule_store, telegram_notify
 from human_bot.config import AccountConfig, GroupRef, get_account
 from human_bot.data_sync_config import DataSyncConfig
 from human_bot.scheduling_config import SchedulingConfig
@@ -295,11 +295,50 @@ def _load_sync_status() -> dict[str, Any]:
         return {}
 
 
-def _record_sync_status(account_id: str, status: dict[str, Any]) -> None:
+# "Đồng bộ bên B lỗi liên tục" Telegram alert threshold (2026-10-05,
+# owner's request) — same spirit as agent.py's
+# _CONSECUTIVE_FAILURE_ALERT_THRESHOLD, separate constant since this
+# counts sync CYCLES (minutes apart) not individual post/comment attempts.
+_SYNC_ERROR_ALERT_THRESHOLD = 3
+
+
+def _record_sync_status(account_id: str, status: dict[str, Any]) -> bool:
+    """Persists this account's sync outcome, tracking a running
+    `consecutive_errors` count inside the SAME stored entry (reset to 0
+    on "ok", +1 on anything else). Returns True exactly once — the write
+    that makes the count newly reach _SYNC_ERROR_ALERT_THRESHOLD — so the
+    caller (sync_all()) fires exactly 1 Telegram alert per incident, not
+    one every poll cycle for as long as side B stays down."""
     _ensure_cache_dir()
     all_status = _load_sync_status()
+    previous = all_status.get(account_id)
+    prev_errors = previous.get("consecutive_errors", 0) if isinstance(previous, dict) else 0
+    if status.get("status") == "ok":
+        status["consecutive_errors"] = 0
+        should_alert = False
+    else:
+        new_count = prev_errors + 1
+        status["consecutive_errors"] = new_count
+        should_alert = new_count == _SYNC_ERROR_ALERT_THRESHOLD
     all_status[account_id] = status
     _atomic_write_json(SYNC_STATUS_PATH, all_status)
+    return should_alert
+
+
+async def _record_sync_status_and_alert(account_id: str, status: dict[str, Any]) -> None:
+    """_record_sync_status() plus the (best-effort, loud) Telegram alert
+    when it reports the consecutive-error streak just crossed the
+    threshold — split into its own async wrapper since sync_all()'s 2
+    error call sites and its 1 success call site all need the same
+    pairing, and _record_sync_status() itself stays a plain sync function
+    (pure state bookkeeping, no I/O to await)."""
+    should_alert = _record_sync_status(account_id, status)
+    if should_alert:
+        await telegram_notify.send_message(
+            f"🟡 Đồng bộ dữ liệu bên B lỗi {_SYNC_ERROR_ALERT_THRESHOLD} lần liên tiếp cho {account_id}\n"
+            f"Lỗi: {status.get('error')}",
+            silent=False,
+        )
 
 
 def get_sync_status(account_id: str) -> dict[str, Any] | None:
@@ -1173,7 +1212,7 @@ async def sync_all(account_ids: list[str], cfg: DataSyncConfig | None = None) ->
     if not token:
         error = "DATA_INGESTION_API_TOKEN not set in .env"
         for aid in account_ids:
-            _record_sync_status(aid, {"last_run_at": now_iso, "status": "error", "error": error})
+            await _record_sync_status_and_alert(aid, {"last_run_at": now_iso, "status": "error", "error": error})
         return {aid: {"error": error} for aid in account_ids}
 
     accounts: dict[str, AccountConfig] = {aid: get_account(aid) for aid in account_ids}
@@ -1206,7 +1245,7 @@ async def sync_all(account_ids: list[str], cfg: DataSyncConfig | None = None) ->
             jobs = [content_strategist.sanitize_job(j) for j in jobs]
     except Exception as exc:
         for aid in account_ids:
-            _record_sync_status(aid, {"last_run_at": now_iso, "status": "error", "error": str(exc)})
+            await _record_sync_status_and_alert(aid, {"last_run_at": now_iso, "status": "error", "error": str(exc)})
         raise
 
     seen = _load_seen_ids(cfg.cache_retention_days)
