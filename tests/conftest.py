@@ -66,11 +66,20 @@ def isolated_accounts_dir(tmp_path, monkeypatch):
     merged with runtime_config.get_registered_accounts() — the latter
     needs isolated_runtime_config to keep a REAL registered account (e.g.
     "nhtu00") from leaking into a test. Use both fixtures together for a
-    genuinely clean account list; this one alone only stops file I/O."""
-    from human_bot import config
+    genuinely clean account list; this one alone only stops file I/O.
+
+    2026-10-02: also patches human_bot.bootstrap_login_sessions'
+    OWN separate ACCOUNTS_DIR constant (not imported from config.py —
+    an independent module-level Path pointing at the same real directory)
+    — its get_session_expiry() reads accounts/<id>/storage_state.json
+    directly for the "sức khoẻ tài khoản" card, and would otherwise keep
+    reading the REAL accounts/ dir even with config.ACCOUNTS_DIR patched,
+    the same isolation gap this fixture already exists to close."""
+    from human_bot import bootstrap_login_sessions, config
     fake_dir = tmp_path / "accounts"
     fake_dir.mkdir()
     monkeypatch.setattr(config, "ACCOUNTS_DIR", fake_dir)
+    monkeypatch.setattr(bootstrap_login_sessions, "ACCOUNTS_DIR", fake_dir)
     return fake_dir
 
 
@@ -83,6 +92,19 @@ def isolated_screenshots_root(tmp_path, monkeypatch):
     fake_dir.mkdir()
     monkeypatch.setattr(screenshots, "SCREENSHOTS_ROOT", fake_dir)
     return fake_dir
+
+
+@pytest.fixture
+def isolated_sync_status(tmp_path, monkeypatch):
+    """Redirects human_bot.data_sync.SYNC_STATUS_PATH to a throwaway
+    tmp_path file — get_all_sync_statuses()/get_sync_status() otherwise
+    read the real project's data_sync_cache/_sync_status.json (2026-10-02,
+    added for /admin home's "sức khoẻ tài khoản" card, the first test to
+    render per-account sync status)."""
+    from human_bot import data_sync
+    fake_path = tmp_path / "_sync_status.json"
+    monkeypatch.setattr(data_sync, "SYNC_STATUS_PATH", fake_path)
+    return fake_path
 
 
 @pytest.fixture

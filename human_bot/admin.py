@@ -56,7 +56,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 from pathlib import Path
 
-from human_bot import bootstrap_login_sessions, db, schedule_store, screenshots
+from human_bot import bootstrap_login_sessions, browser_pool, db, schedule_store, screenshots
 from human_bot.agent import TaskRequest, run_task
 from human_bot.config import (
     ACCOUNT_AGE_TIERS,
@@ -2220,10 +2220,116 @@ def _layout(body: str, active: str = "", *, current_user: dict[str, str] | None 
 </body></html>"""
 
 
+_SILENCE_WARNING_HOURS = 48  # owner's threshold, 2026-10-02
+_SESSION_EXPIRY_WARNING_DAYS = 14  # owner's threshold, 2026-10-02
+
+
+def _account_health_card_html(
+    aid: str, account, sync_statuses: dict, last_success_map: dict[str, str],
+) -> tuple[int, str]:
+    """One "sức khoẻ tài khoản" card for /admin's home page (2026-10-02,
+    admin-UI improvement idea #3 — see tasks.md). Returns (severity, html):
+    severity 0 = cần chú ý ngay (đỏ), 1 = theo dõi (vàng), 2 = ổn (xanh) —
+    admin_home() sorts cards worst-first by this, same "xấu nhất lên đầu"
+    pattern RPA fleet dashboards use. Every line pairs an icon with a text
+    label (never color alone) — the "5-second rule" only works if a
+    glance is enough, and color alone isn't accessible/printable-safe."""
+    severity = 2
+    rows: list[str] = []
+
+    is_paused = account.status == AccountStatus.PAUSED
+    is_resting = False
+    if is_paused:
+        severity = 0
+        info = get_pause_info(aid)
+        reason = html.escape((info or {}).get("reason") or "không rõ")
+        rows.append(f"<div>🔴 <b>Tạm dừng</b> — {reason}</div>")
+    else:
+        cooldown = get_resume_cooldown_info(aid)
+        if cooldown:
+            is_resting = True
+            severity = min(severity, 1)
+            until_txt = _local_dt_html(cooldown.get("until"))
+            rows.append(f"<div>🟡 Đang hạ nhiệt, xong vào {until_txt}</div>")
+        else:
+            rows.append("<div>🟢 Hoạt động</div>")
+
+    # Phiên trình duyệt — peek_session() (không tự tạo session mới chỉ vì
+    # trang chủ được mở). None là bình thường (service mới khởi động/tài
+    # khoản chưa từng chạy task nào), khác hẳn "đã có session nhưng chết".
+    session = browser_pool.peek_session(aid)
+    if session is None:
+        rows.append('<div class="muted">⚪ Chưa mở phiên trình duyệt nào</div>')
+    elif session.is_alive():
+        rows.append("<div>🟢 Phiên trình duyệt đang mở</div>")
+    else:
+        severity = 0
+        rows.append("<div>🔴 Phiên trình duyệt đã đóng — cần xem lại</div>")
+
+    sync = sync_statuses.get(aid)
+    if sync is None:
+        rows.append('<div class="muted">⚪ Chưa đồng bộ dữ liệu lần nào</div>')
+    elif sync.get("status") == "ok":
+        rows.append(f"<div>🟢 Đồng bộ OK lúc {_local_dt_html(sync.get('last_run_at'))}</div>")
+    else:
+        severity = min(severity, 1)
+        rows.append(f"<div>🟡 Đồng bộ lỗi lúc {_local_dt_html(sync.get('last_run_at'))}</div>")
+
+    # "Im lặng" chỉ có ý nghĩa cảnh báo khi tài khoản ĐANG LẼ RA phải hoạt
+    # động — Tạm dừng/Hạ nhiệt đã tự giải thích lý do im lặng rồi.
+    last_success = last_success_map.get(aid)
+    if last_success is None:
+        rows.append('<div class="muted">⚪ Chưa có lượt đăng/bình luận thành công nào</div>')
+    else:
+        last_dt = datetime.fromisoformat(last_success)
+        if last_dt.tzinfo is None:
+            last_dt = last_dt.replace(tzinfo=timezone.utc)
+        hours_ago = (datetime.now(timezone.utc) - last_dt).total_seconds() / 3600
+        if not is_paused and not is_resting and hours_ago > _SILENCE_WARNING_HOURS:
+            severity = min(severity, 1)
+            rows.append(
+                f"<div>🟡 Im lặng {int(hours_ago)} giờ — lần thành công gần nhất "
+                f"{_local_dt_html(last_success)}</div>"
+            )
+        else:
+            rows.append(f"<div>🟢 Thành công gần nhất: {_local_dt_html(last_success)}</div>")
+
+    expiry = bootstrap_login_sessions.get_session_expiry(aid)
+    if expiry is None:
+        severity = 0
+        rows.append("<div>🔴 Không đọc được phiên đăng nhập (chưa đăng nhập/file hỏng)</div>")
+    else:
+        days_left = (expiry - datetime.now(timezone.utc)).total_seconds() / 86400
+        if days_left < 0:
+            severity = 0
+            rows.append("<div>🔴 Phiên đăng nhập đã hết hạn — cần đăng nhập lại</div>")
+        elif days_left < _SESSION_EXPIRY_WARNING_DAYS:
+            severity = min(severity, 1)
+            rows.append(f"<div>🟡 Phiên đăng nhập còn {int(days_left)} ngày</div>")
+        else:
+            rows.append(f"<div>🟢 Phiên đăng nhập còn {int(days_left)} ngày</div>")
+
+    card_html = f"""
+<div class="card">
+  <h3 style="margin:0 0 8px;">{html.escape(account.display_name)} <span class="row-url">({html.escape(aid)})</span></h3>
+  <div style="display:flex; flex-direction:column; gap:4px; font-size:14px;">{"".join(rows)}</div>
+</div>"""
+    return severity, card_html
+
+
 @router.get("", response_class=HTMLResponse)
 async def admin_home(request: Request, _: None = Depends(_require_login)) -> str:
     accounts = get_all_accounts()
-    accounts_html = "".join(f"<li>{html.escape(a.display_name)} ({html.escape(aid)})</li>" for aid, a in accounts.items()) or '<span class="muted">Chưa có tài khoản nào</span>'
+    sync_statuses = get_all_sync_statuses()
+    last_success_map = db.last_successful_action_per_account()
+    health_cards = sorted(
+        (
+            _account_health_card_html(aid, a, sync_statuses, last_success_map)
+            for aid, a in accounts.items()
+        ),
+        key=lambda pair: pair[0],
+    )
+    accounts_html = "".join(c for _sev, c in health_cards) or '<span class="muted">Chưa có tài khoản nào</span>'
 
     # Surfaced here, not just at /admin/accounts, because the whole point
     # of auto-pause (human_bot/agent.py's run_task(), on
@@ -2245,9 +2351,9 @@ async def admin_home(request: Request, _: None = Depends(_require_login)) -> str
 <h1>Bảng điều khiển</h1>
 <p class="page-desc">Trang quản trị nội bộ. Không public trang này ra internet — nó có quyền đăng bài thật lên Facebook.</p>
 {pause_warning}
-<div class="card">
-  <h2>👤 Tài khoản đã đăng ký <span class="badge">{len(accounts)}</span></h2>
-  <ul class="account-list">{accounts_html}</ul>
+<h2 style="margin-bottom:8px;">👤 Sức khoẻ tài khoản <span class="badge">{len(accounts)}</span></h2>
+<div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(340px, 1fr)); gap:12px; margin-bottom:12px;">
+{accounts_html}
 </div>
 
 <div class="home-links">

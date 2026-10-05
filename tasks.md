@@ -5470,3 +5470,86 @@ tuỳ chọn), CTA, câu thiếu visa/lương, mẫu bình luận ứng viên, t
       hướng sửa đúng sẽ là cải thiện phát hiện phiên sắp chết SỚM HƠN
       (trước khi nó kịp làm hỏng 1 lượt đăng), không phải tăng timeout
       15 giây.
+
+      **Cập nhật 02/10:** owner bấm "Đăng lại" cho task post job 736 (lỗi
+      riêng không liên quan, cùng ngày) → đăng thành công, không tái diễn.
+      Task comment cũ (28/09, `Locator.wait_for` timeout) vẫn chưa theo
+      dõi/đào sâu — giữ nguyên trạng thái "chưa rõ".
+
+## Bảng "sức khoẻ tài khoản" ngay trang chủ Admin (2026-10-02)
+
+Ý tưởng #3 trong 10 ý tưởng cải tiến Admin UI — đối chiếu RPA fleet
+dashboard (TruBot Cockpit — heartbeat theo từng bot, thẻ xếp theo mức độ
+nghiêm trọng, xấu nhất lên đầu) và dashboard nói chung (nhãn chữ rõ ràng +
+màu chứ không chỉ dựa màu, "quy tắc 5 giây"). Owner chốt 2 ngưỡng cảnh báo
+qua hỏi đáp trước khi code: **im lặng 48 giờ**, **phiên đăng nhập còn dưới
+14 ngày**.
+
+- [x] **5 chỉ số mới cho mỗi tài khoản, thay hẳn danh sách tên trơn cũ ở
+      trang chủ** ([admin.py:2350](human_bot/admin.py#L2350) trở xuống):
+      1. Trạng thái chính (Hoạt động/Hạ nhiệt/Tạm dừng — đã có sẵn,
+         `get_pause_info()`/`get_resume_cooldown_info()`).
+      2. **Phiên trình duyệt** — mới. `browser_pool.py` trước đây không
+         có cách đọc trạng thái phiên từ ngoài mà không vô tình TẠO
+         session mới (`get_session()` luôn tạo nếu chưa có) — thêm
+         `peek_session()` chỉ đọc, không tạo.
+      3. Đồng bộ dữ liệu bên B gần nhất — đã có sẵn
+         (`get_all_sync_statuses()`), trước giờ chỉ nằm trong tab "Đồng
+         bộ", nay đưa thẳng ra trang chủ.
+      4. **Lần đăng/bình luận thành công gần nhất** — mới, thêm
+         `db.last_successful_action_per_account()` (1 query gộp cho CẢ
+         TRANG, đúng pattern `successful_retry_log_ids()` đã dùng, tránh
+         N+1). Cảnh báo "im lặng" CHỈ áp dụng khi tài khoản đang thật sự
+         nên hoạt động (không Tạm dừng/Hạ nhiệt — 2 trạng thái đó đã tự
+         giải thích lý do im lặng rồi).
+      5. **Phiên đăng nhập (cookie) còn bao lâu** — mới, thêm
+         `bootstrap_login_sessions.get_session_expiry()`. Đọc thẳng
+         `accounts/<id>/storage_state.json` — xác nhận qua đọc file thật
+         rằng CHỈ 3 cookie `c_user`/`xs`/`fr` mới thật sự quyết định còn
+         đăng nhập hay không; lấy `min()` trên MỌI cookie sẽ sai (cookie
+         `wd` chỉ lưu kích thước cửa sổ, hết hạn sớm hơn nhiều nhưng
+         không liên quan đăng nhập — xác nhận có thật trong 1 file
+         `storage_state.json` thật, không phải suy đoán).
+      Mỗi thẻ xếp **xấu nhất lên đầu** (đỏ trước, vàng kế, xanh sau cùng).
+- [x] **Bug thật tự phát hiện khi verify bằng dữ liệu thật**: thẻ sức
+      khoẻ mới bị lồng sai bên trong `<ul class="account-list">`/
+      `<div class="card">` cũ còn sót lại từ code gốc (HTML không hợp lệ:
+      `<div>` nằm thẳng trong `<ul>` không qua `<li>`) — chỉ phát hiện
+      được khi render thử với dữ liệu 2 tài khoản thật (`tu_iizuki`,
+      `nhtu00`) qua script gọi thẳng `admin_home()`, không phải lúc chạy
+      test (test chỉ kiểm tra NỘI DUNG chữ có mặt, không kiểm tra cấu
+      trúc HTML nên không bắt được). Đã bỏ hẳn khối `<ul>`/card bọc
+      ngoài cũ, mỗi thẻ tài khoản tự đứng độc lập.
+      **Lưu ý quy trình quan trọng phát hiện khi viết test cho tính năng
+      này**: `bootstrap_login_sessions.py` có hằng số `ACCOUNTS_DIR`
+      RIÊNG (không import từ `config.py`, trỏ cùng thư mục thật nhưng là
+      biến module độc lập) — fixture `isolated_accounts_dir` dùng chung
+      cho test trước giờ chỉ cô lập `config.ACCOUNTS_DIR`, không hề cô
+      lập biến thứ 2 này. Nếu không phát hiện, mọi test gọi tới
+      `get_session_expiry()` (hàm mới) sẽ âm thầm đọc thư mục `accounts/`
+      THẬT dù tưởng đã cô lập đủ. Đã sửa tận gốc: cập nhật fixture dùng
+      chung trong `tests/conftest.py` để cô lập luôn cả 2 biến cùng lúc,
+      không chỉ vá riêng cho test của tính năng này — bảo vệ luôn mọi
+      test admin.py khác dùng `isolated_accounts_dir` về sau.
+      Thêm fixture dùng chung mới `isolated_sync_status` (cô lập
+      `data_sync.SYNC_STATUS_PATH`) cùng lý do.
+      Thêm 21 test mới (`test_browser_pool.py`, `test_bootstrap_login_sessions.py`
+      — 2 file test mới, module trước giờ chưa có test nào; `test_db.py`;
+      `test_admin_home.py` — file mới, route `/admin` trước giờ cũng
+      chưa có test HTTP nào). Verify thêm bằng tay: gọi thẳng
+      `admin_home()` với dữ liệu 2 tài khoản thật (chỉ đọc, không ghi gì)
+      — cả 2 ra đúng "còn 89 ngày" (khớp hạn cookie `fr` thật đã tra hôm
+      01/10, ~90 ngày tính tới 02/10). **Toàn bộ suite: 491/491 pass.**
+
+- [x] **Owner xem qua trình duyệt thật, yêu cầu layout co giãn: 1 tài
+      khoản full width, 2 tài khoản chia đôi (2026-10-02).** Bọc các thẻ
+      trong 1 CSS grid `grid-template-columns:repeat(auto-fit, minmax(340px, 1fr))`
+      thay vì xếp dọc từng thẻ — tự co giãn theo đúng số tài khoản mà
+      không cần biết trước số lượng ở phía Python: 1 thẻ tự giãn full
+      width (còn mỗi nó trong hàng), 2 thẻ chia đôi (đủ chỗ ≥340px/thẻ),
+      3+ thẻ tự xuống dòng thay vì bị ép hẹp quá mức. Bỏ `margin-bottom`
+      riêng của từng thẻ (trước xếp dọc) vì `gap` của grid đã lo việc
+      giãn cách. Verify lại bằng dữ liệu 2 tài khoản thật — grid markup
+      đúng. **Toàn bộ suite vẫn 491/491 pass** (không cần sửa test, chỉ
+      đổi CSS/layout, nội dung thẻ không đổi). Chưa chạy qua trình duyệt
+      thật lần cuối, chưa commit.

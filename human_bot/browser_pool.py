@@ -169,6 +169,15 @@ def get_session(account: AccountConfig) -> AccountSession:
     return _pool[account.account_id]
 
 
+def peek_session(account_id: str) -> AccountSession | None:
+    """Read-only lookup for display purposes (the "sức khoẻ tài khoản"
+    card on /admin's home page, 2026-10-02) — unlike get_session(), never
+    creates a pool entry as a side effect of just being asked about. A
+    page/dashboard view must not itself cause a browser to be considered
+    "owned" by this account."""
+    return _pool.get(account_id)
+
+
 async def warm_up(accounts: list[AccountConfig]) -> None:
     """Pre-launch browsers for the given accounts (call at service startup).
     One account failing to start (bad/corrupt storage_state.json, a

@@ -30,7 +30,9 @@ human_bot/bootstrap_login.py trong terminal. Yeu cau 2026-09-09.
 from __future__ import annotations
 
 import asyncio
+import json
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 
 from playwright.async_api import Browser, BrowserContext, Page, Playwright, async_playwright
@@ -156,3 +158,34 @@ async def cancel(account_id: str) -> None:
     session = _sessions.pop(account_id, None)
     if session is not None:
         await _close(session)
+
+
+# Only the cookies that actually gate being logged in to facebook.com —
+# NOT a plain min() over every cookie in the file. Confirmed by reading a
+# real storage_state.json (2026-10-02): "wd" (just the browser window's
+# saved dimensions) expires far sooner than the real auth cookies and
+# would make the "sức khoẻ tài khoản" card cry wolf constantly if included.
+_AUTH_COOKIE_NAMES = {"c_user", "xs", "fr"}
+
+
+def get_session_expiry(account_id: str) -> datetime | None:
+    """Earliest expiry among this account's real Facebook auth cookies
+    (c_user/xs/fr) in accounts/<id>/storage_state.json — for the "sức
+    khoẻ tài khoản" card's "phiên đăng nhập còn bao lâu" line. None if
+    never logged in, the file is missing/corrupt, or it has no auth
+    cookies — never raises, same "bad local data must not crash the admin
+    UI" stance as every other local-file reader in this project."""
+    path = ACCOUNTS_DIR / account_id / "storage_state.json"
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    expiries = [
+        c["expires"] for c in data.get("cookies", [])
+        if c.get("domain", "").endswith("facebook.com")
+        and c.get("name") in _AUTH_COOKIE_NAMES
+        and isinstance(c.get("expires"), (int, float)) and c["expires"] > 0
+    ]
+    if not expiries:
+        return None
+    return datetime.fromtimestamp(min(expiries), tz=timezone.utc)

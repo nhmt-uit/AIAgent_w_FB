@@ -282,3 +282,36 @@ def test_log_skipped_job_round_trip(isolated_db):
     assert row["title"] is None
     assert json.loads(row["attributes"]) == {"confidence": 0.88}
     assert row["created_at"]
+
+
+# --- last_successful_action_per_account (2026-10-02, "sức khoẻ tài khoản") --
+
+def test_last_successful_action_per_account_picks_the_latest_per_account(isolated_db):
+    isolated_db.log_action(account_id="acc-a", action="post_to_group", success=True, created_at="2026-10-01T01:00:00+00:00")
+    isolated_db.log_action(account_id="acc-a", action="post_to_group", success=True, created_at="2026-10-02T03:00:00+00:00")
+    isolated_db.log_action(account_id="acc-b", action="comment_on_group_post", success=True, created_at="2026-09-30T00:00:00+00:00")
+
+    result = isolated_db.last_successful_action_per_account()
+    assert result == {
+        "acc-a": "2026-10-02T03:00:00+00:00",
+        "acc-b": "2026-09-30T00:00:00+00:00",
+    }
+
+
+def test_last_successful_action_per_account_ignores_failed_rows(isolated_db):
+    isolated_db.log_action(account_id="acc-a", action="post_to_group", success=False, created_at="2026-10-02T03:00:00+00:00")
+    isolated_db.log_action(account_id="acc-a", action="post_to_group", success=True, created_at="2026-10-01T01:00:00+00:00")
+
+    result = isolated_db.last_successful_action_per_account()
+    assert result == {"acc-a": "2026-10-01T01:00:00+00:00"}
+
+
+def test_last_successful_action_per_account_omits_accounts_with_no_success(isolated_db):
+    isolated_db.log_action(account_id="acc-a", action="post_to_group", success=False, created_at="2026-10-02T03:00:00+00:00")
+
+    result = isolated_db.last_successful_action_per_account()
+    assert "acc-a" not in result
+
+
+def test_last_successful_action_per_account_empty_when_no_rows(isolated_db):
+    assert isolated_db.last_successful_action_per_account() == {}

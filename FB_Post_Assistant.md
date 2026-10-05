@@ -519,6 +519,28 @@ liệu thật hằng ngày và yêu cầu kiểm tra chéo lại mọi thứ tr�
   **Chưa sửa gì** — mới 1 lần, cần theo dõi thêm vài ngày xem có lặp lại
   không trước khi quyết định sửa (đúng cách đã làm với lỗi timeout bình
   luận trước đây). Chi tiết đầy đủ ở `tasks.md`.
+  **Cập nhật 02/10:** thử "Đăng lại" cho task bị lỗi hôm đó → đăng thành
+  công, không tái diễn thêm lần nào.
+- **Làm xong "Bảng sức khoẻ tài khoản" ở trang chủ** (ý tưởng #3 trong
+  10 ý đã note) — mỗi tài khoản giờ hiện ngay 5 thông tin: đang hoạt
+  động/tạm dừng/hạ nhiệt, phiên trình duyệt có đang mở không, lần đồng
+  bộ dữ liệu gần nhất, lần đăng/bình luận thành công gần nhất (cảnh báo
+  nếu im lặng quá 48 giờ mà không có lý do), và phiên đăng nhập Facebook
+  còn bao nhiêu ngày (cảnh báo nếu dưới 14 ngày — đọc thẳng từ file
+  phiên đăng nhập đã lưu, trước giờ không ai biết thông tin này). Tài
+  khoản có vấn đề hiện lên đầu danh sách. Owner chốt 2 mốc cảnh báo
+  (48 giờ, 14 ngày) qua hỏi đáp trước khi code.
+  **Tự phát hiện 1 lỗi thật khi verify bằng dữ liệu 2 tài khoản thật**:
+  giao diện mới bị lồng sai bên trong khung danh sách cũ còn sót lại —
+  chỉ lộ ra khi xem thử với dữ liệu thật, không phải lúc chạy test tự
+  động (test chỉ kiểm tra có đủ chữ, không kiểm tra cấu trúc trang có
+  đúng không). Đã sửa, cũng tiện phát hiện và vá luôn 1 lỗ hổng trong
+  quy trình viết test (1 nơi lưu file lại không được cô lập đúng khỏi
+  dữ liệu thật, sửa tận gốc cho mọi test sau này dùng chung). 21 test
+  mới. Chi tiết đầy đủ ở `tasks.md`.
+  **Owner xem qua trình duyệt thật, yêu cầu chỉnh layout**: 1 tài khoản
+  thì thẻ giãn hết chiều ngang, 2 tài khoản thì chia đôi mỗi bên — đã
+  đổi sang cách xếp tự co giãn theo đúng số tài khoản đang có.
 
 ---
 
@@ -550,8 +572,9 @@ Một vài lựa chọn thiết kế đáng chú ý, được cân nhắc kỹ c
 - **[ĐANG THEO DÕI]** Theo dõi thêm để chắc chắn các lỗi mới sửa (đặc biệt:
   tin trùng dữ liệu, đăng đúng giờ, cơ chế hạ nhiệt) chạy ổn định lâu dài với
   dữ liệu thật.
-- Chạy thử ưu tiên "tin trả tiền" với dữ liệu thật ngay khi bên B triển khai xong
-  phần của họ.
+- **[ĐÃ XÁC NHẬN SỐNG, 2026-09-28]** Chạy thử ưu tiên "tin trả tiền" với dữ
+  liệu thật — xem mục "Kiểm tra lần lấy bài từ bên B (28/09)" ở Tuần 5:
+  tin sponsor được xếp sớm nhất và chia đều cho 2 tài khoản, đúng thiết kế.
 - Thêm kênh báo động (Slack/email) khi có tài khoản bị Facebook khoá, thay vì phải
   tự vào xem trang quản trị.
 - Cân nhắc mua proxy/IP riêng cho từng tài khoản nếu mở rộng quy mô.
@@ -577,14 +600,14 @@ Một vài lựa chọn thiết kế đáng chú ý, được cân nhắc kỹ c
   từ bên B), thay vì cần thao tác tay ở một số bước.
 - Cân nhắc thêm tính năng chọn nhóm đăng theo đúng chủ đề (VD tin ngành IT → nhóm
   về IT) thay vì đăng vào mọi nhóm đã tham gia.
-- **[Ý TƯỞNG MỚI, chưa làm, 2026-09-25]** 2 ý tưởng cho trang "Lịch đăng":
-  1. **Hoán đổi lịch đăng giữa 2 bài** — có nút để đổi chỗ giờ đăng giữa 2 bài
-     đã lên lịch (bài A nhận giờ của bài B và ngược lại), thay vì phải sửa tay
-     từng bài.
-  2. **Khi "Đặt lịch"/"Lên lịch lại" cho 1 task quá hạn, cho chọn "mượn" giờ
-     của 1 bài đã lên lịch khác** — task quá hạn nhận đúng giờ của bài đó, còn
-     bài bị mượn giờ sẽ được hệ thống **tự động tìm giờ trống mới** để dời sang
-     (không cần tự chọn tay giờ mới cho bài bị dời).
+- **[ĐÃ LÀM — cả 2 ý, 2026-09-29]** 2 ý tưởng cho trang "Lịch đăng" (nêu ra
+  2026-09-25): đã triển khai xong cả 2, xem Tuần 5 ("Đổi giờ đăng giữa 2 bài
+  (giai đoạn 1)" và "Đổi giờ đăng giai đoạn 2"):
+  1. **Hoán đổi lịch đăng giữa 2 bài** → nút "⇄ Đổi giờ" ở mỗi bài đang chờ.
+  2. **"Mượn" giờ của 1 bài đã lên lịch khác cho task quá hạn** → nút
+     "↩️ Mượn giờ" ở tab "Task quá hạn", tự tìm giờ trống mới cho bài bị
+     mượn. Owner tự thử tay phát hiện 2 lỗi thật (tính thiếu hạn mức ngày)
+     trước khi kịp commit — đã sửa cả 2.
 
 **Từ đợt rà soát tổng thể (2026-09-24), chưa làm — xếp theo mức độ ưu tiên:**
 
@@ -748,10 +771,8 @@ triển khai cụ thể:**
 2. Kênh báo động (Slack/Telegram) khi tài khoản bị khoá hoặc service ngừng
    chạy — cùng nhóm với ý đã ghi ở mục ngay trên (sự cố downtime 14h37 phút),
    nhưng xếp lại thành đề xuất chính thức thay vì chỉ "nêu ý".
-3. Bảng "sức khoẻ tài khoản" ngay trên trang chủ — mở rộng từ sync-status per
-   account đang có sẵn (hiện nằm khuất trong tab "Đồng bộ"): lần đăng/bình luận
-   thành công gần nhất, cảnh báo nếu im lặng quá lâu, cảnh báo phiên đăng nhập
-   sắp hết hạn.
+3. **[ĐÃ LÀM, 2026-10-02]** Bảng "sức khoẻ tài khoản" ngay trên trang chủ —
+   xem Tuần 5 + `tasks.md` để biết chi tiết.
 4. Tìm kiếm (theo tên job/công ty/nhóm) + xuất CSV ở trang Báo cáo — hiện chỉ
    lọc được theo tài khoản + khoảng ngày.
 5. Lịch sử thay đổi cấu hình (audit log cho `runtime_config.json`) — vì

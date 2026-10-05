@@ -631,3 +631,23 @@ def successful_retry_log_ids(log_ids: list[int]) -> set[int]:
         return {row["retry_of_log_id"] for row in cur.fetchall()}
     finally:
         conn.close()
+
+
+def last_successful_action_per_account() -> dict[str, str]:
+    """account_id -> created_at (ISO string) of its most recent
+    SUCCESSFUL action (post or comment, any kind) — for the "sức khoẻ tài
+    khoản" card's "lần đăng/bình luận thành công gần nhất" line
+    (2026-10-02). One batched query for the whole page, not one per
+    account. An account with zero successful rows ever just has no key
+    here — callers must treat "no entry" as "chưa có lượt nào", not as a
+    long-silence warning (that's only meaningful for an ACTIVE account
+    that used to post and has gone quiet)."""
+    conn = _connect()
+    try:
+        cur = conn.execute(
+            "SELECT account_id, MAX(created_at) AS last_at "
+            "FROM action_log WHERE success = 1 GROUP BY account_id"
+        )
+        return {row["account_id"]: row["last_at"] for row in cur.fetchall()}
+    finally:
+        conn.close()
