@@ -10,6 +10,23 @@ import pytest
 
 from human_bot import runtime_config
 from human_bot import schedule_store
+from human_bot import telegram_notify
+
+
+@pytest.fixture(autouse=True)
+def _isolated_telegram_pending_senders():
+    """telegram_notify._pending_senders/_cached_bot_username (2026-10-05
+    follow-up) are in-memory, module-level, shared state — never
+    persisted to disk (see record_pending_sender()'s/refresh_bot_username()'s
+    own docstrings), but exactly BECAUSE they're bare module globals, one
+    test setting either would otherwise leak into every other test in the
+    same pytest run. autouse so no test file touching telegram_notify
+    needs to remember this itself."""
+    telegram_notify._pending_senders.clear()
+    telegram_notify._cached_bot_username = None
+    yield
+    telegram_notify._pending_senders.clear()
+    telegram_notify._cached_bot_username = None
 
 
 @pytest.fixture

@@ -511,6 +511,156 @@ def test_update_mod_user_password_rejects_password_shorter_than_minimum(isolated
     assert rc.verify_password("secret123", record["password_hash"], record["salt"], record["iterations"]) is True
 
 
+def test_get_telegram_recipients_empty_by_default(isolated_runtime_config):
+    assert rc.get_telegram_recipients() == []
+
+
+def test_get_telegram_recipient_single_lookup(isolated_runtime_config):
+    rc.add_telegram_recipient("931000937", "Tu")
+    assert rc.get_telegram_recipient("931000937") == {"chat_id": "931000937", "label": "Tu"}
+
+
+def test_get_telegram_recipient_unknown_chat_id_returns_none(isolated_runtime_config):
+    assert rc.get_telegram_recipient("never-existed") is None
+
+
+def test_add_telegram_recipient_then_get(isolated_runtime_config):
+    rc.add_telegram_recipient("931000937", "Tu")
+    assert rc.get_telegram_recipients() == [{"chat_id": "931000937", "label": "Tu"}]
+
+
+def test_add_telegram_recipient_blank_label_defaults_to_chat_id(isolated_runtime_config):
+    rc.add_telegram_recipient("931000937", "")
+    assert rc.get_telegram_recipients() == [{"chat_id": "931000937", "label": "931000937"}]
+
+
+def test_add_telegram_recipient_allows_negative_chat_id_for_groups(isolated_runtime_config):
+    rc.add_telegram_recipient("-1001234567890", "Nhóm team")
+    assert rc.get_telegram_recipients() == [{"chat_id": "-1001234567890", "label": "Nhóm team"}]
+
+
+def test_add_telegram_recipient_rejects_blank_chat_id(isolated_runtime_config):
+    try:
+        rc.add_telegram_recipient("", "Tu")
+        assert False, "expected ValueError"
+    except ValueError:
+        pass
+    assert rc.get_telegram_recipients() == []
+
+
+def test_add_telegram_recipient_rejects_non_numeric_chat_id(isolated_runtime_config):
+    try:
+        rc.add_telegram_recipient("abc123", "Tu")
+        assert False, "expected ValueError"
+    except ValueError:
+        pass
+    assert rc.get_telegram_recipients() == []
+
+
+def test_add_telegram_recipient_duplicate_chat_id_rejected(isolated_runtime_config):
+    rc.add_telegram_recipient("931000937", "Tu")
+    try:
+        rc.add_telegram_recipient("931000937", "Tu lần 2")
+        assert False, "expected ValueError"
+    except ValueError:
+        pass
+    assert rc.get_telegram_recipients() == [{"chat_id": "931000937", "label": "Tu"}]
+
+
+def test_update_telegram_recipient_label_renames_it(isolated_runtime_config):
+    rc.add_telegram_recipient("931000937", "Tu")
+    rc.update_telegram_recipient_label("931000937", "Tu (owner)")
+    assert rc.get_telegram_recipients() == [{"chat_id": "931000937", "label": "Tu (owner)"}]
+
+
+def test_update_telegram_recipient_label_blank_falls_back_to_chat_id(isolated_runtime_config):
+    rc.add_telegram_recipient("931000937", "Tu")
+    rc.update_telegram_recipient_label("931000937", "")
+    assert rc.get_telegram_recipients() == [{"chat_id": "931000937", "label": "931000937"}]
+
+
+def test_update_telegram_recipient_label_tolerates_whitespace_around_chat_id(isolated_runtime_config):
+    """Regression test (self-review follow-up): add_telegram_recipient()
+    already strips chat_id before storing/comparing — update must do
+    the same, or a chat_id reaching here with incidental surrounding
+    whitespace would spuriously fail to match the stored (stripped) one."""
+    rc.add_telegram_recipient("931000937", "Tu")
+    rc.update_telegram_recipient_label("  931000937  ", "Tu (owner)")
+    assert rc.get_telegram_recipients() == [{"chat_id": "931000937", "label": "Tu (owner)"}]
+
+
+def test_update_telegram_recipient_label_unknown_chat_id_raises(isolated_runtime_config):
+    try:
+        rc.update_telegram_recipient_label("never-existed", "X")
+        assert False, "expected ValueError"
+    except ValueError:
+        pass
+
+
+def test_update_telegram_recipient_label_does_not_affect_other_recipients(isolated_runtime_config):
+    rc.add_telegram_recipient("111", "A")
+    rc.add_telegram_recipient("222", "B")
+    rc.update_telegram_recipient_label("111", "A (đổi tên)")
+    assert rc.get_telegram_recipients() == [
+        {"chat_id": "111", "label": "A (đổi tên)"},
+        {"chat_id": "222", "label": "B"},
+    ]
+
+
+def test_delete_telegram_recipient_idempotent(isolated_runtime_config):
+    rc.add_telegram_recipient("931000937", "Tu")
+    rc.delete_telegram_recipient("931000937")
+    assert rc.get_telegram_recipients() == []
+    rc.delete_telegram_recipient("never-existed")  # no raise
+
+
+def test_migrate_legacy_telegram_chat_id_once_seeds_from_env(isolated_runtime_config, monkeypatch):
+    monkeypatch.setenv("TELEGRAM_CHAT_ID", "931000937")
+    rc.migrate_legacy_telegram_chat_id_once()
+    assert rc.get_telegram_recipients() == [{"chat_id": "931000937", "label": "Mặc định (từ .env)"}]
+
+
+def test_migrate_legacy_telegram_chat_id_once_noop_when_env_blank(isolated_runtime_config, monkeypatch):
+    monkeypatch.delenv("TELEGRAM_CHAT_ID", raising=False)
+    rc.migrate_legacy_telegram_chat_id_once()
+    assert rc.get_telegram_recipients() == []
+
+
+def test_migrate_legacy_telegram_chat_id_once_does_not_reseed_on_second_call(isolated_runtime_config, monkeypatch):
+    """Regression guard: the migration must check the KEY is absent, not
+    that the list is empty — otherwise an owner who deliberately deletes
+    every recipient (e.g. to fully disable alerts without touching the
+    on/off switch) would have the legacy value silently reappear on the
+    next service restart."""
+    monkeypatch.setenv("TELEGRAM_CHAT_ID", "931000937")
+    rc.migrate_legacy_telegram_chat_id_once()
+    rc.delete_telegram_recipient("931000937")
+    assert rc.get_telegram_recipients() == []
+
+    rc.migrate_legacy_telegram_chat_id_once()  # 2nd call, e.g. a 2nd service restart
+    assert rc.get_telegram_recipients() == []  # must NOT reappear
+
+
+def test_migrate_legacy_telegram_chat_id_once_skips_a_malformed_env_value(isolated_runtime_config, monkeypatch, caplog):
+    """Regression test (self-review follow-up): the legacy TELEGRAM_CHAT_ID
+    env var used to go straight into the sendMessage payload with no
+    shape check at all — seeding it as-is here would inject a malformed
+    value directly into /admin/telegram's per-row action URLs
+    (.../telegram/{chat_id}/delete etc.), an entry the admin UI itself
+    has no way to clean up. Must validate it the same way
+    add_telegram_recipient() does, and skip (not crash) if it's bad."""
+    monkeypatch.setenv("TELEGRAM_CHAT_ID", "not-a-valid-chat-id")
+    rc.migrate_legacy_telegram_chat_id_once()
+    assert rc.get_telegram_recipients() == []
+
+
+def test_migrate_legacy_telegram_chat_id_once_does_not_overwrite_manually_added_recipients(isolated_runtime_config, monkeypatch):
+    monkeypatch.setenv("TELEGRAM_CHAT_ID", "931000937")
+    rc.add_telegram_recipient("111", "Someone added via /admin first")
+    rc.migrate_legacy_telegram_chat_id_once()
+    assert rc.get_telegram_recipients() == [{"chat_id": "111", "label": "Someone added via /admin first"}]
+
+
 def test_resolve_login_admin(isolated_runtime_config, monkeypatch):
     monkeypatch.setenv("ADMIN_USERNAME", "boss")
     monkeypatch.setenv("ADMIN_PASSWORD", "boss-pass")

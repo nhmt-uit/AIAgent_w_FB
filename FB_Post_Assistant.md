@@ -577,9 +577,84 @@ liệu thật hằng ngày và yêu cầu kiểm tra chéo lại mọi thứ tr�
   hàm dùng chung), không còn lệch nữa. Thêm 19 test mới riêng cho các
   lỗi phát hiện ở vòng kiểm tra lại này. Toàn bộ 538/538 test pass.
   Chi tiết đầy đủ từng lỗi ở `tasks.md`.
-  **Chưa có token Telegram thật (tạo qua @BotFather) để thử gửi/nhận
-  tin sống** — mới dừng ở mức kiểm tra tự động (giả lập), cần owner cho
-  biết đã có bot Telegram thật hay chưa trước khi thử tay lần cuối.
+  **Owner cung cấp bot token thật ngay trong lúc trao đổi (tạo qua
+  @BotFather) — đã điền vào `.env` và gửi thử thành công** (bot tên
+  @AIAgentSupport_bot), xác nhận toàn bộ chuỗi hoạt động đúng trên dữ
+  liệu thật, không chỉ giả lập.
+- **Owner yêu cầu thêm ngay sau đó: không chỉ 1 người nhận cố định, mà
+  "ai cũng tự dùng Telegram của họ để lấy thông tin từ bot được, nhưng
+  phải được cài đặt ở ADMIN"** — làm thêm trang **"📨 Telegram"** mới
+  trên trang quản trị: thêm/xoá bất kỳ ai (dán chat ID Telegram của họ +
+  đặt tên gợi nhớ), không cần sửa file `.env`/khởi động lại service mỗi
+  lần thêm người mới. Mỗi dòng có nút **"🧪 Gửi thử"** để xác nhận ngay
+  chat ID đó còn hoạt động hay không, báo đúng thành công/thất bại thật
+  (không báo "đã gửi" giả nếu thật ra gửi lỗi). Owner đã có sẵn 1 chat
+  ID (chính owner) từ lúc test trước — hệ thống tự động đưa chat ID đó
+  vào danh sách ngay lần khởi động lại service kế tiếp, không cần owner
+  tự thêm lại. Khi 1 người nhắn hỏi bot, chỉ đúng người đó nhận lại câu
+  trả lời (không gửi luôn cho những người khác trong danh sách).
+  Tự rà soát lại code 2 vòng trước khi báo xong, tìm và sửa 4 lỗi thật ở
+  vòng 1 (đáng chú ý nhất: nút "Gửi thử" từng luôn báo thành công dù
+  thật ra gửi lỗi — đã sửa để báo đúng kết quả thật). Thêm 35 test mới.
+  **Toàn bộ 573/573 test pass.** Chi tiết đầy đủ ở `tasks.md`.
+  **Owner tự khởi động lại service — xác nhận sống thành công**: chat
+  ID 931000937 tự xuất hiện trong danh sách như thiết kế, không cần
+  owner tự thêm lại.
+- **Owner yêu cầu gọn lại 2 việc ngay sau đó**: (1) chuyển mục "📨
+  Telegram" từ thanh điều hướng riêng vào làm 1 tab con bên trong trang
+  "Tài khoản" (tên "Tài khoản Telegram") — gọn hơn, không thêm 1 mục
+  điều hướng mới chỉ cho 1 danh sách nhỏ; (2) xoá chat ID 931000937
+  khỏi file `.env` vì đã lưu chung chỗ với các chat ID khác trong danh
+  sách quản trị rồi, không cần giữ 2 nơi. Cả 2 đã làm xong, kèm theo 1
+  lỗi hiển thị thật tự phát hiện lúc chuyển tab (thông báo lỗi khi thêm
+  sai chat ID từng render vào đúng khung đang ẩn, khiến người dùng
+  không thấy lỗi dù lỗi vẫn ở đó) — đã sửa. **Toàn bộ 576/576 test
+  pass**, xác nhận lại bằng cách gọi thẳng trang thật (chỉ xem, không
+  ghi gì) — chat ID thật hiện đúng trong tab mới, không còn dấu vết
+  trang cũ ở đâu. Chi tiết đầy đủ ở `tasks.md`.
+- **Owner chỉ ra đúng 1 vấn đề thật trong hướng dẫn cũ**: hướng dẫn thêm
+  người nhận cũ yêu cầu người dùng tự mở 1 đường link có kèm token bí
+  mật lấy từ file `.env` trên máy chủ — nhưng 1 người chỉ được cấp
+  quyền vào trang quản trị thì không hề có quyền đọc file đó, nên không
+  thể tự làm theo được. Owner đề xuất đúng hướng: **để chính hệ thống
+  (đã có sẵn token ở phía server) tự tìm người mới nhắn bot, không ai
+  cần thấy token hay tự tra dữ liệu thô nữa.**
+  Làm xong: tab "Tài khoản Telegram" giờ có thêm khu vực **"🔔 Người mới
+  nhắn vào bot, chưa được thêm"** — ai vừa nhắn bất kỳ gì vào bot sẽ tự
+  hiện tên + Chat ID ở đây trong vài giây, chỉ cần bấm đúng 1 nút
+  "➕ Thêm" là xong, không cần gõ tay gì cả, không ai cần biết token là
+  gì. Form nhập tay cũ vẫn còn, chỉ dùng khi đã biết sẵn Chat ID của ai
+  đó từ trước.
+  Tự rà soát lại trước khi báo xong, phát hiện và sửa 2 lỗi thật (đáng
+  chú ý: tin nhắn đăng vào 1 "channel" Telegram — khác nhóm thường —
+  từng không hiện được trong danh sách này do Telegram gửi loại tin đó
+  theo cách khác, đã sửa để nhận cả 2 loại). Thêm 18 test mới.
+  **Toàn bộ 594/594 test pass.** Chi tiết đầy đủ ở `tasks.md`.
+- **Owner góp ý tiếp 2 điểm nhỏ trên tab vừa làm**: (1) form "Chat ID/Tên
+  gợi nhớ" đang nằm lộ thiên ngay trên trang — nên bấm 1 nút mới hiện ra
+  (giống mọi form "thêm" khác trong trang quản trị); (2) đoạn giải thích
+  nên có link bấm thẳng tới trò chuyện với bot trên Telegram, không chỉ
+  nói chữ suông.
+  Làm xong cả 2: form giờ nằm trong 1 cửa sổ nhỏ (modal) sau khi bấm "➕
+  Thêm thủ công"; đoạn giải thích có link bấm thẳng vào đúng bot (hệ
+  thống tự hỏi Telegram tên bot 1 lần lúc khởi động, không ai cần biết
+  token). Tự rà soát lại trước khi báo xong, phát hiện và sửa 3 lỗi
+  thật — đáng chú ý nhất: 1 thông báo "Đã lưu" của tab Telegram từng bị
+  "nướng" nhầm vào đúng khung của tab "Tài khoản" (do đổi tab chỉ ẩn/
+  hiện trên trình duyệt, không tải lại) — bấm qua tab Tài khoản sau đó
+  sẽ thấy thông báo giả dù chẳng có gì được lưu; đã sửa. Thêm 17 test
+  mới. **Toàn bộ 611/611 test pass.** Chi tiết đầy đủ ở `tasks.md`.
+- **Owner yêu cầu thêm 2 việc nhỏ**: (1) cho sửa lại tên gợi nhớ của 1
+  người đã có trong danh sách (trước đây lỡ đặt tên sai phải xoá rồi
+  thêm lại từ đầu); (2) đưa nút "➕ Thêm thủ công" lên đầu khu vực (trước
+  nằm dưới cùng).
+  Làm xong cả 2: mỗi dòng giờ có nút "✏️ Sửa" mở ra 1 cửa sổ nhỏ chỉ để
+  đổi tên gợi nhớ (Chat ID không sửa được ở đây — muốn đổi Chat ID thì
+  cần xoá người cũ, thêm người mới, vì Chat ID là thứ xác định "đây là
+  ai"); nút thêm thủ công đã chuyển lên đầu. Tự rà soát lại trước khi
+  báo xong, sửa 2 lỗi nhỏ (không ảnh hưởng tới owner, chỉ là code viết
+  lặp lại 1 chỗ và thiếu cắt khoảng trắng dư ở Chat ID). Thêm 14 test
+  mới. **Toàn bộ 625/625 test pass.** Chi tiết đầy đủ ở `tasks.md`.
   Chưa commit.
 
 ---
@@ -615,9 +690,11 @@ Một vài lựa chọn thiết kế đáng chú ý, được cân nhắc kỹ c
 - **[ĐÃ XÁC NHẬN SỐNG, 2026-09-28]** Chạy thử ưu tiên "tin trả tiền" với dữ
   liệu thật — xem mục "Kiểm tra lần lấy bài từ bên B (28/09)" ở Tuần 5:
   tin sponsor được xếp sớm nhất và chia đều cho 2 tài khoản, đúng thiết kế.
-- **[ĐÃ LÀM XONG, 2026-10-05, CHƯA THỬ SỐNG]** Kênh báo động qua Telegram —
-  xem Tuần 5 ở mục 4. Chỉ còn thiếu owner cung cấp bot token thật để thử
-  gửi/nhận tin sống lần cuối.
+- **[ĐÃ XÁC NHẬN SỐNG, 2026-10-05]** Kênh báo động qua Telegram, cộng
+  thêm trang quản lý nhiều người nhận ở `/admin` — xem Tuần 5 ở mục 4.
+  Owner đã cung cấp bot token thật, gửi thử thành công. Chỉ còn thiếu
+  khởi động lại service 1 lần để toàn bộ tính năng (báo cáo mọi lượt
+  đăng, 5 loại báo động, hỏi-đáp 2 chiều) thật sự bắt đầu chạy.
 - Cân nhắc mua proxy/IP riêng cho từng tài khoản nếu mở rộng quy mô.
 - Chuyển giao diện Facebook của tài khoản `nhtu00` sang tiếng Anh theo đúng quy
   định (mục 5) — đây vẫn là hướng xử lý chính; phần "hiểu cả tiếng Việt" vừa thêm
@@ -809,10 +886,11 @@ triển khai cụ thể:**
    đó chỉ kiểm tra có chữ "ẩn" trong mã nguồn hay không, không kiểm được
    việc có ẩn thật trên màn hình hay không, nên không bắt được lỗi này dù
    đã chạy pass nhiều lần. Chi tiết đầy đủ ở `tasks.md`.
-2. **[ĐÃ LÀM, 2026-10-05, CHƯA THỬ SỐNG]** Kênh báo động qua Telegram khi
+2. **[ĐÃ XÁC NHẬN SỐNG, 2026-10-05]** Kênh báo động qua Telegram khi
    tài khoản bị khoá/đồng bộ lỗi/im lặng quá lâu/phiên sắp hết hạn/fail
-   liên tiếp, cộng thêm hỏi-đáp 2 chiều — xem Tuần 5 + `tasks.md` để biết
-   chi tiết. Chưa bao gồm riêng cảnh báo "service ngừng chạy hẳn" (downtime
+   liên tiếp, cộng thêm hỏi-đáp 2 chiều, giờ quản lý nhiều người nhận
+   ngay trên trang quản trị — xem Tuần 5 + `tasks.md` để biết chi tiết.
+   Chưa bao gồm riêng cảnh báo "service ngừng chạy hẳn" (downtime
    14h37 phút hồi 24-25/09) — bot không tự báo được lúc chính service nó
    chạy trên đó đã tắt; để sau nếu owner thấy cần.
 3. **[ĐÃ LÀM, 2026-10-02]** Bảng "sức khoẻ tài khoản" ngay trên trang chủ —

@@ -82,6 +82,7 @@ from human_bot.content_strategist import (
 from human_bot.data_sync_config import DataSyncConfig
 from human_bot.scheduling_config import SchedulingConfig
 from human_bot.media import MediaConfig
+from human_bot import telegram_notify
 from human_bot.telegram_config import TelegramConfig
 from human_bot.humanize import HumanMouseConfig, HumanPacingConfig, HumanScrollConfig, HumanTypingConfig
 from human_bot.runtime_config import (
@@ -162,6 +163,11 @@ from human_bot.runtime_config import (
     get_mod_users,
     resolve_login,
     update_mod_user_password,
+    add_telegram_recipient,
+    delete_telegram_recipient,
+    get_telegram_recipient,
+    get_telegram_recipients,
+    update_telegram_recipient_label,
 )
 from human_bot.safety_cooldown_config import SafetyCooldownConfig
 
@@ -887,8 +893,8 @@ _CONFIG_SECTIONS.append(
 
 _TELEGRAM_LABELS: dict[str, str] = {
     "enabled": (
-        "Bật báo cáo/báo động qua Telegram (cần khai báo TELEGRAM_BOT_TOKEN/"
-        "TELEGRAM_CHAT_ID trong .env — tắt ở đây để im lặng ngay không cần sửa .env/khởi động lại)"
+        "Bật báo cáo/báo động qua Telegram (cần khai báo TELEGRAM_BOT_TOKEN trong .env, và "
+        "thêm người nhận ở /admin/accounts, tab \"Tài khoản Telegram\" — tắt ở đây để im lặng ngay không cần sửa .env/khởi động lại)"
     ),
 }
 
@@ -2184,6 +2190,295 @@ async def mod_users_edit_password(request: Request, username: str, _: None = Dep
     return RedirectResponse(url="/admin/mod-users?saved=1", status_code=303)
 
 
+# --- "Tài khoản Telegram" (sub-tab of /admin/accounts, 2026-10-05) ----------
+#
+# Who receives human_bot/telegram_notify.py's alerts and can query the 2-way
+# health bot — admin-managed list (owner follow-up request: "ai cũng tự dùng
+# Telegram của họ... nhưng phải được cài đặt ở ADMIN"), replacing the
+# original single hardcoded TELEGRAM_CHAT_ID env var. Nested as a 3rd tab
+# on /admin/accounts (owner request) rather than its own top-level nav
+# item/page — same "sync" sub-tab pattern accounts_page() already uses
+# below, and its own mutating routes live under /accounts/telegram/...
+# accordingly (see the /accounts/bootstrap-login/... nesting right above
+# for precedent). The manual "add by Chat ID" form is a MODAL (owner
+# follow-up, 2026-10-05) behind an explicit button — mirrors
+# /admin/mod-users's add-modal pattern below exactly, down to reusing its
+# "success -> oob-swap the list + leave #modal-root empty" trick (see
+# _mod_user_add_modal_html()/mod_users_add()'s own comments for why that
+# closes the modal with no extra JS). The pending-senders one-click "➕
+# Thêm" buttons target the SAME #modal-root — on the rare error (e.g. a
+# race with someone else just adding that chat_id), a small modal with
+# the error pops up instead of a response landing in the wrong place.
+
+def _telegram_bot_link_html() -> str:
+    """A clickable t.me/<bot username> link, when known (cached at
+    service startup by telegram_notify.refresh_bot_username() — see its
+    own docstring) — falls back to plain text if the lookup never
+    succeeded (e.g. the service hasn't been restarted since upgrading to
+    this feature, or the token is blank/invalid)."""
+    username = telegram_notify.get_cached_bot_username()
+    if not username:
+        return "bot Telegram của hệ thống"
+    url = f"https://t.me/{username}"
+    return f'<a href="{html.escape(url)}" target="_blank" rel="noopener">@{html.escape(username)}</a>'
+
+
+def _telegram_recipient_add_modal_html(chat_id: str = "", label: str = "", error: str | None = None) -> str:
+    err_html = f'<p class="error">⚠️ {html.escape(error)}</p>' if error else ""
+    return f"""
+<div class="modal-backdrop" onclick="if(event.target===this) this.remove()">
+  <div class="modal-box">
+    <div class="modal-header">
+      <h2>➕ Thêm người nhận Telegram</h2>
+      <button type="button" class="modal-close" onclick="this.closest('.modal-backdrop').remove()">✕</button>
+    </div>
+    <p class="page-desc" style="margin-top:0;">Chỉ cần dùng form này khi đã biết sẵn Chat ID — bình thường
+      cứ nhắn vào {_telegram_bot_link_html()} trước, họ sẽ tự hiện ở danh sách "chưa được thêm" để bấm 1 nút, không cần gõ tay.</p>
+    {err_html}
+    <form method="post" action="/admin/accounts/telegram/add" hx-post="/admin/accounts/telegram/add" hx-target="#modal-root" hx-swap="innerHTML">
+      <div class="field-stack">
+        <div class="field-label">Chat ID</div>
+        <div class="field-input"><input type="text" name="chat_id" value="{html.escape(chat_id)}" required autofocus placeholder="VD: 931000937"></div>
+      </div>
+      <div class="field-stack" style="margin-top:10px;">
+        <div class="field-label">Tên gợi nhớ (tuỳ chọn)</div>
+        <div class="field-input"><input type="text" name="label" value="{html.escape(label)}" placeholder="VD: Tu"></div>
+      </div>
+      <div class="form-actions">
+        <button type="button" class="btn-secondary" style="margin-right:8px;" onclick="this.closest('.modal-backdrop').remove()">Huỷ</button>
+        <button type="submit">Thêm</button>
+      </div>
+    </form>
+  </div>
+</div>"""
+
+
+def _telegram_recipient_edit_modal_html(chat_id: str, label: str = "", error: str | None = None) -> str:
+    """Only `label` is editable here — chat_id is the identity key for
+    this list (re-pointing it would really mean delete-then-add a
+    different person, not "editing" this one), so it's shown as
+    read-only context in the header, never as an input."""
+    cid_esc = html.escape(chat_id)
+    err_html = f'<p class="error">⚠️ {html.escape(error)}</p>' if error else ""
+    return f"""
+<div class="modal-backdrop" onclick="if(event.target===this) this.remove()">
+  <div class="modal-box">
+    <div class="modal-header">
+      <h2>✏️ Sửa tên gợi nhớ — {cid_esc}</h2>
+      <button type="button" class="modal-close" onclick="this.closest('.modal-backdrop').remove()">✕</button>
+    </div>
+    {err_html}
+    <form method="post" action="/admin/accounts/telegram/{cid_esc}/edit" hx-post="/admin/accounts/telegram/{cid_esc}/edit" hx-target="#modal-root" hx-swap="innerHTML">
+      <div class="field-stack">
+        <div class="field-label">Tên gợi nhớ</div>
+        <div class="field-input"><input type="text" name="label" value="{html.escape(label)}" autofocus placeholder="VD: Tu"></div>
+      </div>
+      <div class="form-actions">
+        <button type="button" class="btn-secondary" style="margin-right:8px;" onclick="this.closest('.modal-backdrop').remove()">Huỷ</button>
+        <button type="submit">Lưu</button>
+      </div>
+    </form>
+  </div>
+</div>"""
+
+
+def _telegram_recipients_content_html(flash: str | None = None, error: str | None = None) -> str:
+    recipients = get_telegram_recipients()
+    flash_html = f'<p class="flash">{html.escape(flash)}</p>' if flash else ""
+    err_html = f'<p class="error">⚠️ {html.escape(error)}</p>' if error else ""
+
+    # "Người mới nhắn bot, chưa thêm" (2026-10-05 follow-up) — owner
+    # pointed out whoever only has /admin access has no way to know
+    # TELEGRAM_BOT_TOKEN, so they could never hand-build a getUpdates URL
+    # to find someone's chat_id. telegram_notify.record_pending_sender()
+    # (called by service.py's _telegram_listen_loop() for every message
+    # from an unregistered chat) means this card can instead offer a
+    # one-click add — no token, no raw API response, ever shown here.
+    registered_chat_ids = {r["chat_id"] for r in recipients}
+    pending = {
+        cid: info for cid, info in telegram_notify.get_pending_senders().items()
+        if cid not in registered_chat_ids
+    }
+    if not pending:
+        pending_html = ""
+    else:
+        pending_rows = []
+        for cid, info in sorted(pending.items(), key=lambda kv: kv[1]["last_seen"], reverse=True):
+            cid_esc = html.escape(cid)
+            name_esc = html.escape(info["name"])
+            pending_rows.append(f"""
+<tr>
+  <td>{cid_esc}</td>
+  <td>{name_esc}</td>
+  <td class="col-actions">
+    <form method="post" action="/admin/accounts/telegram/add" hx-post="/admin/accounts/telegram/add"
+          hx-target="#modal-root" hx-swap="innerHTML" style="display:inline;">
+      <input type="hidden" name="chat_id" value="{cid_esc}">
+      <input type="hidden" name="label" value="{name_esc}">
+      <button type="submit" class="btn-small">➕ Thêm</button>
+    </form>
+  </td>
+</tr>""")
+        pending_html = f"""
+<p class="page-desc" style="margin:0 0 6px;">🔔 {len(pending)} người mới nhắn vào bot, chưa được thêm — bấm "➕ Thêm" để thêm ngay, không cần gõ tay Chat ID:</p>
+<div class="table-scroll" style="margin-bottom:16px;">
+  <table class="data-table">
+    <thead><tr><th>Chat ID</th><th>Tên (Telegram)</th><th>Thao tác</th></tr></thead>
+    <tbody>{"".join(pending_rows)}</tbody>
+  </table>
+</div>"""
+
+    if not recipients:
+        rows_html = '<tr><td colspan="3" class="muted">Chưa có ai nhận báo động Telegram.</td></tr>'
+    else:
+        rows = []
+        for r in recipients:
+            cid = html.escape(r["chat_id"])
+            label = html.escape(r["label"])
+            rows.append(f"""
+<tr>
+  <td>{cid}</td>
+  <td>{label}</td>
+  <td class="col-actions">
+    <button type="button" class="btn-small"
+            hx-get="/admin/accounts/telegram/{cid}/edit-modal" hx-target="#modal-root" hx-swap="innerHTML">✏️ Sửa</button>
+    <form method="post" action="/admin/accounts/telegram/{cid}/test" style="display:inline;"
+          hx-post="/admin/accounts/telegram/{cid}/test" hx-target="#telegram-recipients-content" hx-swap="outerHTML">
+      <button type="submit" class="btn-small">🧪 Gửi thử</button>
+    </form>
+    <form method="post" action="/admin/accounts/telegram/{cid}/delete" style="display:inline;"
+          hx-post="/admin/accounts/telegram/{cid}/delete" hx-target="#telegram-recipients-content" hx-swap="outerHTML"
+          hx-confirm="Xoá người nhận '{label}' (chat ID {cid})? Người này sẽ không còn nhận báo động/trả lời hỏi-đáp từ bot nữa.">
+      <button type="submit" class="btn-secondary btn-small">Xoá</button>
+    </form>
+  </td>
+</tr>""")
+        rows_html = "".join(rows)
+
+    add_manual_btn = (
+        '<button type="button" hx-get="/admin/accounts/telegram/add-modal" '
+        'hx-target="#modal-root" hx-swap="innerHTML">➕ Thêm thủ công</button>'
+    )
+
+    return f"""
+<div class="card" id="telegram-recipients-content">
+  {flash_html}{err_html}
+  <div style="margin-bottom:14px;">{add_manual_btn}</div>
+  {pending_html}
+  <p class="page-desc" style="margin-top:0;">{len(recipients)} người đang nhận báo động/có thể hỏi-đáp qua bot
+    Telegram. Cách thêm người mới: bảo họ nhắn bất kỳ gì vào {_telegram_bot_link_html()} —
+    trong vài giây họ sẽ hiện ở danh sách "chưa được thêm" phía trên, bấm "➕ Thêm" là xong, không cần gõ tay.</p>
+  <div class="table-scroll">
+    <table class="data-table">
+      <thead><tr><th>Chat ID</th><th>Tên gợi nhớ</th><th>Thao tác</th></tr></thead>
+      <tbody>{rows_html}</tbody>
+    </table>
+  </div>
+</div>"""
+
+
+@router.get("/accounts/telegram/add-modal", response_class=HTMLResponse)
+async def telegram_recipients_add_modal(_: None = Depends(_require_login)) -> str:
+    return _telegram_recipient_add_modal_html()
+
+
+@router.post("/accounts/telegram/add")
+async def telegram_recipients_add(request: Request, _: None = Depends(_require_login)):
+    form = await request.form()
+    chat_id = str(form.get("chat_id", "")).strip()
+    label = str(form.get("label", "")).strip()
+    error: str | None = None
+    try:
+        add_telegram_recipient(chat_id, label)
+    except ValueError as e:
+        error = str(e)
+    if error:
+        if _is_htmx(request):
+            return HTMLResponse(_telegram_recipient_add_modal_html(chat_id=chat_id, label=label, error=error))
+        from urllib.parse import urlencode
+        return RedirectResponse(url=f"/admin/accounts?{urlencode({'tab': 'telegram', 'telegram_error': error})}", status_code=303)
+    # Now a real recipient — stop offering the "➕ Thêm" one-click button
+    # for them in the pending-senders list above (no-op if they were
+    # added by hand instead, via the plain form, and were never pending).
+    telegram_notify.clear_pending_sender(chat_id)
+    if _is_htmx(request):
+        # Both callers of this route (the manual-add modal AND each
+        # pending-sender's one-click button) target #modal-root, not
+        # #telegram-recipients-content directly — same reasoning as
+        # mod_users_add() above: send the refreshed list out-of-band
+        # instead, which also leaves #modal-root empty (closing a modal
+        # if one was open; a no-op harmless swap if the click came from
+        # a one-click button with no modal ever shown).
+        content = _telegram_recipients_content_html(flash="✅ Đã thêm.").replace(
+            'id="telegram-recipients-content"', 'id="telegram-recipients-content" hx-swap-oob="true"', 1,
+        )
+        return HTMLResponse(content)
+    return RedirectResponse(url="/admin/accounts?tab=telegram&saved=1", status_code=303)
+
+
+@router.get("/accounts/telegram/{chat_id}/edit-modal", response_class=HTMLResponse)
+async def telegram_recipients_edit_modal(chat_id: str, _: None = Depends(_require_login)) -> str:
+    match = get_telegram_recipient(chat_id)
+    return _telegram_recipient_edit_modal_html(chat_id, label=match["label"] if match else "")
+
+
+@router.post("/accounts/telegram/{chat_id}/edit")
+async def telegram_recipients_edit(request: Request, chat_id: str, _: None = Depends(_require_login)):
+    form = await request.form()
+    label = str(form.get("label", "")).strip()
+    error: str | None = None
+    try:
+        update_telegram_recipient_label(chat_id, label)
+    except ValueError as e:
+        error = str(e)
+    if error:
+        if _is_htmx(request):
+            return HTMLResponse(_telegram_recipient_edit_modal_html(chat_id, label=label, error=error))
+        from urllib.parse import urlencode
+        return RedirectResponse(url=f"/admin/accounts?{urlencode({'tab': 'telegram', 'telegram_error': error})}", status_code=303)
+    if _is_htmx(request):
+        # Same oob-swap-the-list-plus-empty-#modal-root trick as the add
+        # route above — this form also targets #modal-root.
+        content = _telegram_recipients_content_html(flash="✅ Đã lưu.").replace(
+            'id="telegram-recipients-content"', 'id="telegram-recipients-content" hx-swap-oob="true"', 1,
+        )
+        return HTMLResponse(content)
+    return RedirectResponse(url="/admin/accounts?tab=telegram&saved=1", status_code=303)
+
+
+@router.post("/accounts/telegram/{chat_id}/delete")
+async def telegram_recipients_delete(request: Request, chat_id: str, _: None = Depends(_require_login)):
+    delete_telegram_recipient(chat_id)
+    if _is_htmx(request):
+        return HTMLResponse(_telegram_recipients_content_html(flash="✅ Đã xoá."))
+    return RedirectResponse(url="/admin/accounts?tab=telegram&saved=1", status_code=303)
+
+
+@router.post("/accounts/telegram/{chat_id}/test")
+async def telegram_recipients_test(request: Request, chat_id: str, _: None = Depends(_require_login)):
+    # send_message_to() returns whether it ACTUALLY reached Telegram with
+    # a 200, not just "didn't raise" — it's best-effort/never-raises by
+    # design, so without checking this return value the button would
+    # report "✅ Đã gửi" even when the switch is off, the token is
+    # revoked, or this chat_id blocked the bot — defeating the whole
+    # point of a button meant to verify a chat_id actually works.
+    ok = await telegram_notify.send_message_to(
+        chat_id, "✅ Test từ human_bot — chat_id này đang hoạt động đúng!", silent=False,
+    )
+    if _is_htmx(request):
+        if ok:
+            flash = f"✅ Đã gửi tin test tới chat ID {chat_id} — kiểm tra Telegram."
+            return HTMLResponse(_telegram_recipients_content_html(flash=flash))
+        error = (
+            f"⚠️ Gửi tin test tới chat ID {chat_id} KHÔNG thành công — kiểm tra lại chat_id, "
+            f"token, hoặc công tắc bật/tắt ở /admin/config."
+        )
+        return HTMLResponse(_telegram_recipients_content_html(error=error))
+    from urllib.parse import urlencode
+    query = {"tab": "telegram", "tested": chat_id} if ok else {"tab": "telegram", "test_failed": chat_id}
+    return RedirectResponse(url=f"/admin/accounts?{urlencode(query)}", status_code=303)
+
+
 def _layout(body: str, active: str = "", *, current_user: dict[str, str] | None = None) -> str:
     """`current_user` (2026-09-24, added alongside the real /admin login):
     {"username": str, "role": "ADMIN"|"MOD"} for whoever is logged in, or
@@ -3370,13 +3665,23 @@ def _accounts_content_html(saved: bool = False, error: str | None = None, oob: b
 @router.get("/accounts", response_class=HTMLResponse)
 async def accounts_page(
     request: Request, saved: bool = False, error: str | None = None, tab: str = "accounts",
+    tested: str | None = None, test_failed: str | None = None, telegram_error: str | None = None,
     _: None = Depends(_require_login),
 ) -> str:
-    content = _accounts_content_html(saved, error)
+    active_tab = tab if tab in ("accounts", "sync", "telegram") else "accounts"
+    # Gated on active_tab=="accounts" (self-review follow-up) — same
+    # reasoning as the telegram tab's own telegram_flash/telegram_err
+    # below: a save/error from the SYNC or TELEGRAM tab's own mutating
+    # routes still passes `saved`/`error` as generic query params on its
+    # redirect, and since tab-switching is pure client-side (no refetch
+    # — see initTabs()), an ungated flash here would bake a stale
+    # "✅ Đã lưu." into the accounts panel even while it's hidden, only
+    # to surface the moment someone later clicks back to that tab.
+    content = _accounts_content_html(
+        saved and active_tab == "accounts", error if active_tab == "accounts" else None,
+    )
     if _is_htmx(request):
         return content
-
-    active_tab = tab if tab in ("accounts", "sync") else "accounts"
 
     def tab_btn(key: str, label: str) -> str:
         cls = "tab-btn active" if key == active_tab else "tab-btn"
@@ -3384,6 +3689,26 @@ async def accounts_page(
 
     def panel_attrs(key: str) -> str:
         return "" if key == active_tab else " hidden"
+
+    # "saved"/"tested"/"test_failed"/"telegram_error" are only meaningful
+    # for the telegram tab's own non-htmx redirect fallback (its mutating
+    # routes always also pass tab=telegram) — gated on active_tab=="telegram"
+    # same as the "sync" tab's own `saved` below, so a flash/error from one
+    # tab's action never renders into the wrong (possibly hidden) panel.
+    telegram_flash = None
+    telegram_err = None
+    if active_tab == "telegram":
+        if tested:
+            telegram_flash = f"✅ Đã gửi tin test tới chat ID {tested} — kiểm tra Telegram."
+        elif saved:
+            telegram_flash = "✅ Đã lưu."
+        if telegram_error:
+            telegram_err = telegram_error
+        elif test_failed:
+            telegram_err = (
+                f"⚠️ Gửi tin test tới chat ID {test_failed} KHÔNG thành công — kiểm tra lại chat_id, "
+                f"token, hoặc công tắc bật/tắt ở /admin/config."
+            )
 
     return _layout(f"""
 <h1>Tài khoản</h1>
@@ -3393,6 +3718,7 @@ async def accounts_page(
   <div class="tab-bar">
     {tab_btn("accounts", "👤 Tài khoản")}
     {tab_btn("sync", "🔄 Đồng bộ")}
+    {tab_btn("telegram", "📨 Tài khoản Telegram")}
   </div>
 
   <div class="tab-panel" id="tab-accounts"{panel_attrs("accounts")}>
@@ -3401,6 +3727,10 @@ async def accounts_page(
 
   <div class="tab-panel" id="tab-sync"{panel_attrs("sync")}>
     {_sync_content_html(saved=(saved and active_tab == "sync"))}
+  </div>
+
+  <div class="tab-panel" id="tab-telegram"{panel_attrs("telegram")}>
+    {_telegram_recipients_content_html(flash=telegram_flash, error=telegram_err)}
   </div>
 </div>
 """, active="accounts", current_user=_build_current_user(request))

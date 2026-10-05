@@ -24,6 +24,7 @@ import asyncio
 import dataclasses
 import hashlib
 import json
+import logging
 import os
 import re
 import secrets
@@ -42,6 +43,7 @@ from human_bot.safety_cooldown_config import SafetyCooldownConfig
 from human_bot.secrets_config import SecretsConfig
 
 RUNTIME_CONFIG_PATH = Path(__file__).resolve().parent.parent / "runtime_config.json"
+logger = logging.getLogger("human_bot.runtime_config")
 
 # Fields a human operator is allowed to tune from the admin UI, one
 # allowlist per config section. An explicit allowlist (rather than "every
@@ -753,6 +755,144 @@ def save_registered_account(account_id: str, display_name: str) -> None:
 def delete_registered_account(account_id: str) -> None:
     data = _read_all()
     data[_ACCOUNTS_KEY] = [a for a in get_registered_accounts() if a["account_id"] != account_id]
+    RUNTIME_CONFIG_PATH.write_text(
+        json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8"
+    )
+
+
+# --- Telegram recipients (2026-10-05) ---------------------------------------
+#
+# Who receives human_bot/telegram_notify.py's alerts and can query the 2-way
+# health bot — admin-managed (owner request: "ai cũng tự dùng Telegram của
+# họ... nhưng phải được cài đặt ở ADMIN"), replacing the original single
+# hardcoded TELEGRAM_CHAT_ID env var. Same hand-rolled read-merge-write shape
+# as _ACCOUNTS_KEY/_MOD_USERS_KEY above — no shared "list at a named
+# top-level key" helper exists in this module, every list feature writes its
+# own get/add/delete trio.
+_TELEGRAM_RECIPIENTS_KEY = "telegram_recipients"
+
+# Telegram chat ids are negative for groups/channels, positive for a private
+# chat — this allows an optional leading "-", digits only otherwise.
+_TELEGRAM_CHAT_ID_PATTERN = re.compile(r"^-?\d+$")
+
+
+def get_telegram_recipients() -> list[dict[str, str]]:
+    data = _read_all()
+    raw = data.get(_TELEGRAM_RECIPIENTS_KEY, [])
+    if not isinstance(raw, list):
+        return []
+    result = []
+    for item in raw:
+        if isinstance(item, dict) and str(item.get("chat_id", "")).strip():
+            chat_id = str(item["chat_id"]).strip()
+            label = str(item.get("label", "")).strip() or chat_id
+            result.append({"chat_id": chat_id, "label": label})
+    return result
+
+
+def get_telegram_recipient(chat_id: str) -> dict[str, str] | None:
+    """Single-item lookup by chat_id — same get_X()/get_Xs() pairing
+    get_mod_user()/get_mod_users() above already use, shared by
+    update_telegram_recipient_label() below and admin.py's edit-modal
+    route so the "find this one recipient" logic lives in exactly one
+    place (self-review follow-up)."""
+    chat_id = chat_id.strip()
+    return next((r for r in get_telegram_recipients() if r["chat_id"] == chat_id), None)
+
+
+def add_telegram_recipient(chat_id: str, label: str) -> None:
+    """Raises ValueError (Vietnamese message, meant to be shown directly in
+    the admin UI) if chat_id is blank, not a valid Telegram chat id shape
+    (_TELEGRAM_CHAT_ID_PATTERN), or already registered. No cap on count —
+    same "no limit" stance add_mod_user() takes."""
+    chat_id = chat_id.strip()
+    if not chat_id:
+        raise ValueError("Chat ID không được để trống.")
+    if not _TELEGRAM_CHAT_ID_PATTERN.fullmatch(chat_id):
+        raise ValueError("Chat ID phải là số (xem hướng dẫn lấy ID ở trang này).")
+    existing = get_telegram_recipients()
+    if any(r["chat_id"] == chat_id for r in existing):
+        raise ValueError(f"Chat ID '{chat_id}' đã có trong danh sách.")
+    existing.append({"chat_id": chat_id, "label": label.strip() or chat_id})
+    data = _read_all()
+    data[_TELEGRAM_RECIPIENTS_KEY] = existing
+    RUNTIME_CONFIG_PATH.write_text(
+        json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8"
+    )
+
+
+def update_telegram_recipient_label(chat_id: str, label: str) -> None:
+    """Renames a recipient's "tên gợi nhớ" in place — the chat_id itself
+    is never editable here (it's the identity key; re-pointing it would
+    really mean delete-then-add a different person, not "editing" this
+    one). Raises ValueError if chat_id isn't currently registered. Blank
+    `label` falls back to the chat_id itself, same normalization
+    add_telegram_recipient() already applies — editing to blank isn't a
+    distinct "clear it" action, just re-applies that same default."""
+    chat_id = chat_id.strip()
+    existing = get_telegram_recipients()
+    match = next((r for r in existing if r["chat_id"] == chat_id), None)
+    if match is None:
+        raise ValueError(f"Không tìm thấy chat ID '{chat_id}' trong danh sách.")
+    match["label"] = label.strip() or chat_id
+    data = _read_all()
+    data[_TELEGRAM_RECIPIENTS_KEY] = existing
+    RUNTIME_CONFIG_PATH.write_text(
+        json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8"
+    )
+
+
+def delete_telegram_recipient(chat_id: str) -> None:
+    """Idempotent — deleting a chat_id that doesn't exist is a no-op, same
+    style as delete_registered_account() above."""
+    data = _read_all()
+    data[_TELEGRAM_RECIPIENTS_KEY] = [r for r in get_telegram_recipients() if r["chat_id"] != chat_id]
+    RUNTIME_CONFIG_PATH.write_text(
+        json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8"
+    )
+
+
+def migrate_legacy_telegram_chat_id_once() -> None:
+    """One-time migration (2026-10-05) — called once from service.py's
+    lifespan(), the same "do it once at startup" spot as
+    data_sync.sweep_overdue_on_startup() — NOT from get_telegram_recipients()
+    itself, which must stay a pure read with no disk-write side effect.
+
+    The original Telegram feature funneled a single hardcoded
+    TELEGRAM_CHAT_ID (.env) in as the only recipient. Seeds it into this
+    admin-managed list so an owner who already set that up keeps receiving
+    alerts with no manual step, the first time the service starts after this
+    upgrade. Checks the KEY is absent from the file (never initialized) —
+    not "present but empty" — so an owner who later deletes every recipient
+    on purpose is never re-seeded against their wishes. After this runs
+    once, TELEGRAM_CHAT_ID itself is never read anywhere else — the list is
+    the sole source of truth.
+
+    Validates the legacy value against the same _TELEGRAM_CHAT_ID_PATTERN
+    add_telegram_recipient() enforces (self-review follow-up) before
+    seeding it — unlike the admin-UI path, this value was never validated
+    before (it used to go straight into the sendMessage payload with no
+    shape check at all), and it gets embedded directly into
+    /admin/telegram's per-row action URLs (.../telegram/{chat_id}/delete
+    etc.) — a malformed value (stray whitespace, a stray character) would
+    seed a broken entry the admin UI itself has no way to clean up.
+    Logged and skipped (seeds an empty list instead) rather than crashing
+    service startup over a bad .env value."""
+    data = _read_all()
+    if _TELEGRAM_RECIPIENTS_KEY in data:
+        return
+    legacy_chat_id = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
+    seeded: list[dict[str, str]] = []
+    if legacy_chat_id:
+        if _TELEGRAM_CHAT_ID_PATTERN.fullmatch(legacy_chat_id):
+            seeded = [{"chat_id": legacy_chat_id, "label": "Mặc định (từ .env)"}]
+        else:
+            logger.warning(
+                "migrate_legacy_telegram_chat_id_once: TELEGRAM_CHAT_ID in .env ('%s') is not a valid "
+                "Telegram chat id shape — skipped seeding it; add the correct one at /admin/telegram instead.",
+                legacy_chat_id,
+            )
+    data[_TELEGRAM_RECIPIENTS_KEY] = seeded
     RUNTIME_CONFIG_PATH.write_text(
         json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8"
     )

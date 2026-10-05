@@ -5763,3 +5763,282 @@ nhất — xác nhận lỗi đó là thật, không phải agent suy diễn sai
       `runtime_config.json` sống của máy — phát hiện ngay qua kiểm tra
       thời điểm sửa file + nội dung, xoá sạch 2 đoạn vừa ghi nhầm, xác
       nhận lại JSON hợp lệ, rồi mới tiếp tục. Không mất dữ liệu thật nào.
+
+## Danh sách nhiều người nhận Telegram, quản lý qua /admin (2026-10-05, tiếp)
+
+Owner có bot Telegram thật (`931000937`, test gửi thành công ngay trong
+hội thoại), rồi yêu cầu thêm: **"tôi muốn tôi sử dụng Telegram của tôi
+cũng có thể lấy được thông tin từ bot, người khác sử dụng Telegram của
+họ cũng có thể lấy được thông tin từ bot. Nhưng cần phải được cài đặt ở
+ADMIN"** — chuyển từ 1 `TELEGRAM_CHAT_ID` cố định trong `.env` sang danh
+sách nhiều người, quản lý qua `/admin`. Đi qua Plan Mode đầy đủ trước khi
+code (khảo sát mẫu CRUD list có sẵn trong `admin.py`/`runtime_config.py`,
+hỏi owner 1 câu rõ ràng về nút "Gửi thử" qua `AskUserQuestion`).
+
+- [x] **Lưu trữ**: danh sách `telegram_recipients` mới trong
+      `runtime_config.json`, đúng mẫu hand-rolled đã dùng cho
+      `mod_users`/`accounts` (không có helper chung cho "danh sách ở 1
+      key" trong `runtime_config.py`) — `get_telegram_recipients()`/
+      `add_telegram_recipient()` (validate chat_id là số, cho phép dấu
+      "-" đầu cho nhóm/channel, chặn trùng)/`delete_telegram_recipient()`.
+      **Migrate 1 lần lúc khởi động** (`migrate_legacy_telegram_chat_id_once()`,
+      gọi trong `lifespan()` cạnh `sweep_overdue_on_startup()` có sẵn):
+      `TELEGRAM_CHAT_ID` cũ trong `.env` của owner (931000937) tự được
+      đưa vào danh sách với label "Mặc định (từ .env)" ngay lần khởi
+      động đầu tiên sau nâng cấp — không cần owner tự thêm lại chính
+      mình. Chỉ seed khi KEY chưa từng tồn tại (khác "tồn tại nhưng
+      rỗng" — phân biệt "chưa từng cài" với "owner tự xoá hết có chủ
+      đích"), và không bao giờ ghi đè danh sách đã có người thêm tay.
+- [x] **`telegram_notify.py`**: `send_message()`/`send_photo()` giờ gửi
+      (broadcast) tới MỌI người trong danh sách, mỗi người cô lập trong
+      try/except riêng (1 người block bot/gõ sai chat_id không làm mất
+      báo động của người khác — đúng tinh thần cô lập đã áp dụng ở vòng
+      tự rà soát trước). Hàm mới `send_message_to(chat_id, text)` — trả
+      lời ĐÚNG 1 người (dùng cho hỏi-đáp 2 chiều, người hỏi mới nhận lại,
+      không broadcast cho người khác). `is_configured()` bỏ hẳn điều
+      kiện phụ thuộc danh sách — để vòng lặp hỏi-đáp vẫn chạy ngay cả
+      lúc danh sách rỗng (người mới thêm qua `/admin` lúc service đang
+      chạy hỏi được ngay, không cần restart).
+- [x] **`service.py`'s `_telegram_listen_loop()`**: đọc lại danh sách
+      người nhận MỖI vòng lặp (không đọc 1 lần ngoài `while True` như
+      biến `TELEGRAM_CHAT_ID` cũ) — đúng yêu cầu "thêm qua `/admin`
+      không cần khởi động lại" cho phần HỎI-ĐÁP; còn việc tự thêm
+      `TELEGRAM_CHAT_ID` cũ vào danh sách thì vẫn cần khởi động lại 1
+      lần duy nhất (đọc `.env`, không hot-reload được).
+- [x] **`/admin/telegram` (trang mới)**: mô phỏng đúng mẫu
+      `/admin/mod-users` (bảng + thêm/xoá) nhưng đơn giản hơn (không mật
+      khẩu, không modal, 2 ô input thẳng trên trang), dùng `_require_login`
+      (ADMIN+MOD, không phải chỉ ADMIN — danh sách này không phải thông
+      tin đăng nhập). Có hướng dẫn ngắn ngay trên trang cách lấy chat_id
+      (nhắn bot trước + `getUpdates`). Thêm nút **"🧪 Gửi thử"** theo yêu
+      cầu owner (hỏi qua `AskUserQuestion`) — gửi ngay 1 tin test tới
+      đúng chat_id đó, báo thành công/thất bại thật (không phải chỉ "đã
+      gọi hàm, không lỗi" — xem mục rà soát dưới).
+- [x] **Test mới (35 test, 538→573)**: `runtime_config.py` (13 test —
+      CRUD + migrate, bao gồm "không migrate lại lần 2", "không ghi đè
+      người đã thêm tay", "bỏ qua giá trị `.env` hỏng hình dạng");
+      `tests/test_admin_telegram.py` (12 test, file mới — render, thêm
+      hợp lệ/lỗi, xoá, nút gửi thử báo đúng thành công/thất bại); phần
+      còn lại trong `test_telegram_notify.py`/`test_telegram_listen_loop.py`
+      (broadcast N người, 1 người lỗi không chặn người khác,
+      `send_message_to` chỉ đúng 1 người không broadcast, đọc lại danh
+      sách mỗi vòng để người mới thêm qua `/admin` không cần restart).
+      **Toàn bộ suite: 573/573 pass.**
+- [x] **Tự rà soát lại (`/code-review`) trước khi báo xong — 4 lỗi thật
+      phát hiện ngay vòng 1, sửa hết, vòng 2 sạch:**
+      1. Nút "Gửi thử" luôn báo "✅ Đã gửi" dù thật ra gửi thất bại
+         (token sai/công tắc tắt/Telegram trả lỗi) — vì `send_message_to()`
+         vốn best-effort, không raise, nên route cũ coi "không lỗi" là
+         "đã gửi thành công". Sửa: đổi `send_message_to()`/`_send_message_to()`
+         trả về `bool` (có thật sự nhận HTTP 200 không), route kiểm tra
+         giá trị này mới quyết định báo thành công hay lỗi.
+      2. Vòng lặp hỏi-đáp đọc `runtime_config.json` (danh sách người
+         nhận) ở MỌI vòng lặp, kể cả lúc chưa cấu hình/không có tin nào
+         — đúng loại "đọc file dư thừa mỗi vòng" đã từng sửa cho
+         `is_configured()` ở vòng tự rà soát trước, giờ lặp lại ở chỗ
+         mới. Sửa: chỉ đọc khi có tin nhắn thật cần so khớp.
+      3. Nhãn công tắc "📨 Báo động Telegram" ở `/admin/config` vẫn ghi
+         "cần khai báo TELEGRAM_CHAT_ID trong .env" — sai sau khi chuyển
+         sang danh sách qua `/admin/telegram`, có thể làm owner tưởng
+         vẫn phải sửa `.env`. Sửa lại chữ.
+      4. `migrate_legacy_telegram_chat_id_once()` không kiểm tra
+         `TELEGRAM_CHAT_ID` cũ có đúng hình dạng số hay không trước khi
+         đưa vào danh sách — 1 giá trị hỏng trong `.env` sẽ tạo ra 1
+         dòng kẹt trong `/admin/telegram` mà giao diện không xoá được
+         (vì ô input chặn nhưng dòng đã lọt vào từ trước). Sửa: validate
+         giống hệt `add_telegram_recipient()`, bỏ qua (không seed gì) và
+         ghi log nếu giá trị hỏng, không crash lúc khởi động service.
+      (1 phát hiện khác từ review — race điều kiện khi 2 request
+      thêm/xoá gần như đồng thời có thể làm mất 1 bản ghi — là hạn chế
+      ĐÃ CÓ SẴN trong toàn bộ `runtime_config.py` từ trước (mod_users,
+      accounts, joined_groups đều cùng kiểu), không phải lỗi mới của
+      tính năng này — không sửa riêng ở đây, cần 1 quyết định kiến trúc
+      lớn hơn cho cả file nếu owner muốn giải quyết.)
+      Thêm 4 test mới xác nhận cả 4 lỗi trên không tái diễn.
+- [x] **Owner xác nhận sống**: owner tự khởi động lại service — xác
+      nhận trực tiếp trong `runtime_config.json` thật: `telegram_recipients`
+      đã tự chứa `{"chat_id": "931000937", "label": "Mặc định (từ .env)"}`
+      đúng như migrate đã thiết kế, không cần owner tự thêm lại.
+- [x] **Owner yêu cầu 2 việc tiếp theo ngay sau đó:**
+      1. **Chuyển tab "📨 Telegram" từ mục điều hướng riêng vào làm tab
+         con trong "Tài khoản"** (tên tab con: "Tài khoản Telegram") —
+         bỏ hẳn trang `/admin/telegram` độc lập, mô phỏng đúng cách tab
+         "🔄 Đồng bộ" đã làm trong `/admin/accounts` (không có round-trip
+         server khi bấm đổi tab — toggle `hidden` thuần client-side, mọi
+         nội dung 3 tab đã có sẵn trong 1 lần tải trang). 3 route POST
+         thêm/xoá/gửi-thử đổi từ `/telegram/...` sang `/accounts/telegram/...`
+         (đúng mẫu `/accounts/bootstrap-login/...` đã lồng sẵn), redirect
+         về `/admin/accounts?tab=telegram&...`. **Bug tự phát hiện lúc
+         làm**: nếu dùng chung tên tham số `error` với tab "Tài khoản"
+         sẵn có, thông báo lỗi của tab Telegram sẽ render vào ĐÚNG khung
+         HTML của tab "Tài khoản" — khung đó đang bị ẩn (`hidden`) lúc
+         tab Telegram đang mở, nên lỗi tồn tại nhưng vô hình với người
+         dùng. Sửa: đổi sang tên riêng `telegram_error`, chỉ hiển thị khi
+         đúng tab Telegram đang mở (khớp 1 test mới xác nhận lỗi render
+         vào đúng khung đang hiện, không phải khung đang ẩn).
+      2. **Xoá `TELEGRAM_CHAT_ID` khỏi `.env`** (931000937) — đã lưu
+         chung chỗ với các chat ID khác trong `runtime_config.json` từ
+         lúc service khởi động lại ở bước trên rồi, không cần giữ lại
+         trong `.env` nữa. Chỉ xoá đúng 1 dòng giá trị, giữ `TELEGRAM_BOT_TOKEN`
+         (vẫn là credential cần `.env`), sửa lại chú thích ngay trên nó.
+      Cập nhật `tests/test_admin_telegram.py` theo route/vị trí trang
+      mới (15 test, bao gồm 1 test xác nhận `/admin/telegram` cũ trả
+      404 — đã bỏ hẳn, và 1 test xác nhận lỗi render đúng khung đang
+      hiện). **Toàn bộ suite: 576/576 pass.** Xác nhận bằng tay qua
+      script gọi thẳng route thật (không qua test cô lập): tab mới hiện
+      đúng chat_id 931000937 thật từ `runtime_config.json`, không còn
+      dấu vết `/admin/telegram` ở đâu trên trang — không ghi gì vào file
+      cấu hình thật trong lúc xác nhận (chỉ GET, không POST).
+
+## "Người mới nhắn bot, chưa thêm" — bỏ hẳn hướng dẫn cần biết token (2026-10-05, tiếp)
+
+Owner chỉ ra đúng 1 lỗ hổng UX thật: hướng dẫn cũ ("mở
+`https://api.telegram.org/bot<TOKEN>/getUpdates`, thay `<TOKEN>` bằng
+token thật trong `.env`") giả định người đang đọc trang `/admin` CÓ quyền
+đọc file `.env` trên máy — không đúng với 1 người chỉ được cấp quyền vào
+trang quản trị (MOD), không có quyền SSH/đọc file server. Owner đề xuất
+đúng hướng giải quyết: **service đã có token sẵn ở phía server rồi, để
+chính service tự gọi Telegram tìm người mới nhắn, không ai cần thấy
+token hay tự tra JSON thô cả.**
+
+- [x] **`telegram_notify.py`**: thêm `record_pending_sender(chat_id, name)`/
+      `get_pending_senders()`/`clear_pending_sender(chat_id)` — danh sách
+      "ai mới nhắn bot mà chưa được thêm", chỉ lưu trong bộ nhớ (không
+      ghi file — đây là tiện ích tạm, không phải dữ liệu cần sống qua
+      lần restart), có giới hạn 20 người (vượt quá tự bỏ người cũ nhất).
+- [x] **`service.py`'s `_telegram_listen_loop()`**: mỗi khi gặp tin từ 1
+      chat_id CHƯA đăng ký (nhánh trước đây chỉ `continue` bỏ qua), giờ
+      gọi `record_pending_sender()` trước khi bỏ qua. Tên hiển thị lấy
+      theo thứ tự ưu tiên: tên NHÓM (`chat.title`, cho nhóm/channel) →
+      họ tên Telegram (`from.first_name`/`last_name`) → `@username` →
+      cuối cùng mới dùng thẳng chat_id nếu Telegram không cho gì khác.
+- [x] **Tab "Tài khoản Telegram"**: thêm hẳn 1 khu vực mới "🔔 Người mới
+      nhắn vào bot, chưa được thêm" ngay phía trên danh sách người nhận
+      — mỗi dòng có đúng 1 nút "➕ Thêm", bấm là xong (chat_id + tên đã
+      điền sẵn từ server, không cần gõ tay). Form nhập tay (Chat ID/Tên
+      gợi nhớ) vẫn giữ lại, chỉ còn dùng cho trường hợp đã biết sẵn
+      Chat ID của ai đó. **Bỏ hẳn** đoạn hướng dẫn cũ nhắc tới
+      `TELEGRAM_BOT_TOKEN`/`.env`/`getUpdates` — chữ "TOKEN" không còn
+      xuất hiện ở đâu trên tab này nữa (có test riêng xác nhận đúng
+      điều này). Thêm xong 1 người thì họ tự biến mất khỏi khu vực
+      "chưa thêm" luôn (gọi `clear_pending_sender()` ngay sau khi thêm
+      thành công).
+- [x] **Tự rà soát lại (`/code-review`) trước khi báo xong — 2 lỗi thật
+      (1 lỗi thứ 3 cân nhắc kỹ, quyết định không sửa):**
+      1. Chỉ đọc `update["message"]` — tin đăng vào 1 **channel** Telegram
+         (khác nhóm thường) lại nằm ở `update["channel_post"]`, nên
+         channel sẽ KHÔNG BAO GIỜ hiện được trong danh sách "chưa thêm"
+         — đúng vào trường hợp tính năng này sinh ra để giải quyết. Sửa:
+         đọc cả 2 trường.
+      2. `get_pending_senders()` chỉ copy nông (shallow) — dict con bên
+         trong (tên/thời gian) vẫn là CÙNG 1 object với dữ liệu thật
+         đang sống trong service, lỡ có chỗ nào sau này vô tình sửa vào
+         kết quả trả về thì sẽ sửa luôn cả dữ liệu thật. Sửa: copy sâu
+         hơn 1 lớp.
+      3. (Cân nhắc, KHÔNG sửa) nếu có người lạ biết tên bot rồi nhắn từ
+         20+ tài khoản Telegram khác nhau liên tục, người thật nhắn
+         trước đó có thể bị "đẩy" khỏi danh sách (giới hạn 20). Đây là
+         tiện ích tạm thời cho 1 công cụ nội bộ ít người dùng — nếu bị
+         đẩy mất, người đó chỉ cần nhắn lại là hiện lại ngay, không mất
+         gì quan trọng. Không đáng để thêm phức tạp (chặn theo IP, xác
+         minh...) cho rủi ro thực tế rất thấp này.
+      Thêm 2 test mới riêng cho 2 lỗi này (channel_post hoạt động đúng,
+      copy sâu không còn làm lộ object dùng chung). Tổng cộng cả tính
+      năng "chưa thêm" này (bước code đầu + vòng tự rà soát): 18 test
+      mới (576→594). **Toàn bộ suite: 594/594 pass.**
+
+## Form thêm thủ công thành modal + link thẳng tới bot Telegram (2026-10-05, tiếp)
+
+Owner góp ý 2 điểm UX trên tab "Tài khoản Telegram": (1) form "Chat ID/Tên
+gợi nhớ" đang nằm sẵn ngay trên trang — nên bấm nút mới hiện (modal),
+đúng mẫu các form khác trong `/admin` đã dùng; (2) đoạn giải thích nên có
+link bấm thẳng tới chat của bot trên Telegram, không chỉ nói chữ suông.
+
+- [x] **Modal hoá form thêm thủ công**: thêm `_telegram_recipient_add_modal_html()`
+      + route `GET /accounts/telegram/add-modal`, mô phỏng đúng mẫu
+      `_mod_user_add_modal_html()`/`mod_users_add()` đã có (kể cả kỹ
+      thuật "swap out-of-band + để `#modal-root` trống" để tự đóng modal
+      không cần thêm JS). Nút "➕ Thêm thủ công" thay cho form cũ nằm lộ
+      thiên. Các nút "➕ Thêm" 1-chạm ở khu vực "chưa thêm" cũng đổi
+      sang cùng đích `#modal-root` — lỗi hiếm (VD trùng chat_id do đua
+      request) giờ hiện ra như 1 modal nhỏ, không bị gửi sai chỗ.
+- [x] **Link thẳng tới bot**: thêm `telegram_notify.refresh_bot_username()`/
+      `get_cached_bot_username()` — service tự hỏi Telegram (API `getMe`,
+      dùng chính token đã có sẵn ở server) tên bot 1 lần, lưu lại dùng
+      chung, không ai cần thấy token hay tự tra gì. Đoạn giải thích trên
+      tab giờ có link `t.me/<tên bot>` bấm được thẳng; nếu chưa tra được
+      (service chưa restart từ lúc có tính năng này, hoặc Telegram lỗi
+      tạm) thì tự lùi về câu chữ suông như trước, không vỡ trang.
+- [x] **Tự rà soát lại trước khi báo xong — 3 lỗi thật:**
+      1. Thông báo "✅ Đã lưu." của tab Telegram (và cả tab Đồng bộ)
+         dùng chung tham số `saved` với tab "Tài khoản" — do chuyển tab
+         chỉ là ẩn/hiện ở trình duyệt (không tải lại từ server), 1 hành
+         động ở tab Telegram vô tình "nướng" sẵn thông báo đó vào ĐÚNG
+         khung HTML của tab Tài khoản (đang ẩn) — bấm qua tab đó sau sẽ
+         thấy thông báo giả. Đây là ĐÚNG lớp lỗi đã gặp và sửa 1 lần cho
+         tham số `error` (đổi tên riêng `telegram_error`) nhưng quên áp
+         dụng tương tự cho `saved`. Sửa: chỉ đưa `saved` vào tab "Tài
+         khoản" khi đúng tab đó đang mở, giống cách tab Đồng bộ đã làm.
+      2. Lúc khởi động service, dòng tra tên bot (`await refresh_bot_username()`)
+         chặn luôn cả quá trình khởi động tới 15 giây nếu Telegram phản
+         hồi chậm/mất mạng — trong khi đây chỉ là 1 link trang trí, đã
+         có sẵn phương án lùi về chữ suông. Mọi việc khởi động không
+         quan trọng khác trong code đều chạy nền (`create_task`), không
+         chặn — sửa cho giống vậy.
+      3. Vì sửa mục 2 thành chạy nền (không chờ kết quả), nếu lần tra
+         đầu đó lỡ thất bại thì link sẽ kẹt ở chữ suông SUỐT ĐỜI lần
+         chạy service đó, không có cách tự phục hồi. Sửa: vòng quét sức
+         khoẻ 6 giờ (đã có sẵn) tự thử tra lại — NHƯNG chỉ khi vẫn chưa
+         có tên bot lưu sẵn, để không gọi Telegram thừa mỗi 6 giờ khi đã
+         thành công từ trước.
+      Thêm 17 test mới (modal render đúng, lỗi hiện đúng chỗ, tên bot
+      cache đúng/lùi đúng khi lỗi, rò `saved` không còn, tự phục hồi
+      đúng cách không gọi dư). **Toàn bộ suite: 611/611 pass.**
+
+## Sửa được "tên gợi nhớ" + chuyển nút "Thêm thủ công" lên đầu (2026-10-05, tiếp)
+
+Owner yêu cầu 2 việc nhỏ tiếp theo trên tab "Tài khoản Telegram": (1) cho
+phép sửa lại tên gợi nhớ của 1 người đã có trong danh sách (trước đây chỉ
+thêm/xoá được, lỡ đặt tên sai hoặc muốn đổi phải xoá rồi thêm lại); (2)
+đưa nút "➕ Thêm thủ công" lên đầu khu vực (trước đây nằm dưới cùng, sau
+cả bảng và khu "chưa thêm").
+
+- [x] **`runtime_config.py`**: thêm `update_telegram_recipient_label(chat_id, label)`
+      — chỉ sửa được tên gợi nhớ, KHÔNG sửa được Chat ID (Chat ID là khoá
+      định danh của dòng đó; "đổi" Chat ID thực chất là xoá người cũ +
+      thêm người mới, không phải "sửa"). Tên trống thì tự quay về dùng
+      Chat ID làm tên, giống đúng quy tắc `add_telegram_recipient()` đã
+      có. Raise lỗi nếu Chat ID không có trong danh sách.
+- [x] **Nút "✏️ Sửa" trên mỗi dòng** — mở modal chỉ có 1 ô (Tên gợi nhớ),
+      Chat ID hiện ở tiêu đề modal như thông tin tham khảo, không phải ô
+      nhập. Theo đúng mẫu modal "➕ Thêm" đã làm trước đó (cùng kỹ thuật
+      đóng modal không cần JS riêng).
+- [x] **Chuyển nút "➕ Thêm thủ công" lên đầu card** — trước cả khu "chưa
+      thêm" và bảng danh sách.
+- [x] **Tự rà soát lại trước khi báo xong — 2 lỗi thật sửa, 1 hạn chế đã
+      biết từ trước quyết định không sửa:**
+      1. Route mở modal sửa (`telegram_recipients_edit_modal`) tự viết
+         lại đúng đoạn dò "tìm người theo Chat ID" mà `update_telegram_recipient_label()`
+         đã có sẵn — 2 nơi cùng viết 1 logic, sau này sửa cách so khớp
+         Chat ID (VD chuẩn hoá hoa/thường) dễ chỉ sửa đúng 1 nơi mà quên
+         nơi kia. Sửa: thêm `get_telegram_recipient(chat_id)` (1 hàm
+         tra cứu dùng chung, đúng mẫu `get_mod_user()`/`get_mod_users()`
+         đã có sẵn trong cùng file), cả 2 nơi gọi lại đúng 1 hàm này.
+      2. `update_telegram_recipient_label()` chưa cắt khoảng trắng dư ở
+         Chat ID truyền vào trước khi so khớp (trong khi `add_telegram_recipient()`
+         đã làm việc này) — 1 Chat ID lỡ có khoảng trắng dư ở đầu/cuối
+         (hiếm, nhưng có thể xảy ra) sẽ báo nhầm "không tìm thấy" dù dòng
+         đó rõ ràng có trong danh sách. Sửa: cắt khoảng trắng trước khi
+         so khớp, giống `add_telegram_recipient()`.
+      3. (Hạn chế đã biết, KHÔNG sửa) đọc-rồi-ghi-lại cả danh sách mỗi
+         lần sửa/thêm/xoá — nếu 2 admin bấm gần như cùng lúc (hiếm với
+         công cụ nội bộ ít người dùng này), có thể làm mất 1 thay đổi
+         của người kia. Đây là đặc điểm chung của TOÀN BỘ các danh sách
+         kiểu này trong `runtime_config.py` (mod_users, accounts,
+         joined_groups đều vậy) — đã cân nhắc và quyết định không sửa
+         riêng cho tính năng này ở lần rà soát trước, giữ nguyên quyết
+         định đó.
+      Thêm 14 test mới (sửa tên đúng, Chat ID không sửa được, lỗi khi
+      Chat ID không tồn tại, nút nằm đúng vị trí mới, tra cứu dùng
+      chung đúng, cắt khoảng trắng đúng). **Toàn bộ suite: 625/625 pass.**
+      Chưa commit.

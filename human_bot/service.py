@@ -65,12 +65,14 @@ from human_bot.agent import TaskRequest, run_task  # noqa: E402
 from human_bot.browser_pool import close_all, warm_up  # noqa: E402
 from human_bot.config import AccountStatus, get_all_accounts  # noqa: E402
 from human_bot.logging_setup import configure_logging  # noqa: E402
+from human_bot import runtime_config  # noqa: E402
 from human_bot.runtime_config import (  # noqa: E402
     get_active_cooldown_rate_limits,
     get_all_active_cooldown_account_ids,
     get_config_changed_event,
     get_data_sync_config,
     get_sync_disabled_account_ids,
+    get_telegram_recipients,
 )
 
 configure_logging()
@@ -349,6 +351,16 @@ async def _telegram_health_check_loop() -> None:
     )
     while True:
         try:
+            # Self-heal (self-review follow-up) for the one-shot
+            # fire-and-forget telegram_notify.refresh_bot_username() call
+            # at service startup — if THAT attempt failed (a transient
+            # network blip exactly at boot), retry here every 6h rather
+            # than leaving the admin tab's bot link stuck on its
+            # plain-text fallback for the service's entire uptime. The
+            # `get_cached_bot_username()` guard means this never re-calls
+            # Telegram once it has already succeeded once.
+            if not telegram_notify.get_cached_bot_username():
+                await telegram_notify.refresh_bot_username()
             last_success_map = db.last_successful_action_per_account()
             for aid, account in get_all_accounts().items():
                 # Isolated per-account (2026-10-05 self-review, round 4) —
@@ -380,15 +392,22 @@ async def _telegram_health_check_loop() -> None:
 async def _telegram_listen_loop() -> None:
     """Background loop: long-polls Telegram for messages sent to the bot
     (human_bot/telegram_notify.py's get_updates()) and replies to ANY of
-    them — ANY message type, not just text (2026-10-05 self-review,
-    round 5 fix: a prior version required `message.get("text")`, so a
-    sticker/photo/voice note got silently ignored, contradicting this
-    v1's own "no slash-command parsing... nhắn gì cũng được" design) —
-    with the same health snapshot /admin's home page shows, one account
-    per line-block (human_bot.admin._account_health_telegram_text()).
-    Ignores messages from any chat other than the configured
-    TELEGRAM_CHAT_ID — otherwise anyone who discovers the bot's username
-    could query it too.
+    them — ANY message type, not just text (round 5 fix: a prior version
+    required `message.get("text")`, so a sticker/photo/voice note got
+    silently ignored, contradicting this v1's own "no slash-command
+    parsing... nhắn gì cũng được" design) — with the same health
+    snapshot /admin's home page shows, one account per line-block
+    (human_bot.admin._account_health_telegram_text()), sent back ONLY to
+    the chat that asked (telegram_notify.send_message_to(), not a
+    broadcast) — someone else registered doesn't need to see every
+    query another recipient makes. Ignores messages from any chat not
+    currently in human_bot/runtime_config.py's get_telegram_recipients()
+    (2026-10-05, admin-managed list at /admin/telegram — replaces the
+    original single hardcoded TELEGRAM_CHAT_ID env var) — otherwise
+    anyone who discovers the bot's username could query it too. Reread
+    EVERY poll cycle (not once outside the loop) so a recipient added
+    via /admin while the service is already running can query
+    immediately, no restart needed.
 
     get_updates() itself no-ops instantly (empty list, no network call)
     when Telegram isn't configured/enabled, so this loop doesn't bother
@@ -398,7 +417,7 @@ async def _telegram_listen_loop() -> None:
     internally). It ALSO returns near-instantly (still [], but via a
     real failed network call this time) on a broken token/network error
     — either way, and ALSO when real messages arrive but none of them
-    match TELEGRAM_CHAT_ID (round 5 — a stranger who discovered the
+    match a registered chat id (round 5 — a stranger who discovered the
     bot's username spamming it would otherwise keep this loop spinning
     with zero delay, since `updates` being non-empty used to be enough
     to skip the idle sleep even though nothing was actually replied to),
@@ -407,25 +426,59 @@ async def _telegram_listen_loop() -> None:
     (pegging a CPU core, hammering Telegram) whenever a genuine ~30s
     long-poll never actually happens (see _TELEGRAM_LISTEN_MIN_POLL_SECONDS)."""
     offset: int | None = None
-    configured_chat_id = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
     while True:
         try:
             poll_started_at = time.monotonic()
             updates = await telegram_notify.get_updates(offset)
+            # Only looked up when there's actually something to match
+            # against — get_updates() already no-ops instantly (no disk
+            # read, no network call) when not configured, and computing
+            # this unconditionally every idle ~30s cycle would reopen and
+            # re-parse runtime_config.json for nothing, the same
+            # redundant-read problem this function's own docstring says
+            # was fixed for is_configured() (self-review follow-up).
+            # Reread fresh on every batch that needs it (not cached
+            # across iterations) — see this function's own docstring for
+            # why (a recipient added via /admin must work next cycle).
+            registered_chat_ids = {r["chat_id"] for r in get_telegram_recipients()} if updates else set()
             # Computed at most once per poll cycle (round 4), not once
             # per matching message — a user sending several messages
             # before the previous long-poll returns would otherwise
             # re-run these same DB/file reads and rebuild the identical
             # reply once per message. None until the first valid message
             # in this batch needs it (most polls return 0 updates, or
-            # updates from the wrong chat, so skip the work entirely then).
+            # updates from an unregistered chat, so skip the work
+            # entirely then).
             reply = None
             replied_to_anything = False
             for update in updates:
                 offset = update["update_id"] + 1
-                message = update.get("message") or {}
-                chat_id = str((message.get("chat") or {}).get("id", ""))
-                if chat_id != configured_chat_id:
+                # A Telegram CHANNEL delivers its posts as "channel_post",
+                # never "message" (self-review follow-up) — without this,
+                # a channel the bot was added to as admin could never be
+                # discovered as a pending sender at all, defeating the
+                # whole point of this feature for that one chat type.
+                message = update.get("message") or update.get("channel_post") or {}
+                chat = message.get("chat") or {}
+                chat_id = str(chat.get("id", ""))
+                if chat_id not in registered_chat_ids:
+                    # Not a reply target, but still worth remembering —
+                    # the admin UI offers a one-click "➕ Thêm" for anyone
+                    # here (see telegram_notify.record_pending_sender()'s
+                    # own docstring for why this exists: nobody but the
+                    # owner should ever need to know TELEGRAM_BOT_TOKEN
+                    # to find a chat_id). A group/channel's `title` is
+                    # the more useful name to show than the individual
+                    # member who happened to send this one message.
+                    sender = message.get("from") or {}
+                    name = (
+                        chat.get("title")
+                        or " ".join(p for p in (sender.get("first_name"), sender.get("last_name")) if p)
+                        or (f"@{sender['username']}" if sender.get("username") else "")
+                        or chat_id
+                    )
+                    if chat_id:
+                        telegram_notify.record_pending_sender(chat_id, name)
                     continue
                 # Isolated per-message (round 4) — a failure building/
                 # sending the reply to ONE message (e.g. a DB hiccup)
@@ -440,7 +493,7 @@ async def _telegram_listen_loop() -> None:
                             _account_health_telegram_text(aid, a, sync_statuses, last_success_map)
                             for aid, a in accounts.items()
                         ) or "Chưa có tài khoản nào."
-                    await telegram_notify.send_message(reply, silent=True)
+                    await telegram_notify.send_message_to(chat_id, reply, silent=True)
                     replied_to_anything = True
                 except Exception:  # noqa: BLE001 - one bad reply must not skip the rest of this batch
                     logger.exception("_telegram_listen_loop failed to reply to update %s", update.get("update_id"))
@@ -448,7 +501,7 @@ async def _telegram_listen_loop() -> None:
             # returns near-instantly because a message this loop actually
             # replied to was already waiting — any OTHER fast return
             # (not configured, a broken token/network error, or real
-            # traffic that never matched TELEGRAM_CHAT_ID) is the
+            # traffic that never matched a registered chat id) is the
             # ambiguous case the idle sleep guards against; gating on
             # `replied_to_anything` rather than bare `updates` (round 5)
             # keeps back-to-back REAL queries from being throttled by
@@ -562,6 +615,26 @@ async def lifespan(app: FastAPI):
             "sweep_overdue_on_startup: moved %d pending task(s) to missed/ for admin review "
             "(scheduled_at already past as of %s)", swept["swept"], swept["checked_at"],
         )
+    # ONE-TIME migration (2026-10-05, same "do it once at startup" spot as
+    # sweep_overdue_on_startup() above) — seeds the legacy single
+    # TELEGRAM_CHAT_ID env var into the new admin-managed recipients list
+    # (/admin/accounts's "Tài khoản Telegram" tab) the first time this
+    # runs after the upgrade, so an owner who already set that up keeps
+    # receiving alerts with no manual step. See
+    # runtime_config.migrate_legacy_telegram_chat_id_once()'s own docstring.
+    runtime_config.migrate_legacy_telegram_chat_id_once()
+    # Fire-and-forget (self-review follow-up) — caches the bot's own
+    # @username so the admin tab can link straight to its Telegram chat
+    # instead of just describing it in words (telegram_notify.
+    # refresh_bot_username()'s own docstring). NOT awaited here: this is
+    # a purely cosmetic lookup with a working plain-text fallback
+    # already in place, so it must never add Telegram's own network
+    # latency (up to its 15s timeout) to the service's startup — every
+    # other non-critical startup concern already runs as a background
+    # task rather than blocking `yield`, this just matches that.
+    # _telegram_health_check_loop() retries this on its own 6h cadence
+    # (only while still uncached) if this first attempt fails.
+    asyncio.create_task(telegram_notify.refresh_bot_username())
     active_accounts = [a for a in get_all_accounts().values() if a.status == AccountStatus.ACTIVE]
     await warm_up(active_accounts)
     poll_task = asyncio.create_task(_data_sync_poll_loop())
