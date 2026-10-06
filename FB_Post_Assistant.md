@@ -656,6 +656,48 @@ liệu thật hằng ngày và yêu cầu kiểm tra chéo lại mọi thứ tr�
   lặp lại 1 chỗ và thiếu cắt khoảng trắng dư ở Chat ID). Thêm 14 test
   mới. **Toàn bộ 625/625 test pass.** Chi tiết đầy đủ ở `tasks.md`.
   Chưa commit.
+- **Bug thật nghiêm trọng: đồng bộ dữ liệu bên B âm thầm NGỪNG HOẠT ĐỘNG
+  5 ngày liên tục (01/10 → 06/10), owner tự phát hiện khi để ý "lần
+  đồng bộ gần nhất" trên trang quản trị không nhích lên dù đã khởi
+  động lại server nhiều lần.**
+  Đã loại hết các nghi vấn thường gặp (công tắc bật/tắt, mạng, token) —
+  tất cả đều bình thường. Tìm ra nguyên nhân thật qua file log của
+  service (vẫn ghi lại đều, chỉ chưa ai đọc tới): đúng 1 lỗi code —
+  1 con số cấu hình ("số ngày được phép dồn bài sang ngày sau nếu hết
+  chỗ") đang được lưu dưới dạng số có phần lẻ (ví dụ `2.0` thay vì
+  `2`), và đoạn code tính "nên lấy bao nhiêu tin mới mỗi lần đồng bộ"
+  không chấp nhận được dạng số đó — nên MỌI lần thử đồng bộ từ 01/10
+  đều crash ngay trước khi kịp ghi lại kết quả (dù thành công hay thất
+  bại), khiến trang quản trị tưởng như chẳng có gì chạy cả.
+  Đã sửa, thêm 1 bài test riêng tái hiện chính xác kiểu dữ liệu đã gây
+  lỗi (bài test cũ trước đây dùng số "sạch" nên không bắt được lỗi này).
+- **Owner hỏi tiếp "vì sao có lỗi này, trước nay vẫn chạy đúng mà" —
+  truy ngược tới tận gốc, không đoán, tìm ra đây là lỗi thật thứ 2, sâu
+  hơn.** Con số cấu hình đó trong code LUÔN được khai báo đúng kiểu
+  "số nguyên" từ đầu — không hề sai. Vấn đề nằm ở chính **nút "Lưu cấu
+  hình" trên trang quản trị**: nút này có 1 đoạn code (thêm từ tháng 9,
+  sau 1 lần sự cố tương tự ở chỗ khác) để giữ đúng kiểu số nguyên/số
+  thực của từng ô khi lưu — nhưng đoạn giữ-đúng-kiểu đó lại có 1 lỗ hổng
+  kỹ thuật khiến nó hoạt động đúng cho MỘT SỐ tab cấu hình nhưng không
+  đúng cho tab "Đồng bộ dữ liệu bên B" (và vài tab khác nữa). Nên:
+  **con số đó chỉ bị hỏng đúng vào lần ĐẦU TIÊN có ai bấm "Lưu cấu
+  hình" ở tab đó** — trước lần bấm đó, mọi thứ vẫn đúng và chạy bình
+  thường; sau lần đó, giá trị bị ghi sai dạng vĩnh viễn trong file cấu
+  hình, và mọi lần đồng bộ từ đó crash — đúng khớp với việc "trước nay
+  vẫn chạy đúng".
+  Đã sửa tận gốc nút "Lưu cấu hình" (không chỉ riêng chỗ gây crash lần
+  này) — áp dụng cho MỌI tab cấu hình khác dùng chung cơ chế, tránh lặp
+  lại chuyện này ở chỗ khác về sau. Nhân lúc rà soát, phát hiện thêm tab
+  "Hạ nhiệt sau khi kích hoạt lại tài khoản" cũng đang bị đúng kiểu lỗi
+  này trong file cấu hình thật — nhưng CHƯA gây ra vấn đề gì (không có
+  chỗ nào trong code dùng những số đó theo cách dễ vỡ như chỗ vừa sửa),
+  nên không cần sửa file cấu hình đó ngay — lần tới owner lưu lại tab đó
+  qua trang quản trị, nó sẽ tự lưu đúng lại.
+  **Toàn bộ 627/627 test pass.** Chi tiết đầy đủ ở `tasks.md`.
+  **Cần khởi động lại server 1 lần nữa để áp dụng cả 2 phần sửa** — ngay
+  khi khởi động lại, đồng bộ sẽ tự chạy lại lần đầu ngay lập tức (không
+  cần chờ đủ 6 giờ), nên sẽ thấy "lần đồng bộ gần nhất" cập nhật ngay.
+  Chưa commit.
 
 ---
 

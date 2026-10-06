@@ -51,7 +51,7 @@ import re
 import secrets
 import sqlite3
 from datetime import datetime, timedelta, timezone
-from typing import Any
+from typing import Any, get_type_hints
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
@@ -2940,13 +2940,24 @@ async def config_save(request: Request, _: None = Depends(_require_login)) -> Re
     covers every section's fields at once — then silently crashed
     human_mouse_move()'s `range(1, steps + 1)` months later, only on the
     rare click distance that clamps to exactly one of those bounds, with
-    'float' object cannot be interpreted as an integer). Now casts to
-    whatever type each dataclass field actually declares, via
-    dataclasses.fields(), so an int-typed field survives a round trip
-    through this form as a real int."""
+    'float' object cannot be interpreted as an integer). Casts to
+    whatever type each dataclass field actually declares — via
+    typing.get_type_hints(config_cls), NOT dataclasses.fields(config_cls)
+    [i].type (2026-10-06 fix, real incident: that raw `.type` is the
+    STRING `"int"`, not the actual `int` class, for any config module
+    using `from __future__ import annotations` — DataSyncConfig among
+    others — silently defeating the `is int` check below for every one
+    of ITS fields despite the Sep-7 fix looking correct at the time
+    against HumanMouseConfig, whose module doesn't use postponed
+    annotations. Confirmed live: `max_overflow_business_days` round-
+    tripped through this exact form once, got stored as `2.0`, and
+    crashed every data_sync.sync_all() poll for 5 days straight before
+    anyone noticed — see tasks.md's 2026-10-06 entry for the full trace.
+    get_type_hints() resolves postponed/string annotations correctly
+    regardless of which style a given config module happens to use)."""
     form = await request.form()
     for section_key, prefix, _title, config_cls, editable_fields, _labels, _get_fn, save_fn in _CONFIG_SECTIONS:
-        field_types = {f.name: f.type for f in dataclasses.fields(config_cls)}
+        field_types = get_type_hints(config_cls)
         values: dict = {}
         for field_name in editable_fields:
             form_name = f"{prefix}__{field_name}"

@@ -599,7 +599,7 @@ def _max_jobs_over_window(
     day_post_counts: dict[date, int],
     today: date,
     real_used_today: int,
-    max_overflow_business_days: int,
+    max_overflow_business_days: int | float,
 ) -> int:
     """How many NEW jobs this account should be handed in one sync_all()
     poll — owner-specified formula (2026-09-17): sum this account's
@@ -641,7 +641,16 @@ def _max_jobs_over_window(
     — only meaningful for `today` itself (future business days have no
     real activity yet by definition)."""
     total_slots = 0
-    for offset in range(max_overflow_business_days + 1):
+    # Real bug, found live 2026-10-06 (5 days of every sync_all() poll
+    # silently crashing before it ever reached its own error logging —
+    # `cfg.max_overflow_business_days` (DataSyncConfig, a float field) was
+    # passed straight into range(), which rejects anything but a true int:
+    # "TypeError: 'float' object cannot be interpreted as an integer". Every
+    # existing test here only ever passed a plain int literal, never
+    # exercising the real config-derived float that every actual call site
+    # uses — int() truncation is the right fix regardless, since this is
+    # conceptually a whole number of days either way.
+    for offset in range(int(max_overflow_business_days) + 1):
         day = today + timedelta(days=offset)
         used = day_post_counts.get(day, 0)
         if day == today:

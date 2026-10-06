@@ -17,6 +17,7 @@ from starlette.middleware.sessions import SessionMiddleware
 from human_bot.admin import NotLoggedIn, router as admin_router
 from human_bot.runtime_config import (
     get_mouse_overrides,
+    get_data_sync_overrides,
     get_secrets_overrides,
     get_job_post_openers,
     get_contact_cta,
@@ -125,6 +126,28 @@ def test_config_save_int_field_survives_as_real_int_not_float(client):
     assert isinstance(overrides["min_steps"], int)
     assert overrides["max_steps"] == 25
     assert isinstance(overrides["max_steps"], int)
+
+
+def test_config_save_int_field_survives_for_a_future_annotations_dataclass_too(client):
+    """Regression test for a real incident found live 2026-10-06: the
+    2026-09-07 fix above (config_save()'s own docstring) was verified
+    against HumanMouseConfig, whose module does NOT use
+    `from __future__ import annotations` — so `dataclasses.fields(cls)
+    [i].type` really is the `int` class there, and the fix looked
+    correct. DataSyncConfig's module DOES use postponed annotations, so
+    that same raw `.type` is the STRING "int" instead, silently
+    defeating the `is int` check for every one of ITS int fields. The
+    very first time anyone saved ANY field in this tab,
+    max_overflow_business_days (declared `int`, used in a `range()`
+    call) got corrupted to a float and crashed every
+    data_sync.sync_all() poll for 5 days straight before anyone noticed.
+    Fixed by switching to typing.get_type_hints(), which resolves
+    postponed annotations correctly regardless of module style."""
+    resp = client.post("/admin/config", data={"data_sync__max_overflow_business_days": "2"})
+    assert resp.status_code == 303
+    overrides = get_data_sync_overrides()
+    assert overrides["max_overflow_business_days"] == 2
+    assert isinstance(overrides["max_overflow_business_days"], int)
 
 
 def test_config_save_float_field_stays_float(client):

@@ -442,6 +442,28 @@ def test_overflow_days_remaining_zero_once_past_the_fixed_boundary():
 # supported 9, and per-post spacing alone then spread the backlog out to a
 # 4th business day. This locks down the owner's own worked example.
 
+def test_max_jobs_over_window_accepts_the_real_float_config_value():
+    """Regression test for a real production bug found live 2026-10-06:
+    every sync_all() poll silently crashed for 5 days straight
+    (TypeError: 'float' object cannot be interpreted as an integer) —
+    DataSyncConfig.max_overflow_business_days is a FLOAT field
+    (data_sync_config.py), but this function's own range() call rejected
+    anything but a true int. Every OTHER test in this section only ever
+    passed a plain int literal (max_overflow_business_days=2), never
+    exercising the real config-derived float every actual call site
+    uses — that's exactly how this stayed invisible to the whole test
+    suite while it broke live. Uses 2.0, not 2, on purpose."""
+    today = date(2026, 9, 17)
+    account = _FakeAccount(
+        rate_limits=RateLimits(posts_per_day=12, max_groups_per_post=3),
+        action_log_path=Path("unused"),
+    )
+    day_post_counts = {today: 9}
+    assert _max_jobs_over_window(
+        account, day_post_counts, today, real_used_today=9, max_overflow_business_days=2.0,
+    ) == 9
+
+
 def test_max_jobs_over_window_matches_owners_worked_example():
     """Owner's exact numbers: 3 slots left today, 12 tomorrow, 12 the day
     after (today+2, the same window _next_available_business_day() is

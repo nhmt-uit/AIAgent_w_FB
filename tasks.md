@@ -6041,4 +6041,102 @@ cả bảng và khu "chưa thêm").
       Thêm 14 test mới (sửa tên đúng, Chat ID không sửa được, lỗi khi
       Chat ID không tồn tại, nút nằm đúng vị trí mới, tra cứu dùng
       chung đúng, cắt khoảng trắng đúng). **Toàn bộ suite: 625/625 pass.**
-      Chưa commit.
+
+## Bug thật: `sync_all()` crash mọi lần poll suốt 5 ngày — `TypeError` ở `_max_jobs_over_window` (2026-10-06)
+
+Owner báo: khởi động lại server (tối 05/10 tắt, sáng 06/10 mở lại — đã
+restart thật, không phải chỉ reload trang) nhưng không thấy đồng bộ bên B
+chạy nữa — lần đồng bộ gần nhất vẫn dừng ở 11:48 01-10-2026.
+
+**Điều tra**: công tắc tổng "Đồng bộ dữ liệu bên B" ở `/admin/config`
+VẪN đang BẬT (`enabled: true`, đè đúng lên `.env`'s `DATA_SYNC_ENABLED=false`
+theo đúng cơ chế override); tài khoản `tu_iizuki` vẫn hợp lệ cho đồng bộ;
+gọi thử trực tiếp URL + token bên B — vẫn phản hồi 200, vẫn lấy được dữ
+liệu job thật. Nghi vấn ban đầu (mạng/token/công tắc) đều bị loại.
+
+**Tìm ra lỗi thật qua file log** (`logs/human_bot.log`, file đã có sẵn
+nhưng trước đây chưa ai đọc tới) — đúng 3 lần crash khớp với 3 lần owner
+khởi động lại server (05/10 20:29, 05/10 20:47, 06/10 10:47), cùng 1
+traceback:
+```
+File "human_bot/data_sync.py", line 644, in _max_jobs_over_window
+    for offset in range(max_overflow_business_days + 1):
+TypeError: 'float' object cannot be interpreted as an integer
+```
+`cfg.max_overflow_business_days` (`DataSyncConfig`, 1 field kiểu `float`,
+mặc định `2.0`) được truyền thẳng vào `range()` — Python không cho
+`range()` nhận số thực dù nó tròn số (`range(2.0)` lỗi, `range(2)` thì
+không). Hàm này CHƯA BAO GIỜ được test với đúng kiểu dữ liệu thật: cả 4
+test có sẵn cho `_max_jobs_over_window()` đều truyền `max_overflow_business_days=2`
+(số nguyên thuần, không phải giá trị thật lấy từ cấu hình) — đây chính
+xác là lỗi kiểu "test dùng số sạch, thực tế dùng số từ cấu hình", khiến
+suite test luôn pass trong khi code thật vẫn crash mỗi lần chạy.
+- [x] **Sửa (vá tại chỗ)**: `int(max_overflow_business_days)` trước khi
+      đưa vào `range()` — hợp lý về nghĩa (đây là số NGÀY, vốn luôn là số
+      nguyên, cắt phần lẻ nếu có không mất ý nghĩa). Đổi kiểu tham số
+      hàm thành `int | float` cho đúng thực tế.
+      Thêm 1 test mới dùng ĐÚNG kiểu `float` (`2.0`, không phải `2`) —
+      test này áp lại CHÍNH XÁC nguyên nhân khiến lỗi không bị test bắt
+      được trước đó. **Toàn bộ suite: 626/626 pass.**
+- [x] **Đã rà soát thêm**: tìm mọi chỗ khác dùng `cfg.max_overflow_business_days`
+      trong `data_sync.py` — chỉ còn 1 chỗ khác (`_overflow_days_remaining()`)
+      nhưng chỗ đó AN TOÀN, vì đi qua `timedelta(...).days` trước (thuộc
+      tính `.days` của `timedelta` luôn là `int` dù `timedelta` được tạo
+      từ `float`) — không cần sửa thêm.
+
+### Owner hỏi tiếp: "Vì sao có lỗi này, trước nay phần này vẫn chạy đúng mà?" — truy ra tận gốc, lỗi thật thứ 2
+
+Không trả lời bằng suy đoán — truy ngược bằng `git log` + đọc code thật.
+**`max_overflow_business_days` trong code LUÔN được khai báo đúng kiểu
+`int`** (`data_sync_config.py`), kể cả hàm mặc định còn cẩn thận ép kiểu
+`int(_env_float(...))` — phần này không hề sai, không hề đổi.
+
+**Gốc rễ thật nằm ở `/admin/config`'s nút "Lưu cấu hình" (`config_save()`
+trong `admin.py`)** — đúng chỗ ĐÃ từng sửa 1 lần cho đúng loại lỗi này
+(xem commit 2026-09-07, lúc đó `HumanMouseConfig.min_steps` bị đổi
+8 → 8.0 vì nút Lưu ép kiểu MỌI số thành số thực, bất kể dataclass khai
+báo gì). Bản sửa lúc đó dùng `dataclasses.fields(config_cls)[i].type is int`
+để giữ đúng kiểu — **đúng với `HumanMouseConfig` (file `humanize.py`,
+không dùng `from __future__ import annotations`) nhưng SAI với
+`DataSyncConfig`** (file `data_sync_config.py`, CÓ dùng dòng đó) — khi 1
+file Python có `from __future__ import annotations`, mọi annotation
+kiểu dữ liệu trong dataclass của file đó bị lưu lại dưới dạng CHUỖI
+(`"int"`, không phải kiểu `int` thật), nên phép so sánh `is int` LUÔN
+sai (so chuỗi với kiểu), khiến `DataSyncConfig` (và cả `scheduling_config.py`/
+`media.py`/`safety_cooldown_config.py` — cũng dùng dòng đó) rơi lại
+đúng lỗi cũ của tháng 9, dù nhìn code tưởng đã sửa xong.
+**Vì sao "trước nay vẫn chạy đúng"**: field này giữ đúng kiểu `int` SUỐT
+TỪ lúc tạo (16/09) tới tận khi KHÔNG CÒN giữ đúng nữa — tức là đúng lần
+ĐẦU TIÊN có ai (owner) bấm "Lưu cấu hình" ở tab "Đồng bộ dữ liệu bên B"
+(có thể chỉ để đổi 1 trường khác trong cùng tab — tab này lưu đè TOÀN BỘ
+mọi trường cùng lúc, xem `feedback_save_overrides_replaces_section`).
+Trước lần lưu đó, giá trị mặc định ép kiểu đúng vẫn còn nguyên; sau lần
+lưu đó, giá trị trong `runtime_config.json` bị ghi đè thành `2.0`
+(số thực) và không bao giờ tự sửa lại — mọi lần đồng bộ từ đó crash.
+- [x] **Sửa tận gốc**: `config_save()` đổi từ đọc `dataclasses.fields(...)
+      [i].type` (chuỗi, sai) sang `typing.get_type_hints(config_cls)`
+      (luôn trả về đúng kiểu THẬT, bất kể file có `from __future__ import
+      annotations` hay không) — khắc phục đúng chỗ hổng, không chỉ riêng
+      cho `data_sync`, mà cho MỌI tab cấu hình khác dùng chung cơ chế
+      này về sau.
+      **Phát hiện thêm lúc rà soát**: tab "Hạ nhiệt sau khi kích hoạt lại
+      tài khoản" (`safety_cooldown`) cũng ĐANG bị corrupt tương tự ngay
+      trong `runtime_config.json` thật hiện tại (`cooldown_days: 14.0`,
+      `posts_per_day: 1.0`,... toàn bộ 7 trường số đều đang là số thực
+      thay vì số nguyên) — CÙNG gốc rễ, nhưng **chưa gây crash** vì không
+      có chỗ nào trong `safety.py`/`runtime_config.py` dùng các trường đó
+      trong `range()` hay phép tính chỉ-nhận-int — chỉ cộng/trừ/so sánh/
+      `timedelta(days=...)`, vốn chấp nhận số thực bình thường. Ghi lại
+      để biết, KHÔNG tự sửa file cấu hình thật (không cần thiết — code đã
+      an toàn với cả 2 kiểu dữ liệu ở những chỗ này; lần tới owner lưu lại
+      tab đó qua `/admin/config`, bản sửa `config_save()` sẽ tự ghi đúng
+      lại thành số nguyên).
+      Thêm 1 test mới xác nhận đúng field `int` của `DataSyncConfig` (1
+      dataclass CÓ `from __future__ import annotations`) sống sót qua
+      vòng Lưu — test cũ (dùng `HumanMouseConfig`) không đủ để bắt lỗi
+      này vì chọn đúng dataclass KHÔNG bị ảnh hưởng. **Toàn bộ suite:
+      627/627 pass.**
+      **Cần khởi động lại service 1 lần để áp dụng cả 2 bản sửa** — sau
+      đó vòng đồng bộ sẽ tự chạy ngay lần đầu (không cần chờ hết 6 giờ,
+      vì biến đếm thời gian trong bộ nhớ luôn reset về "chưa chạy lần
+      nào" mỗi lần khởi động). Chưa commit.
