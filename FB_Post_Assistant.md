@@ -693,11 +693,55 @@ liệu thật hằng ngày và yêu cầu kiểm tra chéo lại mọi thứ tr�
   chỗ nào trong code dùng những số đó theo cách dễ vỡ như chỗ vừa sửa),
   nên không cần sửa file cấu hình đó ngay — lần tới owner lưu lại tab đó
   qua trang quản trị, nó sẽ tự lưu đúng lại.
-  **Toàn bộ 627/627 test pass.** Chi tiết đầy đủ ở `tasks.md`.
-  **Cần khởi động lại server 1 lần nữa để áp dụng cả 2 phần sửa** — ngay
-  khi khởi động lại, đồng bộ sẽ tự chạy lại lần đầu ngay lập tức (không
-  cần chờ đủ 6 giờ), nên sẽ thấy "lần đồng bộ gần nhất" cập nhật ngay.
-  Chưa commit.
+  **Toàn bộ 627/627 test pass.** Chi tiết đầy đủ ở `tasks.md`. Đã commit
+  + push lên remote.
+  **[ĐÃ XÁC NHẬN SỐNG, 07/10]** Owner khởi động lại server — đồng bộ bên
+  B tự chạy lại ngay như kỳ vọng: lấy về 70 job + 3 ứng viên mới, lên
+  lịch 9 bài đăng + 2 bình luận. Hết hẳn tình trạng kẹt 5 ngày.
+- **Thêm bước lọc job theo độ tin cậy trước khi tự lên lịch đăng (08/10).**
+  Owner hỏi: hệ thống có đang ưu tiên job có "độ tin cậy" (một con số bên
+  B gửi kèm mỗi job, thể hiện mức chắc chắn dữ liệu đó là thật/đúng) từ
+  0.9 trở lên không? Trả lời: chưa — trước giờ job chỉ được kiểm tra có
+  đủ thông tin để soạn bài hay không, chưa hề nhìn vào con số độ tin cậy
+  này.
+  Owner chỉnh lại đúng ý muốn: không phải ưu tiên, mà là **chặn hẳn việc
+  tự đăng** đối với job có độ tin cậy dưới 0.9 (hoặc bên B không gửi kèm
+  con số này luôn — coi như chưa đủ tin cậy, an toàn hơn là tự cho qua).
+  Những job này vẫn phải được soạn sẵn nội dung như thường, chỉ khác là
+  đưa vào một màn hình riêng để owner/admin tự xem và bấm duyệt mới thật
+  sự lên lịch đăng — tránh việc dữ liệu chưa chắc đúng từ bên B lọt thẳng
+  ra trang Facebook thật mà không ai kiểm lại.
+  3 điều đã thống nhất trước khi làm: (1) lúc bấm duyệt, hệ thống tự tìm
+  giờ đăng hợp lý nhất ngay lúc đó (không cần tự chọn giờ tay); (2) mốc
+  0.9 này chỉnh được ngay trên trang quản trị (`/admin/config`), không
+  phải sửa code; (3) job thiếu hẳn con số độ tin cậy cũng vào hàng chờ
+  duyệt, không tự cho qua.
+  Đã làm xong: thêm tab mới "🔍 Chờ duyệt" ngay trong trang `/admin/schedule`
+  hiện có (cạnh "Đang chờ"/"Quá hạn") — mỗi job chờ duyệt hiện rõ nội
+  dung đã soạn sẵn (sửa được trước khi duyệt), độ tin cậy thấp bao nhiêu,
+  và dự kiến đăng vào tài khoản/nhóm nào; nút "Duyệt & lên lịch" tự tính
+  giờ đăng hợp lệ ngay lúc bấm, nút "Bỏ qua" thì không đăng job đó (vẫn
+  giữ lại để xem lại sau, không xoá mất).
+  **Tự kiểm tra lại code trước khi báo xong** (quy trình chuẩn cho mọi
+  việc, không phải chỉ việc này) — nhờ vậy bắt được 6 lỗi thật trước khi
+  owner kịp gặp, đáng chú ý nhất: (1) job không tìm được tài khoản phù
+  hợp nào sẽ bị mất vĩnh viễn khỏi hệ thống nếu không xử lý đúng; (2) bên
+  B gửi độ tin cậy sai định dạng sẽ làm sập NGUYÊN lượt đồng bộ, không
+  chỉ 1 job; (3) admin bấm 2 lần (hoặc mạng chập chờn gửi lại) nút "Duyệt"
+  có thể làm đăng trùng cùng 1 bài 2 lần. Cả 3 đã sửa xong, kiểm lại lần 2
+  xác nhận đúng. Thêm 35 test mới, toàn bộ test pass.
+  **Owner xem qua giao diện, góp ý chỉnh tiếp 2 lần**: (1) 2 nút "Duyệt"/
+  "Bỏ qua" đưa về cùng 1 hàng, 3 ô nội dung chia đều mỗi ô 1/3 hàng (ban
+  đầu làm ngược — mỗi ô chiếm trọn 1 dòng — owner phản hồi lại đúng ý
+  muốn là chia cột); (2) thêm bước xác nhận trước khi "Duyệt & lên lịch"
+  thật sự chạy, kèm cho chọn LẠI tài khoản đăng ngay tại bước xác nhận đó
+  (trước đây cố định đúng tài khoản đã chọn lúc soạn nội dung) — đổi tài
+  khoản thì hệ thống tự chọn lại đúng nhóm của tài khoản mới, không dùng
+  nhầm nhóm của tài khoản cũ. Thêm 5 test nữa, **toàn bộ 667/667 test
+  pass**. Chi tiết kỹ thuật đầy đủ ở `tasks.md`. Chưa kiểm bằng tay trên
+  trình duyệt thật (chưa có job độ tin cậy thấp thật từ bên B để thử
+  ngay lúc này) — chỉ mới kiểm qua test tự động mô phỏng đúng luồng
+  request/response. Chưa commit.
 
 ---
 
@@ -732,11 +776,15 @@ Một vài lựa chọn thiết kế đáng chú ý, được cân nhắc kỹ c
 - **[ĐÃ XÁC NHẬN SỐNG, 2026-09-28]** Chạy thử ưu tiên "tin trả tiền" với dữ
   liệu thật — xem mục "Kiểm tra lần lấy bài từ bên B (28/09)" ở Tuần 5:
   tin sponsor được xếp sớm nhất và chia đều cho 2 tài khoản, đúng thiết kế.
-- **[ĐÃ XÁC NHẬN SỐNG, 2026-10-05]** Kênh báo động qua Telegram, cộng
-  thêm trang quản lý nhiều người nhận ở `/admin` — xem Tuần 5 ở mục 4.
-  Owner đã cung cấp bot token thật, gửi thử thành công. Chỉ còn thiếu
-  khởi động lại service 1 lần để toàn bộ tính năng (báo cáo mọi lượt
-  đăng, 5 loại báo động, hỏi-đáp 2 chiều) thật sự bắt đầu chạy.
+- **[ĐÃ XÁC NHẬN SỐNG, 07/10]** Kênh báo động qua Telegram, cộng thêm
+  trang quản lý nhiều người nhận ở `/admin` — xem Tuần 5 ở mục 4. Owner
+  xác nhận chạy ổn sau khi khởi động lại service — toàn bộ tính năng
+  (báo cáo mọi lượt đăng, 5 loại báo động, hỏi-đáp 2 chiều) đã thật sự
+  hoạt động, không chỉ dừng ở test giả lập.
+- **[ĐÃ XÁC NHẬN SỐNG, 07/10]** Bug đồng bộ bên B bị kẹt 5 ngày (01/10 →
+  06/10) — đã sửa, owner khởi động lại server xác nhận đồng bộ chạy lại
+  ngay (70 job + 3 ứng viên mới, 9 bài + 2 bình luận lên lịch). Xem Tuần
+  5 + `tasks.md` để biết chi tiết nguyên nhân/cách sửa.
 - Cân nhắc mua proxy/IP riêng cho từng tài khoản nếu mở rộng quy mô.
 - Chuyển giao diện Facebook của tài khoản `nhtu00` sang tiếng Anh theo đúng quy
   định (mục 5) — đây vẫn là hướng xử lý chính; phần "hiểu cả tiếng Việt" vừa thêm

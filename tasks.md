@@ -6139,4 +6139,219 @@ lưu đó, giá trị trong `runtime_config.json` bị ghi đè thành `2.0`
       **Cần khởi động lại service 1 lần để áp dụng cả 2 bản sửa** — sau
       đó vòng đồng bộ sẽ tự chạy ngay lần đầu (không cần chờ hết 6 giờ,
       vì biến đếm thời gian trong bộ nhớ luôn reset về "chưa chạy lần
-      nào" mỗi lần khởi động). Chưa commit.
+      nào" mỗi lần khởi động). Đã commit (`59899df`) + push lên remote.
+- [x] **Owner xác nhận sống (2026-10-07)**: khởi động lại server, đồng
+      bộ bên B tự chạy lại ngay — `data_sync_cache/_sync_status.json`
+      cho `tu_iizuki` có dòng mới `last_run_at: 2026-10-06T02:11:56Z,
+      status: "ok", jobs_fetched: 70, candidates_fetched: 3,
+      scheduled_posts: 9, scheduled_comments: 2` — đúng như kỳ vọng, hết
+      hẳn tình trạng kẹt từ 01/10. Owner cũng xác nhận tính năng Telegram
+      (mục ngay trên) chạy ổn sau cùng lần restart này.
+
+## Lọc job dưới ngưỡng tin cậy — màn hình "Chờ duyệt" trước khi lên lịch (2026-10-08)
+
+Owner hỏi: luồng lấy dữ liệu bên B + lên lịch hiện có ưu tiên job độ tin
+cậy (`confidence`) từ 0.9 trở lên chưa? Trả lời: KHÔNG — trước giờ job
+chỉ có bộ lọc hoàn chỉnh dữ liệu (`_missing_job_fields()`), không hề đọc
+`confidence` cho bất kỳ việc gì (chỉ `candidate_min_confidence` áp dụng
+cho ỨNG VIÊN, không có gì tương tự cho JOB).
+
+Owner chỉnh lại ý: không phải ưu tiên, mà **lọc bỏ — job dưới 0.9 không
+được TỰ lên lịch**, nhưng vẫn phải soạn sẵn nội dung bằng template, và
+hiện ở 1 màn hình riêng cho admin duyệt trước khi thực sự lên lịch đăng.
+3 quyết định chốt qua hỏi lại trực tiếp:
+1. Lúc duyệt, hệ thống **tự tính giờ đăng ngay lúc đó** (không bắt admin
+   chọn tay).
+2. Job **thiếu hẳn trường `confidence`** → coi như CHƯA ĐỦ TIN CẬY, vào
+   hàng chờ duyệt (an toàn hơn im lặng cho qua).
+3. Ngưỡng 0.9 **sửa được qua `/admin/config`**, không hardcode.
+
+Vào Plan Mode trước khi code — việc này đụng tới pipeline `sync_all()`
+thật đang chạy mỗi 6 giờ, nên cần hiểu đúng trước khi sửa, không vá ngay.
+Xem đầy đủ lý do thiết kế ở `FB_Post_Assistant.md`.
+
+- [x] **Config mới**: `job_min_confidence` (`DataSyncConfig`, mặc định
+      `0.9`, mirror đúng mẫu `candidate_min_confidence`) — đăng ký vào
+      `EDITABLE_DATA_SYNC_FIELDS` + nhãn ở `_DATA_SYNC_LABELS`, sửa được
+      ở `/admin/config`' tab "Đồng bộ dữ liệu". Field này đi qua đúng
+      `config_save()` đã sửa ở commit `59899df` (`get_type_hints()`) —
+      thêm 1 test riêng (`test_config_save_job_min_confidence_stays_float`)
+      xác nhận field FLOAT mới cũng sống sót qua vòng Lưu, không chỉ field
+      `int` test cũ đã bắt.
+- [x] **`schedule_store.py`**: thêm dataclass **riêng** `NeedsReviewJob`
+      (KHÔNG dùng lại `ScheduledTask`) + 2 thư mục mới `needs_review/` và
+      `rejected_review/` — lý do: `ScheduledTask.scheduled_at` là field
+      bắt buộc, nhiều hàm (`new_task_id()`, `due_tasks()`) không có guard
+      cho giá trị rỗng, và job chờ duyệt vốn CHƯA có giờ đăng, chưa chốt
+      group cuối cùng. Thêm `add_needs_review()`/`list_needs_review()`/
+      `get_needs_review()`/`approve_needs_review()` (xoá file nguồn sau
+      khi đã tạo xong task thật)/`reject_needs_review()` (chuyển sang
+      `rejected_review/`, không xoá hẳn — đúng tinh thần "không gì mất
+      âm thầm" của file này).
+      **Bắt lại đúng 1 lỗi y hệt lớp lỗi đã gặp ở `_move_to()` trước đây**
+      (default param bind tại lúc ĐỊNH NGHĨA hàm, không phải lúc GỌI) —
+      `_safe_review_path()` ban đầu viết `directory: Path = NEEDS_REVIEW_DIR`
+      làm default, nên monkeypatch thư mục trong test không có tác dụng,
+      suýt ghi file test thật vào `scheduled/needs_review/` của dự án.
+      Phát hiện ngay lúc tự chạy thử tay (traceback `FileNotFoundError`),
+      sửa theo đúng mẫu `_move_to()` đã dùng (resolve ở trong thân hàm).
+      Thêm test regression riêng cho đúng lỗi này
+      (`test_safe_review_path_reads_needs_review_dir_at_call_time_not_def_time`).
+- [x] **`data_sync.py`**: `sync_all()` tách `new_jobs` thành
+      `confident_jobs`/`low_confidence_jobs` NGAY TRƯỚC khi gọi
+      `_distribute_jobs_with_sponsored_priority()` — chỉ `confident_jobs`
+      đi vào phân phối capacity/water-fill thật (job chờ duyệt không
+      chiếm slot đăng thật nào, nên không được tính vào đó, tránh đẩy 1
+      job tin cậy cao khác dời sang ngày sau vô lý). Hàm mới
+      `_draft_needs_review_jobs()`: chọn 1 account đại diện (account đầu
+      tiên theo thứ tự ổn định có nhóm đã tham gia, tôn trọng đúng ràng
+      buộc `sponsored_only` hiện có), gọi lại NGUYÊN `_pick_groups_for_job()`
+      + `content_strategist.template_variants()` đã có sẵn (không viết
+      logic soạn nội dung mới), rồi ghi `NeedsReviewJob` + `_mark_seen()`.
+      Job không có account nào hợp lệ thì bỏ qua vòng này, KHÔNG
+      `_mark_seen()` (thử lại ở lần poll sau, giống `deferred_jobs`).
+- [x] **`admin.py`**: tab thứ 3 "🔍 Chờ duyệt" ở `/admin/schedule`
+      (`_SCHEDULE_TABS` giờ có 3 giá trị) — xác minh trực tiếp trước khi
+      làm: tab này là HTMX GET swap thật (không phải CSS ẩn/hiện như tab
+      `/admin/accounts`). `_needs_review_section_html()` mô phỏng sát
+      `_missed_tasks_section_html()` — mỗi job 1 card, 1 `<textarea>` mỗi
+      nhóm dự kiến đăng (sửa được trước khi duyệt), cảnh báo rõ độ tin
+      cậy (hoặc "thiếu trường confidence"). 2 route mới:
+      `POST /admin/schedule/needs-review/{id}/approve` (với mỗi nhóm: gọi
+      `_suggest_reschedule_at()` — ĐÚNG hàm "🔄 Lên lịch lại" của task
+      quá hạn đang dùng, tự tính giờ hợp lệ gần nhất tôn trọng capacity/
+      gap/giờ yên tĩnh NGAY LÚC DUYỆT, không dùng giờ nào tính sẵn lúc
+      soạn — rồi ghi task thật vào `pending/` ngay để nhóm kế tiếp thấy
+      đúng task vừa thêm) và `POST .../reject` (chuyển sang
+      `rejected_review/`).
+      **Bắt 1 lỗi thật lúc code**: `get_account()` (`config.py`) RAISE
+      `ValueError` cho account không tồn tại, không trả `None` như giả
+      định ban đầu — route approve suýt crash 500 thay vì hiện lỗi tiếng
+      Việt gọn. Sửa dùng `get_all_accounts().get(account_id)`, đúng mẫu
+      `schedule_missed_suggest()` đã dùng sẵn.
+- [x] **Test mới**: 6 test cho `_draft_needs_review_jobs()` (độ tin cậy
+      thấp/thiếu hẳn, tôn trọng `sponsored_only`, không có account hợp lệ
+      thì không `_mark_seen()`, không làm lệch state round-robin của phân
+      phối thật), 10 test cho `NeedsReviewJob` ở `schedule_store.py`
+      (round-trip, approve xoá file, reject chuyển thư mục, `cleanup_old()`
+      dọn `rejected_review/` cũ), 10 test HTTP cho tab + 2 route mới ở
+      `admin.py` (hiện đúng nội dung/cảnh báo, duyệt tạo task thật với
+      giờ tương lai hợp lệ + giữ nội dung đã sửa, nhiều nhóm thì mỗi nhóm
+      giờ khác nhau tăng dần, review/account không tồn tại không crash),
+      1 test field `job_min_confidence` sống sót qua `/admin/config`.
+      Cũng cập nhật 3 fixture cách ly `schedule_store` có sẵn
+      (`tests/conftest.py` + 2 bản cục bộ ở `test_data_sync.py`/
+      `test_schedule_store.py`) để thêm 2 thư mục mới vào danh sách
+      monkeypatch — thiếu bước này thì test mới sẽ âm thầm ghi vào
+      `scheduled/needs_review/`/`rejected_review/` thật của dự án.
+- [x] **Tự chạy `/code-review` trên code mới trước khi báo xong** (đúng
+      quy ước `feedback_self_review_before_done`) — bắt được **6 lỗi
+      thật** qua 2 lượt soát, không phải lỗi hình thức:
+      1. **Job thiếu account hợp lệ bị mất vĩnh viễn**: `_draft_needs_review_jobs()`
+         bỏ qua job này bằng `continue` trơn, không đưa vào `deferred_jobs`
+         — đúng y hệt lớp lỗi "mất job âm thầm" đã từng gặp và sửa nhiều
+         lần ở chính file này (xem các mốc 2026-09-11/09-18). Timestamp
+         của job đã nằm trong `latest_job_ts` từ vòng fetch đầu, nên nếu
+         không giữ cursor lại, lần poll sau sẽ bỏ sót job này vĩnh viễn mà
+         không ai biết. Sửa: đổi `_draft_needs_review_jobs()` trả về danh
+         sách job bị bỏ qua, `sync_all()` gộp vào đúng `deferred_jobs` có
+         sẵn trước khi tính cursor.
+      2. **`confidence` không phải số sẽ crash cả lượt đồng bộ**: nếu bên
+         B gửi `confidence` là chuỗi (hoặc kiểu lạ khác), phép so sánh
+         `>=` trong `sync_all()` ném `TypeError`, sập NGUYÊN lượt đồng bộ
+         (không chỉ 1 job), và nếu lỡ lọt tới màn hình chờ duyệt thì
+         `{:.2f}` ở `admin.py` cũng sập trang. Sửa: thêm
+         `_safe_job_confidence()` — coi giá trị không phải số (kể cả
+         `bool`, vì Python coi `bool` là `int` nên `True` dễ bị hiểu lầm
+         thành độ tin cậy 1.0) như thiếu hẳn trường này.
+      3. **Route duyệt không an toàn khi bấm 2 lần/gửi lại**: code ban đầu
+         chỉ xoá file "chờ duyệt" SAU KHI đã tạo xong task cho mọi nhóm —
+         bấm đúp hoặc trình duyệt gửi lại request trong lúc request đầu
+         đang xử lý sẽ tạo TRÙNG task cho những nhóm đã được xử lý, nghĩa
+         là đăng trùng cùng 1 nội dung vào cùng 1 nhóm. Sửa: chuyển việc
+         xoá file (`approve_needs_review()`) lên NGAY sau khi xác nhận
+         review + account hợp lệ, TRƯỚC vòng lặp tạo task — request thứ 2
+         sẽ thấy file đã mất và dừng lại nhẹ nhàng.
+      4. **Sửa nội dung thành rỗng bị âm thầm bỏ qua**: nếu admin cố ý
+         xoá trắng 1 ô nội dung trước khi duyệt, code cũ coi chuỗi rỗng là
+         "falsy" nên tự động quay về dùng lại nội dung soạn sẵn ban đầu —
+         admin xoá mà không có tác dụng. Sửa: chỉ quay về nội dung gốc khi
+         field đó HOÀN TOÀN không có trong form gửi lên (chưa bao giờ xảy
+         ra với giao diện thật), còn field có gửi lên (dù rỗng) thì tôn
+         trọng đúng như vậy.
+      5. **Hàm trùng lặp + tham số không dùng tới**: `_safe_review_path()`
+         chép lại y nguyên logic đã có ở `_safe_path_in()` ngay phía trên
+         trong cùng file; `_draft_needs_review_jobs()` có tham số
+         `sponsored_only_ids` nhưng lại tự tính lại từ `.sponsored_only`
+         thay vì dùng tham số đó. Dọn cả 2: xoá hẳn `_safe_review_path()`
+         (dùng lại `_safe_path_in()`), đổi sang dùng đúng `sponsored_only_ids`
+         truyền vào.
+      6. (Lượt soát thứ 2, kiểm lại đúng các bản sửa trên) **Đua nhau xoá
+         file**: `approve_needs_review()` kiểm tồn tại rồi mới xoá — 2
+         request đụng đúng cùng lúc có thể cùng vượt qua bước kiểm, request
+         sau xoá file đã mất sẽ ném lỗi không được bắt. Sửa thêm
+         `missing_ok=True`.
+      Thêm 2 test mới cho đúng lỗi #1 (`sync_all()` phải nhận lại danh
+      sách job bị bỏ qua) và #2 (`_safe_job_confidence` với chuỗi/bool),
+      sửa lại 2 test cũ cho đúng hành vi mới (#3 double-approve, #4 field
+      rỗng vs field vắng mặt), thêm 1 test cho #6
+      (`test_approve_needs_review_is_idempotent...`) và 1 test cho
+      `_needs_review_section_html()` không sập khi `confidence` trên đĩa
+      không phải số (phòng dữ liệu cũ/hỏng, không chỉ phòng lúc ghi).
+      **Toàn bộ suite cuối cùng: 662/662 pass** (627 cũ + 35 mới qua cả 2
+      lượt review).
+      **Chưa kiểm bằng tay qua browser thật** (feature chỉ chạy nền +
+      admin UI, chưa có job độ tin cậy thấp thật từ bên B để thử tận nơi)
+      — test HTTP ở trên mô phỏng đúng luồng request/response của tab và
+      2 route, nhưng chưa phải click thật trên trình duyệt.
+
+### Owner xem qua UI, yêu cầu chỉnh 2 lần liên tiếp cùng ngày
+
+- [x] **Lần 1**: "Nút Bỏ qua/Duyệt & Lên lịch cho nằm cùng hàng, hiện Bỏ
+      qua đang nằm riêng. Để 3 ô nội dung rộng ra thêm." Tìm ra nguyên
+      nhân thật: CSS có sẵn `.queue-item form { @apply flex gap-2
+      items-center flex-wrap; }` (áp dụng cho MỌI form trong 1
+      `.queue-item`, không riêng gì tab này) khiến 3 khung nội dung (nằm
+      trong form "Duyệt") bị co lại thành flex-item theo nội dung thay vì
+      giãn hết hàng, còn nút "Bỏ qua" (form RIÊNG, vì post route khác)
+      tất yếu rơi xuống dòng dưới. Sửa: tách 2 nút ra khỏi cả 2 form,
+      đặt trong 1 `<div style="display:flex">` dùng chung, nút tham
+      chiếu tới form bằng attribute `form="..."` (HTML chuẩn, đúng mẫu
+      nút "🗑️ Xoá đã chọn" ở tab "Task quá hạn" đã dùng — `form=` cho
+      phép 1 nút nằm ngoài DOM của form vẫn submit đúng form đó).
+- [x] **Lần 2**: owner xem lại, muốn NGƯỢC LẠI — không phải mỗi khung
+      chiếm trọn 1 dòng, mà 3 khung chia đều 1 hàng, mỗi khung 1/3. Sửa
+      `flex:1 1 100%` (ép full-width/1 dòng riêng) thành `flex:1 1 0` +
+      `min-width:0` (chia đều không gian hàng cho các khung đang có — tự
+      thành 1/2 nếu 2 khung, 1/3 nếu 3 khung, không cố định cứng số 3).
+- [x] **Lần 3 (yêu cầu tính năng thật, không phải CSS)**: owner muốn (a)
+      có bước xác nhận trước khi "Duyệt & lên lịch" thực sự chạy, và (b)
+      chọn được tài khoản thực hiện đăng thay vì cố định đúng tài khoản
+      đã chọn lúc soạn (`_draft_needs_review_jobs()`). Thêm bước xác nhận
+      kiểu modal — ĐÚNG mẫu đã có cho "🔄 Lên lịch lại"/"Vẫn đăng ngay?"
+      (`schedule_missed_suggest()`/`_fire_now_confirm_modal_html()`),
+      chỉ khác: bước 1 phải là POST (không phải GET như 2 mẫu kia) vì cần
+      lấy đúng nội dung ĐÃ SỬA trong 3 ô (chưa lưu xuống đĩa) từ form
+      chính, mang theo qua modal bằng input ẩn.
+      Route mới `POST /admin/schedule/needs-review/{id}/confirm-modal`:
+      hiện modal có `<select>` chọn tài khoản (chỉ liệt kê tài khoản ĐỦ
+      ĐIỀU KIỆN — có tham gia nhóm, và tôn trọng đúng ràng buộc
+      "Chỉ đăng sponsored" nếu job không phải sponsored, cùng logic
+      `_draft_needs_review_jobs()` đã dùng lúc soạn), mặc định chọn sẵn
+      tài khoản ban đầu. Route `approve` (đã có) nhận thêm field
+      `account_id`: nếu ĐỔI sang tài khoản khác, groups đã chọn lúc soạn
+      (thuộc tài khoản CŨ) không dùng lại được nữa (tài khoản mới chưa
+      chắc đã tham gia đúng những nhóm đó) — chọn lại nhóm MỚI cho tài
+      khoản mới qua đúng `_pick_groups_for_job()` (cùng hàm
+      `_draft_needs_review_jobs()` dùng), giữ nguyên nội dung đã sửa
+      (ghép lại theo thứ tự, vì nội dung chỉ khác nhau ở câu mở đầu, không
+      gắn với 1 nhóm cụ thể). Không đổi tài khoản (bấm Xác nhận ngay) thì
+      hành vi y như cũ, dùng lại đúng nhóm đã soạn, không chọn lại cho
+      tốn công.
+      Thêm 5 test mới (modal hiện đúng danh sách + chọn sẵn đúng tài
+      khoản ban đầu, báo lỗi khi review/tài khoản không còn hợp lệ, đổi
+      tài khoản thì đăng vào ĐÚNG nhóm của tài khoản mới — không phải
+      nhóm tài khoản cũ, tài khoản gửi lên không hợp lệ thì tự quay về
+      tài khoản ban đầu). **Toàn bộ suite: 667/667 pass.** Vẫn chưa kiểm
+      tay qua browser thật — mọi thay đổi trên đều mới chỉ qua test HTTP
+      tự động. Chưa commit.

@@ -39,6 +39,16 @@ CANCELLED_DIR = SCHEDULE_ROOT / "cancelled"
 # poll-interval lag, or a backlog from an account being rate-limited) is
 # NEVER swept here — only the one-time startup check looks at this at all.
 MISSED_DIR = SCHEDULE_ROOT / "missed"
+# Jobs sync_all() drafted via template but held back from pending/ because
+# their confidence is below DataSyncConfig.job_min_confidence (2026-10-08,
+# owner request — see NeedsReviewJob below). REJECTED_REVIEW_DIR is where
+# a "🗑️ Bỏ qua" click on one of these lands — same "never silently delete"
+# reasoning as CANCELLED_DIR, just a separate directory since a
+# NeedsReviewJob is not a ScheduledTask and mixing the two shapes into one
+# directory would break every reader that assumes CANCELLED_DIR only ever
+# holds ScheduledTask JSON.
+NEEDS_REVIEW_DIR = SCHEDULE_ROOT / "needs_review"
+REJECTED_REVIEW_DIR = SCHEDULE_ROOT / "rejected_review"
 
 
 @dataclass
@@ -94,8 +104,40 @@ class ScheduledTask:
     retry_of_log_id: int | None = None
 
 
+@dataclass
+class NeedsReviewJob:
+    """A job sync_all() drafted via template but did NOT auto-schedule,
+    because its side-B `confidence` is below DataSyncConfig.job_min_confidence
+    (or missing entirely — treated the same as below-threshold). Lives in
+    NEEDS_REVIEW_DIR until an admin approves it (at which point it becomes
+    one real ScheduledTask per group, written to PENDING_DIR — see
+    admin.py's schedule_needs_review_approve()) or rejects it (moved to
+    REJECTED_REVIEW_DIR, never deleted outright).
+
+    Deliberately NOT a ScheduledTask: this has no `scheduled_at` yet (the
+    whole point is that one isn't picked until approval — see
+    _suggest_reschedule_at()), and `account_id`+`groups` here are only a
+    representative DRAFT pick (data_sync.py's sync_all() didn't run this
+    job through the real capacity-aware distribution, since it was never
+    going to consume a real posting slot) — forcing this into
+    ScheduledTask's schema (which several functions, e.g. new_task_id()/
+    due_tasks(), assume `scheduled_at` is always a valid non-empty string)
+    would mean either a fake placeholder time or new None-handling sprinkled
+    through code that has no other reason to expect it."""
+    review_id: str
+    account_id: str
+    groups: list[dict]  # dataclasses.asdict(GroupRef) per group — see data_sync.py's _draft_needs_review_jobs()
+    contents: list[str]  # same order as groups, one template_variants() draft per group
+    confidence: float | None
+    reasoning: str = ""
+    source_kind: str = "job"
+    source_id: str = ""
+    job_data: dict | None = None  # same {"title","attributes","sponsored_by"} shape as ScheduledTask.job_data
+    created_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+
+
 def ensure_dirs() -> None:
-    for d in (PENDING_DIR, POSTED_DIR, FAILED_DIR, CANCELLED_DIR, MISSED_DIR):
+    for d in (PENDING_DIR, POSTED_DIR, FAILED_DIR, CANCELLED_DIR, MISSED_DIR, NEEDS_REVIEW_DIR, REJECTED_REVIEW_DIR):
         d.mkdir(parents=True, exist_ok=True)
 
 
@@ -477,7 +519,7 @@ def cleanup_old(retention_days: int | None = None) -> dict[str, int]:
     if retention_days is None:
         from human_bot.runtime_config import get_retention_config
         retention_days = get_retention_config().schedule_days
-    removed = {"posted": 0, "failed": 0, "cancelled": 0, "missed_orphans": 0}
+    removed = {"posted": 0, "failed": 0, "cancelled": 0, "missed_orphans": 0, "rejected_review": 0}
     if retention_days <= 0:
         return removed  # "never auto-delete" — see human_bot/retention_config.py
     ensure_dirs()
@@ -506,4 +548,87 @@ def cleanup_old(retention_days: int | None = None) -> dict[str, int]:
         if mtime < cutoff:
             path.unlink()
             removed["missed_orphans"] += 1
+    for path in REJECTED_REVIEW_DIR.glob("*.json"):
+        if not path.is_file():
+            continue
+        mtime = datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc)
+        if mtime < cutoff:
+            path.unlink()
+            removed["rejected_review"] += 1
     return removed
+
+
+def new_review_id() -> str:
+    """Same sortable-prefix idea as new_task_id(), keyed off `created_at`
+    instead — a NeedsReviewJob has no scheduled_at to sort by yet."""
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    return f"{stamp}_{uuid.uuid4().hex[:8]}"
+
+
+def add_needs_review(review: NeedsReviewJob) -> str:
+    ensure_dirs()
+    path = _safe_path_in(review.review_id, NEEDS_REVIEW_DIR)
+    path.write_text(json.dumps(asdict(review), indent=2, ensure_ascii=False), encoding="utf-8")
+    return review.review_id
+
+
+def _read_review(path: Path) -> NeedsReviewJob | None:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    known = {f for f in NeedsReviewJob.__dataclass_fields__}
+    return NeedsReviewJob(**{k: v for k, v in data.items() if k in known})
+
+
+def get_needs_review(review_id: str) -> NeedsReviewJob | None:
+    return _read_review(_safe_path_in(review_id, NEEDS_REVIEW_DIR))
+
+
+def list_needs_review() -> list[NeedsReviewJob]:
+    """Oldest-drafted first — there is no scheduled_at to sort by, so
+    received/drafted order (created_at) is the most useful default for an
+    admin working through a backlog."""
+    ensure_dirs()
+    items = []
+    for path in sorted(NEEDS_REVIEW_DIR.glob("*.json")):
+        review = _read_review(path)
+        if review is not None:
+            items.append(review)
+    items.sort(key=lambda r: r.created_at)
+    return items
+
+
+def approve_needs_review(review_id: str) -> bool:
+    """Called by admin.py's schedule_needs_review_approve() as soon as
+    the review is confirmed to exist — BEFORE it builds/add()s the real
+    ScheduledTask(s), not after (2026-10-08 fix: removing this file only
+    after the per-group loop finished made a double-click/retry re-enter
+    the whole loop and create duplicate ScheduledTasks for groups already
+    scheduled by the first, in-flight request — claiming the review here
+    first means a concurrent second call sees it already gone and no-ops
+    instead). Same "the real record is what matters, the draft can go"
+    reasoning as restore_to_pending() removing the MISSED_DIR source
+    after re-adding to PENDING_DIR. The is_file()-then-unlink() below is
+    not atomic — under a genuinely concurrent double-approve (two
+    requests landing at nearly the same instant) both could pass the
+    is_file() check before either unlinks; `missing_ok=True` makes the
+    second unlink() a no-op instead of an unhandled FileNotFoundError
+    surfacing as a 500 in admin.py's route."""
+    path = _safe_path_in(review_id, NEEDS_REVIEW_DIR)
+    if not path.is_file():
+        return False
+    path.unlink(missing_ok=True)
+    return True
+
+
+def reject_needs_review(review_id: str) -> bool:
+    """"🗑️ Bỏ qua" — moved to REJECTED_REVIEW_DIR, never deleted outright,
+    same "never silently delete" pattern as cancel()/cancel_missed()."""
+    ensure_dirs()
+    src = _safe_path_in(review_id, NEEDS_REVIEW_DIR)
+    if not src.is_file():
+        return False
+    dest = REJECTED_REVIEW_DIR / src.name
+    src.rename(dest)
+    return True

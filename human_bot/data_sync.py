@@ -42,6 +42,7 @@ False.
 """
 from __future__ import annotations
 
+import dataclasses
 import json
 import logging
 import os
@@ -1081,6 +1082,114 @@ def _pick_groups_for_job(
     return random.sample(pool, min(needed, len(pool)))
 
 
+def _safe_job_confidence(job: dict) -> float | None:
+    """side B's `attributes.confidence` as a real number, or None if it's
+    missing OR not numeric at all — defensive because this value drives a
+    `>=` comparison against cfg.job_min_confidence (sync_all()'s
+    confidence split) and an admin.py `:.2f` format call
+    (_needs_review_section_html()); a stray non-numeric value (e.g. a
+    string) reaching either unguarded would raise and take down the
+    WHOLE poll cycle for every job in the same batch, not just this one.
+    Treated the same as "missing" (None) — the safer default, same as
+    decision #2 (owner, via AskUserQuestion). `bool` excluded even though
+    it's technically an `int` subclass in Python (`isinstance(True, int)`
+    is True) — a malformed `confidence: true` from side B must read as
+    invalid/missing, never as a real 1.0 (full confidence) score that
+    would route straight into the auto-scheduled path unreviewed."""
+    confidence = (job.get("attributes") or {}).get("confidence")
+    if isinstance(confidence, bool):
+        return None
+    return confidence if isinstance(confidence, (int, float)) else None
+
+
+def _draft_needs_review_jobs(
+    jobs: list[dict], accounts: dict[str, AccountConfig], sponsored_only_ids: set[str], cfg: DataSyncConfig,
+) -> list[dict]:
+    """sync_all()'s confidence gate (2026-10-08, owner request — job
+    confidence < cfg.job_min_confidence, or missing entirely, is treated
+    as not-confident-enough) routes jobs here instead of into the real
+    capacity-aware distribution (_distribute_jobs_with_sponsored_priority()).
+    They are NOT going to be scheduled this cycle, so counting them
+    against job_capacities would just push a confident job to a later
+    business day for no reason.
+
+    Each job still gets a REPRESENTATIVE account+groups pick (first
+    eligible account in stable `account_id` order, same sponsored_only
+    constraint the real distribution enforces) purely so
+    content_strategist.template_variants() has a real group count to
+    draft against — the admin sees exactly what WOULD be posted.
+    Approving it (admin.py's schedule_needs_review_approve()) is what
+    actually commits to that account/groups and picks a real
+    scheduled_at via _suggest_reschedule_at(), re-checking capacity fresh
+    at that later moment rather than trusting this draft-time pick.
+
+    Returns the jobs that could NOT be drafted (no eligible account at
+    all, e.g. every account with joined groups is sponsored_only and the
+    job isn't sponsored) — the caller MUST merge these into sync_all()'s
+    own `deferred_jobs` before computing the next poll's cursor
+    (_cursor()), same as every other deferred item elsewhere in that
+    function. Forgetting this would be a real, previously-seen bug class
+    in this exact file (see job_capacities/groups_posted_this_job's own
+    2026-09-11/09-18 history): the job's timestamp already fed into
+    `latest_job_ts` in the fetch loop above, so if the cursor is allowed
+    to advance past it while it's neither _mark_seen()'d nor deferred, it
+    silently falls out of side B's `since` window forever on the very
+    next poll. These returned jobs are deliberately NOT _mark_seen()'d
+    themselves — _cursor() takes care of giving up on a chronically-
+    undeliverable one via max_cursor_holdback_days, same safety valve
+    every other deferred item already relies on."""
+    eligible_accounts = sorted(
+        (
+            (aid, acc) for aid, acc in accounts.items()
+            if get_joined_groups(aid) and acc.rate_limits.max_groups_per_post > 0
+        ),
+        key=lambda pair: pair[0],
+    )
+    skipped: list[dict] = []
+    for job in jobs:
+        jid = str(job.get("id") or "")
+        confidence = _safe_job_confidence(job)
+        sponsored_by = job.get("sponsored_by")
+        aid, account = None, None
+        for candidate_aid, candidate_acc in eligible_accounts:
+            if candidate_aid in sponsored_only_ids and not sponsored_by:
+                continue
+            aid, account = candidate_aid, candidate_acc
+            break
+        if account is None:
+            skipped.append(job)
+            continue
+        groups = _pick_groups_for_job(
+            get_joined_groups(aid), {}, needed=account.rate_limits.max_groups_per_post,
+        )
+        if not groups:
+            skipped.append(job)
+            continue
+        contents = content_strategist.template_variants(job, groups)
+        job_kind = f"sponsored job (by {sponsored_by})" if sponsored_by else "job"
+        review = schedule_store.NeedsReviewJob(
+            review_id=schedule_store.new_review_id(),
+            account_id=aid,
+            groups=[dataclasses.asdict(g) for g in groups],
+            contents=contents,
+            confidence=confidence,
+            reasoning=(
+                f"needs review: {job_kind} {jid} confidence {confidence} "
+                f"below threshold {cfg.job_min_confidence}"
+            ),
+            source_kind="job",
+            source_id=jid,
+            job_data={
+                "title": job.get("title"),
+                "attributes": job.get("attributes") or {},
+                "sponsored_by": sponsored_by,
+            },
+        )
+        schedule_store.add_needs_review(review)
+        _mark_seen(jid, "job")
+    return skipped
+
+
 # --- Draft content (candidate outreach — see module docstring) --------------
 # Job-post drafting (which needs per-group variation) lives in
 # human_bot/content_strategist.py's draft_group_post_variants() instead.
@@ -1300,6 +1409,23 @@ async def sync_all(account_ids: list[str], cfg: DataSyncConfig | None = None) ->
             continue
         new_jobs.append(job)
 
+    # --- Confidence gate (2026-10-08, owner request): a job below
+    # cfg.job_min_confidence — or missing the field entirely, side B
+    # didn't send it, treated the same as below-threshold (the safer
+    # default) — is never auto-scheduled. It still gets a template draft
+    # (_draft_needs_review_jobs() below) and _mark_seen() like any other
+    # fully-handled job, but lands in schedule_store's needs_review/ for
+    # an admin to approve at /admin/schedule's "Chờ duyệt" tab instead of
+    # competing for real posting capacity in the distribution just below.
+    confident_jobs = []
+    low_confidence_jobs = []
+    for job in new_jobs:
+        confidence = _safe_job_confidence(job)
+        if confidence is not None and confidence >= cfg.job_min_confidence:
+            confident_jobs.append(job)
+        else:
+            low_confidence_jobs.append(job)
+
     # Accounts with NO joined groups excluded entirely (2026-09-11, project
     # owner's call) — confirmed live as a real bug: such an account still
     # got a water-fill share of new jobs (job_capacities only checked
@@ -1337,8 +1463,16 @@ async def sync_all(account_ids: list[str], cfg: DataSyncConfig | None = None) ->
 
     sponsored_only_ids = {aid for aid, acc in accounts.items() if acc.sponsored_only}
     job_assignment, deferred_jobs = _distribute_jobs_with_sponsored_priority(
-        new_jobs, job_capacities, sponsored_only_ids,
+        confident_jobs, job_capacities, sponsored_only_ids,
     )
+    # Merged into the SAME deferred_jobs the real distribution above
+    # produced — a low-confidence job with no eligible account is not
+    # _mark_seen()'d (see _draft_needs_review_jobs()'s docstring), so it
+    # MUST be in this list before jobs_cursor is computed below, or its
+    # timestamp (already folded into latest_job_ts by the fetch loop
+    # above) would let the cursor advance past it and drop it from side
+    # B's `since` window forever on the very next poll.
+    deferred_jobs.extend(_draft_needs_review_jobs(low_confidence_jobs, accounts, sponsored_only_ids, cfg))
 
     # --- Candidates: same idea, but the confidence/age/contact skip check
     # is account-independent, so it's applied ONCE up front — a candidate

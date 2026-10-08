@@ -38,7 +38,7 @@ from starlette.middleware.sessions import SessionMiddleware
 
 import human_bot.schedule_store as schedule_store
 from human_bot.admin import NotLoggedIn, router as admin_router
-from human_bot.config import AccountConfig, RateLimits
+from human_bot.config import AccountConfig, GroupRef, RateLimits
 
 
 def _make_test_app() -> FastAPI:
@@ -588,3 +588,247 @@ def test_borrow_confirm_task_not_found(client, account_with_rate_limits):
     resp = client.post("/admin/schedule/missed/borrow-confirm", data={"task_id_a": "nonexistent", "task_id_b": pending.task_id})
     assert resp.status_code in (200, 303)
     assert schedule_store.get(pending.task_id).scheduled_at == pending.scheduled_at
+
+
+# --- "🔍 Chờ duyệt" tab (2026-10-08, job_min_confidence gate) --------------
+
+def _add_review(account_id="acc-a", confidence=0.5, contents=("nội dung gốc",), title="Thợ hàn") -> schedule_store.NeedsReviewJob:
+    review = schedule_store.NeedsReviewJob(
+        review_id=schedule_store.new_review_id(),
+        account_id=account_id,
+        groups=[{"id": f"g{i}", "name": f"Group {i}", "url": f"https://facebook.com/groups/{i}"} for i in range(len(contents))],
+        contents=list(contents),
+        confidence=confidence,
+        reasoning="needs review: test",
+        source_id="job-1",
+        job_data={"title": title, "attributes": {}, "sponsored_by": None},
+    )
+    schedule_store.add_needs_review(review)
+    return review
+
+
+@pytest.fixture
+def two_accounts_with_groups(monkeypatch, tmp_path):
+    """Registers 2 accounts, each a member of its OWN distinct group —
+    for the "✅ Duyệt & lên lịch" account-override tests (2026-10-08,
+    owner request), where switching accounts must re-pick groups rather
+    than reusing the originally-drafted account's group list. Same
+    action_log_path-via-monkeypatch.setattr(AccountConfig, ...) pattern
+    as account_with_rate_limits, for the same leak-prevention reason."""
+    import human_bot.admin as admin_module
+
+    def _make(**rate_limit_kwargs):
+        action_log = tmp_path / "action_log.jsonl"
+        action_log.write_text("")
+        monkeypatch.setattr(AccountConfig, "action_log_path", property(lambda self: action_log))
+        acc_a = AccountConfig(account_id="acc-a", display_name="Acc A", rate_limits=RateLimits(**rate_limit_kwargs))
+        acc_b = AccountConfig(account_id="acc-b", display_name="Acc B", rate_limits=RateLimits(**rate_limit_kwargs))
+        accounts = {"acc-a": acc_a, "acc-b": acc_b}
+        groups = {
+            "acc-a": [GroupRef(name="Group A", url="https://facebook.com/groups/a")],
+            "acc-b": [GroupRef(name="Group B", url="https://facebook.com/groups/b")],
+        }
+        monkeypatch.setattr(admin_module, "get_all_accounts", lambda: accounts)
+        monkeypatch.setattr(admin_module, "get_joined_groups", lambda aid: groups.get(aid, []))
+        return accounts
+
+    return _make
+
+
+def test_needs_review_tab_shows_drafted_job_with_confidence_warning(client):
+    review = _add_review(confidence=0.42, title="Thợ hàn chuyên nghiệp")
+    resp = client.get("/admin/schedule?tab=needs_review")
+    assert "Thợ hàn chuyên nghiệp" in resp.text
+    assert "0.42" in resp.text
+    assert "nội dung gốc" in resp.text
+    assert review.review_id in resp.text
+
+
+def test_needs_review_tab_does_not_crash_on_a_non_numeric_confidence_on_disk(client):
+    """2026-10-08 code-review fix: data_sync.py's _safe_job_confidence()
+    guards the WRITE path, but _needs_review_section_html()'s own
+    `:.2f` format must independently survive a non-numeric value already
+    sitting on disk (hand-edited file, or a future writer that bypasses
+    that guard) — one malformed row must not break the whole tab."""
+    review = _add_review()
+    review.confidence = "not-a-number"
+    schedule_store.add_needs_review(review)  # overwrites with the bad value
+    resp = client.get("/admin/schedule?tab=needs_review")
+    assert resp.status_code == 200
+    assert "Thiếu trường độ tin cậy" in resp.text
+
+
+def test_needs_review_tab_shows_missing_confidence_as_a_warning(client):
+    _add_review(confidence=None)
+    resp = client.get("/admin/schedule?tab=needs_review")
+    assert "Thiếu trường độ tin cậy" in resp.text
+
+
+def test_needs_review_tab_empty_state(client):
+    resp = client.get("/admin/schedule?tab=needs_review")
+    assert "Không có job nào chờ duyệt" in resp.text
+
+
+def test_needs_review_approve_creates_pending_task_with_edited_content_and_future_time(client, account_with_rate_limits):
+    account_with_rate_limits(posts_per_day=30)
+    review = _add_review(contents=("nội dung gốc",))
+    now = datetime.now(timezone.utc)
+
+    resp = client.post(f"/admin/schedule/needs-review/{review.review_id}/approve", data={"content_0": "nội dung đã sửa"})
+    assert resp.status_code in (200, 303)
+    assert schedule_store.get_needs_review(review.review_id) is None  # review consumed
+
+    pending = schedule_store.list_pending()
+    assert len(pending) == 1
+    task = pending[0]
+    assert task.content == "nội dung đã sửa"  # edited content honored, not the original draft
+    assert task.account_id == "acc-a"
+    assert task.target_url == "https://facebook.com/groups/0"
+    assert task.action == "post_to_group"
+    scheduled = datetime.fromisoformat(task.scheduled_at.replace("Z", "+00:00"))
+    assert scheduled > now  # a real future slot, not a leftover draft-time placeholder
+
+
+def test_needs_review_approve_honors_a_deliberately_blanked_field(client, account_with_rate_limits):
+    """2026-10-08 fix: a SUBMITTED blank textarea (admin deliberately
+    cleared it) must be honored as-is, not silently replaced with the
+    original draft the admin just deleted — only a field entirely ABSENT
+    from the form (never the real UI) falls back to the original."""
+    account_with_rate_limits(posts_per_day=30)
+    review = _add_review(contents=("nội dung gốc",))
+    resp = client.post(f"/admin/schedule/needs-review/{review.review_id}/approve", data={"content_0": ""})
+    assert resp.status_code in (200, 303)
+    assert schedule_store.list_pending()[0].content == ""
+
+
+def test_needs_review_approve_falls_back_to_original_content_when_field_absent(client, account_with_rate_limits):
+    account_with_rate_limits(posts_per_day=30)
+    review = _add_review(contents=("nội dung gốc",))
+    resp = client.post(f"/admin/schedule/needs-review/{review.review_id}/approve", data={})
+    assert resp.status_code in (200, 303)
+    assert schedule_store.list_pending()[0].content == "nội dung gốc"
+
+
+def test_needs_review_approve_creates_one_task_per_group_with_increasing_times(client, account_with_rate_limits):
+    """Multi-group job: each group's own _suggest_reschedule_at() call
+    must see the PREVIOUS group's just-added pending task (already
+    accounted for by that function itself) and land after it — never the
+    exact same slot twice."""
+    account_with_rate_limits(posts_per_day=30, post_min_delay_seconds=1, post_max_delay_seconds=2)
+    review = _add_review(contents=("nội dung 1", "nội dung 2"))
+    resp = client.post(
+        f"/admin/schedule/needs-review/{review.review_id}/approve",
+        data={"content_0": "nội dung 1", "content_1": "nội dung 2"},
+    )
+    assert resp.status_code in (200, 303)
+    pending = sorted(schedule_store.list_pending(), key=lambda t: t.scheduled_at)
+    assert len(pending) == 2
+    assert pending[0].scheduled_at < pending[1].scheduled_at
+    assert {t.content for t in pending} == {"nội dung 1", "nội dung 2"}
+    assert {t.target_url for t in pending} == {"https://facebook.com/groups/0", "https://facebook.com/groups/1"}
+
+
+def test_needs_review_confirm_modal_shows_eligible_accounts_with_original_preselected(client, two_accounts_with_groups):
+    two_accounts_with_groups(posts_per_day=30)
+    review = _add_review(account_id="acc-a", contents=("nội dung gốc",))
+    resp = client.post(f"/admin/schedule/needs-review/{review.review_id}/confirm-modal", data={"content_0": "nội dung gốc"})
+    assert resp.status_code == 200
+    assert "Acc A" in resp.text and "Acc B" in resp.text
+    assert f'value="acc-a" selected' in resp.text
+    assert 'name="content_0" value="nội dung gốc"' in resp.text
+
+
+def test_needs_review_confirm_modal_missing_review_shows_error(client):
+    resp = client.post("/admin/schedule/needs-review/nonexistent/confirm-modal", data={})
+    assert resp.status_code == 200
+    assert "error" in resp.text
+
+
+def test_needs_review_confirm_modal_no_eligible_accounts_shows_error(client):
+    """No accounts registered at all — _needs_review_eligible_accounts()
+    returns an empty dict, must not crash building the (empty) <select>."""
+    review = _add_review()
+    resp = client.post(f"/admin/schedule/needs-review/{review.review_id}/confirm-modal", data={})
+    assert resp.status_code == 200
+    assert "Không có tài khoản hợp lệ" in resp.text
+
+
+def test_needs_review_approve_with_different_account_reposts_to_that_accounts_own_groups(client, two_accounts_with_groups):
+    """2026-10-08 owner request: picking a DIFFERENT account at the
+    confirm modal must NOT reuse the originally-drafted account's group
+    URLs (acc-b might not even be a member of acc-a's group) — groups
+    are re-picked fresh for the chosen account instead."""
+    two_accounts_with_groups(posts_per_day=30)
+    review = _add_review(account_id="acc-a", contents=("nội dung gốc",))
+    resp = client.post(
+        f"/admin/schedule/needs-review/{review.review_id}/approve",
+        data={"content_0": "nội dung gốc", "account_id": "acc-b"},
+    )
+    assert resp.status_code in (200, 303)
+    pending = schedule_store.list_pending()
+    assert len(pending) == 1
+    assert pending[0].account_id == "acc-b"
+    assert pending[0].target_url == "https://facebook.com/groups/b"  # acc-b's own group, not acc-a's
+
+
+def test_needs_review_approve_falls_back_to_original_account_when_submitted_account_not_eligible(client, two_accounts_with_groups):
+    two_accounts_with_groups(posts_per_day=30)
+    review = _add_review(account_id="acc-a", contents=("nội dung gốc",))
+    resp = client.post(
+        f"/admin/schedule/needs-review/{review.review_id}/approve",
+        data={"content_0": "nội dung gốc", "account_id": "acc-ghost"},
+    )
+    assert resp.status_code in (200, 303)
+    pending = schedule_store.list_pending()
+    assert len(pending) == 1
+    assert pending[0].account_id == "acc-a"
+    # Falling back to the review's ORIGINAL account means its ORIGINAL
+    # (already-drafted) groups are reused as-is too — no re-pick needed,
+    # since nothing about the account actually changed.
+    assert pending[0].target_url == review.groups[0]["url"]
+
+
+def test_needs_review_approve_is_not_reentrant_a_second_call_is_a_no_op(client, account_with_rate_limits):
+    """2026-10-08 fix (code review finding): the review is claimed
+    (approve_needs_review()) BEFORE the per-group loop creates tasks, not
+    after — so a retried/duplicated request for the SAME review_id (the
+    realistic case: a double-click) must find it already gone and create
+    NO additional tasks, never a duplicate post to the same group."""
+    account_with_rate_limits(posts_per_day=30)
+    review = _add_review(contents=("nội dung gốc",))
+    first = client.post(f"/admin/schedule/needs-review/{review.review_id}/approve", data={"content_0": "x"})
+    assert first.status_code in (200, 303)
+    assert len(schedule_store.list_pending()) == 1
+    second = client.post(f"/admin/schedule/needs-review/{review.review_id}/approve", data={"content_0": "x"})
+    assert second.status_code in (200, 303)
+    assert len(schedule_store.list_pending()) == 1  # unchanged — no duplicate
+
+
+def test_needs_review_approve_missing_review_shows_error(client):
+    resp = client.post("/admin/schedule/needs-review/nonexistent/approve", data={})
+    assert resp.status_code in (200, 303)
+    assert schedule_store.list_pending() == []
+
+
+def test_needs_review_approve_missing_account_shows_error(client):
+    """account_with_rate_limits NOT used here — "acc-a" is not registered
+    at all, so get_all_accounts() has nothing to look it up in."""
+    review = _add_review(account_id="acc-ghost")
+    resp = client.post(f"/admin/schedule/needs-review/{review.review_id}/approve", data={})
+    assert resp.status_code in (200, 303)
+    assert schedule_store.list_pending() == []
+    assert schedule_store.get_needs_review(review.review_id) is not None  # left untouched, not silently consumed
+
+
+def test_needs_review_reject_moves_to_rejected_dir_and_does_not_schedule(client):
+    review = _add_review()
+    resp = client.post(f"/admin/schedule/needs-review/{review.review_id}/reject")
+    assert resp.status_code in (200, 303)
+    assert schedule_store.get_needs_review(review.review_id) is None
+    assert schedule_store.list_pending() == []
+    assert len(list(schedule_store.REJECTED_REVIEW_DIR.glob("*.json"))) == 1
+
+
+def test_needs_review_reject_already_resolved_is_a_graceful_no_op(client):
+    resp = client.post("/admin/schedule/needs-review/nonexistent/reject")
+    assert resp.status_code in (200, 303)

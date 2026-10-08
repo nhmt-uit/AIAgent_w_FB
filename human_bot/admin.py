@@ -61,6 +61,7 @@ from human_bot import bootstrap_login_sessions, browser_pool, db, schedule_store
 from human_bot.agent import TaskRequest, run_task
 from human_bot.config import (
     ACCOUNT_AGE_TIERS,
+    AccountConfig,
     AccountStatus,
     GroupRef,
     RateLimits,
@@ -71,6 +72,7 @@ from human_bot.data_sync import (
     apply_quiet_hours,
     get_all_sync_statuses,
     _format_attr,
+    _pick_groups_for_job,
     _CANDIDATE_REPLY_TEMPLATES_DEFAULT,
 )
 from human_bot.content_strategist import (
@@ -78,6 +80,7 @@ from human_bot.content_strategist import (
     _CONTACT_CTA_DEFAULT,
     _MISSING_INFO_SUFFIXES_DEFAULT,
     _VISA_TYPE_NAMES_DEFAULT,
+    _join_list_or_str,
 )
 from human_bot.data_sync_config import DataSyncConfig
 from human_bot.scheduling_config import SchedulingConfig
@@ -367,6 +370,7 @@ _DATA_SYNC_LABELS: dict[str, str] = {
     "quiet_hour_end_local": "Giờ kết thúc khung giờ yên tĩnh (giờ địa phương, 0-23)",
     "candidate_min_confidence": "Độ tin cậy tối thiểu để nhắn ứng viên (0-1)",
     "candidate_max_age_days": "Chỉ nhắn ứng viên có bài đăng trong vòng bao nhiêu ngày",
+    "job_min_confidence": "Độ tin cậy tối thiểu để TỰ lên lịch đăng job (0-1) — job thấp hơn mức này vẫn soạn sẵn nội dung bằng template nhưng chờ admin duyệt ở tab \"Chờ duyệt\" của /admin/schedule, không tự lên lịch",
     "max_overflow_business_days": "Giới hạn số ngày nghiệp vụ được phép tràn khi hết hạn mức hôm nay (job sponsored cần chỗ trống gần, xem tài khoản 'Chỉ đăng sponsored' ở /admin/accounts)",
     "max_cursor_holdback_days": "Số ngày tối đa giữ lùi con trỏ đồng bộ cho 1 job/candidate cứ bị hoãn mãi — quá hạn thì bỏ qua nó thay vì quét lại toàn bộ lịch sử vô thời hạn",
     "cache_retention_days": "Số ngày giữ lại cache chống trùng trước khi dọn",
@@ -4686,7 +4690,79 @@ def _missed_pagination_html(
 </div>"""
 
 
-_SCHEDULE_TABS = ("pending", "missed")
+def _needs_review_section_html(accounts: dict) -> str:
+    """"🔍 Chờ duyệt" tab (2026-10-08, owner request — data_sync.py's
+    job_min_confidence gate, see sync_all()'s confidence split and
+    _draft_needs_review_jobs()'s docstring). One row per NeedsReviewJob,
+    NOT per group — a job's groups/contents are approved or rejected
+    together as one unit, same granularity the draft was made at. Mirrors
+    _missed_tasks_section_html()'s editable-textarea-per-item pattern;
+    no pagination yet since this queue is expected to stay small (owner
+    manually clears it), unlike the pending/missed tabs."""
+    reviews = schedule_store.list_needs_review()
+    if not reviews:
+        return '<div class="empty-state">Không có job nào chờ duyệt.</div>'
+
+    cfg = get_data_sync_config()
+    items_html = []
+    for r in reviews:
+        title = _join_list_or_str((r.job_data or {}).get("title")) or "(không có tiêu đề)"
+        # isinstance check, not `is not None` — defends the `:.2f` format
+        # below against a non-numeric value on disk (e.g. a hand-edited
+        # needs_review/*.json, or a future caller that bypasses
+        # data_sync.py's own _safe_job_confidence() guard at write time):
+        # ValueError there would otherwise crash this whole tab's render,
+        # not just the one malformed row.
+        confidence_html = (
+            f"⚠️ Độ tin cậy: {r.confidence:.2f} (dưới mốc {cfg.job_min_confidence:.2f})"
+            if isinstance(r.confidence, (int, float)) and not isinstance(r.confidence, bool)
+            else f"⚠️ Thiếu trường độ tin cậy (confidence) — coi như chưa đủ tin cậy (mốc hiện tại: {cfg.job_min_confidence:.2f})"
+        )
+        # flex:1 1 0 + min-width:0 (owner request, 2026-10-08) divides the
+        # row EVENLY among however many group boxes there are (1/3 each
+        # for 3 groups) instead of each shrinking to its own content width
+        # — `.queue-item form { @apply flex ... flex-wrap }` (admin.py's
+        # CSS, shared by every action form inside a .queue-item) already
+        # makes this a flex row; min-width:0 is needed too, or a flex
+        # item's default min-width:auto stops it shrinking below its
+        # textarea's intrinsic content width, breaking the even 3-way split.
+        group_fields = []
+        for i, (g, content) in enumerate(zip(r.groups, r.contents)):
+            group_name = html.escape(g.get("name") or g.get("url") or f"nhóm {i + 1}")
+            content_full = html.escape(content or "")
+            group_fields.append(f"""
+  <div style="flex:1 1 0; min-width:0; margin-top:8px;">
+    <div class="field-key">Nhóm: {group_name}</div>
+    <textarea name="content_{i}" style="width:100%; min-height:60px; box-sizing:border-box;">{content_full}</textarea>
+  </div>""")
+        approve_form_id = f"needs-review-approve-{r.review_id}"
+        reject_form_id = f"needs-review-reject-{r.review_id}"
+        items_html.append(f"""
+<div class="queue-item" style="border-left:3px solid #8b5cf6;">
+  <span class="queue-filename">{_action_badge_html("post_to_group")}{_sponsor_badge_html(r)} · {html.escape(_account_label(r.account_id, accounts))}</span>
+  <div class="field-key">{html.escape(title)}</div>
+  <div class="warning-inline">{confidence_html}</div>
+  <form id="{approve_form_id}" method="post" action="/admin/schedule/needs-review/{r.review_id}/confirm-modal"
+        hx-post="/admin/schedule/needs-review/{r.review_id}/confirm-modal" hx-target="#modal-root" hx-swap="innerHTML">
+    {"".join(group_fields)}
+  </form>
+  <form id="{reject_form_id}" method="post" action="/admin/schedule/needs-review/{r.review_id}/reject"
+        hx-post="/admin/schedule/needs-review/{r.review_id}/reject" hx-target="#schedule-content" hx-swap="outerHTML"
+        hx-confirm="Bỏ qua job này? Nó sẽ không được đăng."></form>
+  <div style="display:flex; gap:8px; margin-top:8px;">
+    <button type="submit" form="{approve_form_id}" class="btn-small">✅ Duyệt &amp; lên lịch</button>
+    <button type="submit" form="{reject_form_id}" class="btn-secondary btn-small">🗑️ Bỏ qua</button>
+  </div>
+</div>""")
+
+    return f"""
+<div class="card">
+  <p class="page-desc" style="margin:0 0 8px;">Job có độ tin cậy dưới mốc hiện tại (hoặc thiếu hẳn trường này) — đã soạn sẵn nội dung bằng template nhưng CHƯA được tự lên lịch. "✅ Duyệt &amp; lên lịch" sẽ tự tính giờ đăng hợp lệ gần nhất (tôn trọng hạn mức/giờ yên tĩnh) ngay lúc bấm. Sửa ngưỡng ở <a href="/admin/config">/admin/config</a> ("Độ tin cậy tối thiểu để TỰ lên lịch đăng job").</p>
+  {"".join(items_html)}
+</div>"""
+
+
+_SCHEDULE_TABS = ("pending", "missed", "needs_review")
 
 # The two action filter choices offered on /admin/schedule's pending tab
 # (owner request 2026-09-15) — deliberately just these two, not every
@@ -4746,6 +4822,7 @@ def _schedule_content_html(
         account_id = None  # unknown/stale filter falls back to "all", never a hard error
     all_tasks = schedule_store.list_pending()
     missed_count = len(schedule_store.list_missed())
+    needs_review_count = len(schedule_store.list_needs_review())
     tasks = [t for t in all_tasks if not account_id or t.account_id == account_id]
     if action_filter:
         tasks = [t for t in tasks if t.action == action_filter]
@@ -4983,10 +5060,13 @@ def _schedule_content_html(
 <div style="display:flex; gap:20px; margin-bottom:18px; border-bottom:1px solid #e5e7eb;">
   {_schedule_tab_link("pending", f"📋 Task đã lên lịch ({total})")}
   {_schedule_tab_link("missed", f"⚠️ Task quá hạn ({missed_count})")}
+  {_schedule_tab_link("needs_review", f"🔍 Chờ duyệt ({needs_review_count})")}
 </div>"""
 
     if tab == "missed":
         tab_body_html = _missed_tasks_section_html(account_id, page, page_size, accounts, missed_page, missed_min_days)
+    elif tab == "needs_review":
+        tab_body_html = _needs_review_section_html(accounts)
     else:
         tab_body_html = f"""
 {filter_html}
@@ -5381,6 +5461,184 @@ async def schedule_missed_bulk_cancel(request: Request, _: None = Depends(_requi
     if _is_htmx(request):
         return HTMLResponse(_schedule_content_html(account_id=account_id, page=page, page_size=page_size, tab="missed", missed_page=missed_page, missed_min_days=missed_min_days, saved=True))
     return _schedule_redirect(account_id, page, page_size=page_size, tab="missed", missed_page=missed_page, missed_min_days=missed_min_days, saved=1)
+
+
+def _needs_review_eligible_accounts(review: schedule_store.NeedsReviewJob) -> dict[str, AccountConfig]:
+    """Accounts the admin may pick at the "✅ Duyệt & lên lịch" confirm
+    step (2026-10-08, owner request) — must have at least 1 joined group
+    to post to, and (same constraint data_sync.py's
+    _draft_needs_review_jobs() already enforces at draft time) a
+    sponsored_only account is only offered for a job that actually
+    carries a sponsored_by value."""
+    sponsored_by = (review.job_data or {}).get("sponsored_by")
+    return {
+        aid: acc for aid, acc in get_all_accounts().items()
+        if get_joined_groups(aid) and (sponsored_by or not acc.sponsored_only)
+    }
+
+
+@router.post("/schedule/needs-review/{review_id}/confirm-modal", response_class=HTMLResponse)
+async def schedule_needs_review_confirm_modal(review_id: str, request: Request, _: None = Depends(_require_login)) -> str:
+    """"✅ Duyệt & lên lịch" step 1 (2026-10-08, owner request: a
+    confirmation step, plus letting the admin override which account
+    performs the post instead of always the one
+    _draft_needs_review_jobs() picked at draft time). POST, not GET like
+    most other confirm-modal first steps in this file — this one needs
+    the CURRENTLY EDITED content_{i} values from the main card's own
+    form, carried forward here as hidden inputs so an edit the admin just
+    made isn't lost between opening this modal and the real approve
+    step below."""
+    form = await request.form()
+    review = schedule_store.get_needs_review(review_id)
+    if review is None:
+        return (
+            '<div class="modal-backdrop" onclick="if(event.target===this) this.remove()">'
+            '<div class="modal-box"><p class="error">⚠️ Không tìm thấy job chờ duyệt này (có thể đã được xử lý).</p></div></div>'
+        )
+    eligible = _needs_review_eligible_accounts(review)
+    if not eligible:
+        return (
+            '<div class="modal-backdrop" onclick="if(event.target===this) this.remove()">'
+            '<div class="modal-box"><p class="error">⚠️ Không có tài khoản hợp lệ nào (đã tham gia nhóm) để đăng job này.</p></div></div>'
+        )
+    hidden_content_fields = "".join(
+        f'<input type="hidden" name="content_{i}" value="{html.escape(str(form.get(f"content_{i}", "")))}">'
+        for i in range(len(review.groups))
+    )
+    options_html = "".join(
+        f'<option value="{html.escape(aid)}"{" selected" if aid == review.account_id else ""}>{html.escape(acc.display_name)} ({html.escape(aid)})</option>'
+        for aid, acc in sorted(eligible.items())
+    )
+    title = _join_list_or_str((review.job_data or {}).get("title")) or "(không có tiêu đề)"
+    return f"""
+<div class="modal-backdrop" onclick="if(event.target===this) this.remove()">
+  <div class="modal-box">
+    <div class="modal-header">
+      <h2>✅ Duyệt &amp; lên lịch</h2>
+      <button type="button" class="modal-close" onclick="this.closest('.modal-backdrop').remove()">✕</button>
+    </div>
+    <p>{html.escape(title)}</p>
+    <p class="muted">Giờ đăng sẽ được tự tính ngay sau khi xác nhận (tôn trọng hạn mức/khoảng cách tối thiểu/giờ yên tĩnh của tài khoản được chọn).</p>
+    <form method="post" action="/admin/schedule/needs-review/{review_id}/approve"
+          hx-post="/admin/schedule/needs-review/{review_id}/approve" hx-target="#schedule-content" hx-swap="outerHTML">
+      {hidden_content_fields}
+      <div class="field-input">
+        <label for="needs-review-account-select">Tài khoản đăng</label>
+        <select name="account_id" id="needs-review-account-select">{options_html}</select>
+      </div>
+      <div class="form-actions">
+        <button type="button" class="btn-secondary" style="margin-right:8px;" onclick="this.closest('.modal-backdrop').remove()">Huỷ</button>
+        <button type="submit">✅ Xác nhận</button>
+      </div>
+    </form>
+  </div>
+</div>"""
+
+
+@router.post("/schedule/needs-review/{review_id}/approve")
+async def schedule_needs_review_approve(review_id: str, request: Request, _: None = Depends(_require_login)):
+    """"✅ Duyệt & lên lịch" step 2 (2026-10-08, owner request — see
+    data_sync.py's _draft_needs_review_jobs() for how this row was
+    drafted, and schedule_needs_review_confirm_modal() right above for
+    step 1's confirmation + account-choice modal). The review is claimed
+    (approve_needs_review(), removing its file) as soon as it's confirmed
+    to exist and its account is valid — BEFORE the per-group loop runs,
+    not after: a double-click/retry that reached this route a second
+    time while the first request was still looping would otherwise find
+    the SAME review still present and re-create ScheduledTasks for
+    groups the first request already scheduled, duplicate-posting the
+    same content. Once claimed, for each group: compute a real slot via
+    _suggest_reschedule_at() (same engine "🔄 Lên lịch lại" uses for a
+    missed task — re-checks capacity/gap/quiet-hours FRESH right now, not
+    trusting the draft-time pick, and already accounts for pending tasks
+    this same loop just added) and write a real ScheduledTask into
+    pending/ immediately, so the NEXT group's own suggestion call sees it
+    and lands after it.
+
+    If the admin picked a DIFFERENT account than the one drafted at
+    _draft_needs_review_jobs() time, `review.groups` (chosen for the
+    ORIGINAL account) cannot be reused as-is — the new account may not
+    even be a member of those groups. Groups are re-picked fresh for the
+    NEW account instead (same _pick_groups_for_job() the draft step
+    itself uses, asking for the same COUNT of groups as the draft had),
+    paired with the already-edited content list by position — the
+    content itself doesn't need to change, only the opener line varies
+    by position (template_variants()'s own docstring), so re-pairing by
+    index is still meaningful even though the groups themselves are new."""
+    form = await request.form()
+    review = schedule_store.get_needs_review(review_id)
+    if review is None:
+        err = "Không tìm thấy job chờ duyệt này (có thể đã được xử lý)"
+        if _is_htmx(request):
+            return HTMLResponse(_schedule_content_html(tab="needs_review", error=err) + _MODAL_CLOSE_OOB)
+        return _schedule_redirect(None, 1, tab="needs_review", error=err)
+    eligible = _needs_review_eligible_accounts(review)
+    submitted_account_id = str(form.get("account_id") or "").strip()
+    # Only an account still ELIGIBLE right now may be chosen — a stale/
+    # tampered value (or one that lost its only joined group since the
+    # confirm modal was opened) falls back to the review's own drafted
+    # account_id, same as if the admin had never touched the dropdown.
+    chosen_account_id = submitted_account_id if submitted_account_id in eligible else review.account_id
+    account = eligible.get(chosen_account_id) or get_all_accounts().get(chosen_account_id)
+    if account is None:
+        err = "Tài khoản dự kiến đăng không còn tồn tại — không thể duyệt"
+        if _is_htmx(request):
+            return HTMLResponse(_schedule_content_html(tab="needs_review", error=err) + _MODAL_CLOSE_OOB)
+        return _schedule_redirect(None, 1, tab="needs_review", error=err)
+    if not schedule_store.approve_needs_review(review_id):
+        # Lost the race to a concurrent approve/reject on the SAME review
+        # between our get_needs_review() above and now — graceful no-op,
+        # same "already resolved" framing as the review-missing case above.
+        err = "Job này vừa được xử lý ở nơi khác (có thể do bấm 2 lần)"
+        if _is_htmx(request):
+            return HTMLResponse(_schedule_content_html(tab="needs_review", error=err) + _MODAL_CLOSE_OOB)
+        return _schedule_redirect(None, 1, tab="needs_review", error=err)
+    if chosen_account_id != review.account_id:
+        groups = [
+            dataclasses.asdict(g) for g in
+            _pick_groups_for_job(get_joined_groups(chosen_account_id), {}, needed=len(review.groups))
+        ]
+    else:
+        groups = review.groups
+    for i, group in enumerate(groups):
+        # A SUBMITTED (even blank) field is honored as-is — an admin who
+        # deliberately clears a group's textarea before approving must
+        # not have that edit silently discarded. Falling back to the
+        # original draft only when the field is entirely ABSENT (a
+        # malformed/manual request, never the real form).
+        content = str(form[f"content_{i}"]).strip() if f"content_{i}" in form else (
+            review.contents[i] if i < len(review.contents) else ""
+        )
+        scheduled_at = _suggest_reschedule_at(account, "post_to_group")
+        task = schedule_store.ScheduledTask(
+            task_id=schedule_store.new_task_id(scheduled_at.isoformat()),
+            action="post_to_group",
+            account_id=chosen_account_id,
+            scheduled_at=scheduled_at.isoformat(),
+            content=content,
+            target_url=group.get("url"),
+            reasoning=f"admin-approved from review: {review.reasoning}",
+            source_kind=review.source_kind,
+            source_id=review.source_id,
+            job_data=review.job_data,
+        )
+        schedule_store.add(task)
+    if _is_htmx(request):
+        return HTMLResponse(_schedule_content_html(tab="needs_review", saved=True) + _MODAL_CLOSE_OOB)
+    return _schedule_redirect(None, 1, tab="needs_review", saved=1)
+
+
+@router.post("/schedule/needs-review/{review_id}/reject")
+async def schedule_needs_review_reject(review_id: str, request: Request, _: None = Depends(_require_login)):
+    """"🗑️ Bỏ qua" — moves the review file to schedule_store.
+    REJECTED_REVIEW_DIR (never deleted outright, same audit-trail
+    reasoning as cancel()/cancel_missed()). The job itself was already
+    _mark_seen()'d when drafted, so it will not be re-fetched/re-drafted
+    on a later poll."""
+    schedule_store.reject_needs_review(review_id)
+    if _is_htmx(request):
+        return HTMLResponse(_schedule_content_html(tab="needs_review", saved=True))
+    return _schedule_redirect(None, 1, tab="needs_review", saved=1)
 
 
 # Closes the "Vẫn đăng ngay?" rate-limit modal (see

@@ -132,6 +132,7 @@ EDITABLE_DATA_SYNC_FIELDS: list[str] = [
     "quiet_hour_end_local",
     "candidate_min_confidence",
     "candidate_max_age_days",
+    "job_min_confidence",
     "cache_retention_days",
     "max_overflow_business_days",
     "max_cursor_holdback_days",

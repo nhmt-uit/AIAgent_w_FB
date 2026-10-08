@@ -9,12 +9,14 @@ import pytest
 
 import human_bot.data_sync as data_sync
 import human_bot.schedule_store as schedule_store
-from human_bot.config import GroupRef, RateLimits
+from human_bot.config import AccountConfig, GroupRef, RateLimits
 from human_bot.data_sync import (
     _atomic_write_json,
     _count_scheduled_actions_by_day,
     _cursor,
     _distribute_jobs_with_sponsored_priority,
+    _draft_needs_review_jobs,
+    _safe_job_confidence,
     _has_room_for_drifted_group,
     _is_expired,
     _last_scheduled_post_time,
@@ -785,6 +787,161 @@ def test_pick_groups_for_job_varies_across_calls_not_always_identical():
     assert len(results) > 1
 
 
+# --- _draft_needs_review_jobs (2026-10-08, job_min_confidence gate — a job
+# sync_all() routed here never enters the real capacity-aware distribution,
+# but still gets a representative account/groups + template draft so the
+# admin can see exactly what WOULD be posted before approving) -------------
+
+def _account(aid: str, *group_urls: str, sponsored_only: bool = False, max_groups_per_post: int = 3) -> AccountConfig:
+    return AccountConfig(
+        account_id=aid,
+        display_name=aid,
+        rate_limits=RateLimits(max_groups_per_post=max_groups_per_post),
+        sponsored_only=sponsored_only,
+    )
+
+
+@pytest.fixture
+def isolated_needs_review(isolated_data_sync_cache, isolated_schedule_dirs):
+    """Both _mark_seen() (writes under CACHE_ROOT) and
+    schedule_store.add_needs_review() (writes under NEEDS_REVIEW_DIR) run
+    inside _draft_needs_review_jobs() — isolate both so a test never
+    touches real on-disk state."""
+    return None
+
+
+def test_draft_needs_review_jobs_creates_review_with_drafted_content(monkeypatch, isolated_needs_review):
+    acc = _account("acc-a", "https://fb.com/g1")
+    monkeypatch.setattr(data_sync, "get_joined_groups", lambda aid: [GroupRef(name="G1", url="https://fb.com/g1")])
+    job = {"id": "j1", "title": "Thợ hàn", "attributes": {"confidence": 0.5, "company": "Acme"}}
+    _draft_needs_review_jobs([job], {"acc-a": acc}, sponsored_only_ids=set(), cfg=DataSyncConfig())
+
+    reviews = schedule_store.list_needs_review()
+    assert len(reviews) == 1
+    review = reviews[0]
+    assert review.account_id == "acc-a"
+    assert review.confidence == 0.5
+    assert review.source_id == "j1"
+    assert len(review.groups) == 1 and review.groups[0]["url"] == "https://fb.com/g1"
+    assert len(review.contents) == 1 and review.contents[0]  # template-drafted, non-empty
+    # Fully handled for this poll cycle — not re-fetched next time.
+    seen = data_sync._load_seen_ids(DataSyncConfig().cache_retention_days)
+    assert data_sync._seen_key("job", "j1") in seen
+
+
+def test_draft_needs_review_jobs_treats_missing_confidence_as_none(monkeypatch, isolated_needs_review):
+    """Decision #2 (owner, via AskUserQuestion): a job with no confidence
+    field at all is routed here the same as below-threshold — this only
+    tests that NeedsReviewJob.confidence faithfully records None (the
+    actual routing decision happens in sync_all()'s own split, not in
+    this function, which just drafts whatever it's handed)."""
+    acc = _account("acc-a", "https://fb.com/g1")
+    monkeypatch.setattr(data_sync, "get_joined_groups", lambda aid: [GroupRef(name="G1", url="https://fb.com/g1")])
+    job = {"id": "j2", "title": "Thợ hàn", "attributes": {"company": "Acme"}}  # no confidence key
+    _draft_needs_review_jobs([job], {"acc-a": acc}, sponsored_only_ids=set(), cfg=DataSyncConfig())
+    assert schedule_store.list_needs_review()[0].confidence is None
+
+
+def test_draft_needs_review_jobs_skips_sponsored_only_account_for_ordinary_job(monkeypatch, isolated_needs_review):
+    sponsored_acc = _account("acc-sponsored", "https://fb.com/g1", sponsored_only=True)
+    ordinary_acc = _account("acc-ordinary", "https://fb.com/g2")
+    monkeypatch.setattr(data_sync, "get_joined_groups", lambda aid: (
+        [GroupRef(name="G1", url="https://fb.com/g1")] if aid == "acc-sponsored"
+        else [GroupRef(name="G2", url="https://fb.com/g2")]
+    ))
+    job = {"id": "j3", "title": "Thợ hàn", "attributes": {"confidence": 0.3}}  # not sponsored
+    _draft_needs_review_jobs(
+        [job], {"acc-sponsored": sponsored_acc, "acc-ordinary": ordinary_acc},
+        sponsored_only_ids={"acc-sponsored"}, cfg=DataSyncConfig(),
+    )
+    reviews = schedule_store.list_needs_review()
+    assert len(reviews) == 1
+    assert reviews[0].account_id == "acc-ordinary"
+
+
+def test_draft_needs_review_jobs_allows_sponsored_only_account_for_sponsored_job(monkeypatch, isolated_needs_review):
+    sponsored_acc = _account("acc-sponsored", "https://fb.com/g1", sponsored_only=True)
+    monkeypatch.setattr(data_sync, "get_joined_groups", lambda aid: [GroupRef(name="G1", url="https://fb.com/g1")])
+    job = {"id": "j4", "title": "Thợ hàn", "attributes": {"confidence": 0.3}, "sponsored_by": "Client X"}
+    _draft_needs_review_jobs([job], {"acc-sponsored": sponsored_acc}, sponsored_only_ids={"acc-sponsored"}, cfg=DataSyncConfig())
+    reviews = schedule_store.list_needs_review()
+    assert len(reviews) == 1 and reviews[0].account_id == "acc-sponsored"
+
+
+def test_draft_needs_review_jobs_skips_job_when_no_eligible_account_and_does_not_mark_seen(monkeypatch, isolated_needs_review):
+    """No account has any joined groups at all — the job is left for the
+    next poll cycle, same deferred-not-seen stance deferred_jobs uses
+    elsewhere in sync_all(). It must also be RETURNED (not just silently
+    dropped) so sync_all() can merge it into its own deferred_jobs list —
+    2026-10-08 fix for a real cursor-holdback bug a code review caught:
+    without this, the job's timestamp (already folded into latest_job_ts
+    by sync_all()'s earlier fetch loop) would let jobs_cursor advance
+    past it on the very next poll, permanently dropping it from side B's
+    `since` window despite never being _mark_seen()'d."""
+    acc = _account("acc-a")  # no groups
+    monkeypatch.setattr(data_sync, "get_joined_groups", lambda aid: [])
+    job = {"id": "j5", "title": "Thợ hàn", "attributes": {"confidence": 0.1}}
+    skipped = _draft_needs_review_jobs([job], {"acc-a": acc}, sponsored_only_ids=set(), cfg=DataSyncConfig())
+    assert skipped == [job]
+    assert schedule_store.list_needs_review() == []
+    seen = data_sync._load_seen_ids(DataSyncConfig().cache_retention_days)
+    assert data_sync._seen_key("job", "j5") not in seen
+
+
+def test_draft_needs_review_jobs_returns_empty_list_when_all_jobs_drafted(monkeypatch, isolated_needs_review):
+    acc = _account("acc-a", "https://fb.com/g1")
+    monkeypatch.setattr(data_sync, "get_joined_groups", lambda aid: [GroupRef(name="G1", url="https://fb.com/g1")])
+    job = {"id": "j7", "title": "Thợ hàn", "attributes": {"confidence": 0.1}}
+    skipped = _draft_needs_review_jobs([job], {"acc-a": acc}, sponsored_only_ids=set(), cfg=DataSyncConfig())
+    assert skipped == []
+
+
+def test_safe_job_confidence_treats_non_numeric_value_as_none():
+    """2026-10-08 fix: a code review flagged that side B sending a
+    non-numeric confidence (e.g. a string) would raise TypeError at the
+    `>=` comparison in sync_all()'s confidence split, aborting the WHOLE
+    poll cycle for every job in the batch, not just the bad one — and
+    would also crash admin.py's `{r.confidence:.2f}` render if it ever
+    reached the review queue unguarded."""
+    assert _safe_job_confidence({"attributes": {"confidence": "0.5"}}) is None
+    assert _safe_job_confidence({"attributes": {"confidence": None}}) is None
+    assert _safe_job_confidence({"attributes": {}}) is None
+    assert _safe_job_confidence({"attributes": {"confidence": 0.5}}) == 0.5
+    assert _safe_job_confidence({"attributes": {"confidence": 1}}) == 1
+
+
+def test_safe_job_confidence_rejects_bool_despite_being_an_int_subclass():
+    """`isinstance(True, int)` is True in Python — without the explicit
+    bool exclusion, a malformed `confidence: true` from side B would read
+    as a real 1.0 (full confidence) score and route straight into the
+    auto-scheduled path unreviewed, instead of being flagged invalid."""
+    assert _safe_job_confidence({"attributes": {"confidence": True}}) is None
+    assert _safe_job_confidence({"attributes": {"confidence": False}}) is None
+
+
+def test_draft_needs_review_jobs_does_not_consume_shared_distribution_state(monkeypatch, isolated_needs_review):
+    """Sanity check for the design reasoning in this function's own
+    docstring: _draft_needs_review_jobs() never touches job_capacities/
+    water-fill — it only calls _pick_groups_for_job() with an isolated,
+    empty last_group_post_at, so it cannot perturb the real distribution's
+    own round-robin state for a confident job processed in the same
+    sync_all() cycle."""
+    acc = _account("acc-a", "https://fb.com/g1", "https://fb.com/g2")
+    captured_last_group_post_at = []
+
+    def _fake_pick(groups, last_group_post_at, needed):
+        captured_last_group_post_at.append(dict(last_group_post_at))
+        return groups[:needed]
+
+    monkeypatch.setattr(data_sync, "get_joined_groups", lambda aid: [
+        GroupRef(name="G1", url="https://fb.com/g1"), GroupRef(name="G2", url="https://fb.com/g2"),
+    ])
+    monkeypatch.setattr(data_sync, "_pick_groups_for_job", _fake_pick)
+    job = {"id": "j6", "title": "Thợ hàn", "attributes": {"confidence": 0.2}}
+    _draft_needs_review_jobs([job], {"acc-a": acc}, sponsored_only_ids=set(), cfg=DataSyncConfig())
+    assert captured_last_group_post_at == [{}]
+
+
 # --- _count_scheduled_actions_by_day (business-day keyed, not raw UTC date) ---
 
 class _FakeTask:
@@ -903,6 +1060,8 @@ def isolated_schedule_dirs(tmp_path, monkeypatch):
     monkeypatch.setattr(schedule_store, "FAILED_DIR", tmp_path / "failed")
     monkeypatch.setattr(schedule_store, "CANCELLED_DIR", tmp_path / "cancelled")
     monkeypatch.setattr(schedule_store, "MISSED_DIR", tmp_path / "missed")
+    monkeypatch.setattr(schedule_store, "NEEDS_REVIEW_DIR", tmp_path / "needs_review")
+    monkeypatch.setattr(schedule_store, "REJECTED_REVIEW_DIR", tmp_path / "rejected_review")
     return schedule_store
 
 

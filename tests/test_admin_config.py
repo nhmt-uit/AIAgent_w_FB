@@ -150,6 +150,18 @@ def test_config_save_int_field_survives_for_a_future_annotations_dataclass_too(c
     assert isinstance(overrides["max_overflow_business_days"], int)
 
 
+def test_config_save_job_min_confidence_stays_float(client):
+    """job_min_confidence (2026-10-08, /admin/schedule's "Chờ duyệt" tab)
+    is a DataSyncConfig field too — same postponed-annotations module as
+    max_overflow_business_days above, so this exercises the same
+    get_type_hints() fix for a FLOAT field in that module, not just int."""
+    resp = client.post("/admin/config", data={"data_sync__job_min_confidence": "0.95"})
+    assert resp.status_code == 303
+    overrides = get_data_sync_overrides()
+    assert overrides["job_min_confidence"] == 0.95
+    assert isinstance(overrides["job_min_confidence"], float)
+
+
 def test_config_save_float_field_stays_float(client):
     from human_bot.runtime_config import get_pacing_overrides
     resp = client.post("/admin/config", data={"pacing__page_load_pause_min_ms": "1234.5"})

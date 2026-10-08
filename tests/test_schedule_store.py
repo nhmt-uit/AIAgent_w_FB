@@ -19,6 +19,8 @@ def isolated_store(tmp_path, monkeypatch):
     monkeypatch.setattr(schedule_store, "FAILED_DIR", tmp_path / "failed")
     monkeypatch.setattr(schedule_store, "CANCELLED_DIR", tmp_path / "cancelled")
     monkeypatch.setattr(schedule_store, "MISSED_DIR", tmp_path / "missed")
+    monkeypatch.setattr(schedule_store, "NEEDS_REVIEW_DIR", tmp_path / "needs_review")
+    monkeypatch.setattr(schedule_store, "REJECTED_REVIEW_DIR", tmp_path / "rejected_review")
     return schedule_store
 
 
@@ -284,6 +286,123 @@ def test_cancel_stale_missed_returns_zero_when_nothing_is_stale(isolated_store):
     assert isolated_store.get_missed(task.task_id) is not None
 
 
+# --- NeedsReviewJob (2026-10-08, job_min_confidence gate — /admin/schedule's
+# "🔍 Chờ duyệt" tab): a SEPARATE dataclass/directory pair from
+# ScheduledTask/PENDING_DIR, since a review item has no scheduled_at yet
+# and forcing it into ScheduledTask's schema would mean either a fake
+# placeholder time or new None-handling sprinkled through code (new_task_id,
+# due_tasks) that has no other reason to expect it. ---------------------
+
+def _make_review(store, review_id=None, confidence=0.5, account_id="acc-a") -> "schedule_store.NeedsReviewJob":
+    review = store.NeedsReviewJob(
+        review_id=review_id or store.new_review_id(),
+        account_id=account_id,
+        groups=[{"id": "g1", "name": "Group 1", "url": "https://facebook.com/groups/1"}],
+        contents=["nội dung đã soạn sẵn"],
+        confidence=confidence,
+        reasoning="needs review: test",
+        source_id="job-1",
+        job_data={"title": "Thợ hàn", "attributes": {}, "sponsored_by": None},
+    )
+    store.add_needs_review(review)
+    return review
+
+
+def test_needs_review_round_trip(isolated_store):
+    review = _make_review(isolated_store)
+    got = isolated_store.get_needs_review(review.review_id)
+    assert got is not None
+    assert got.account_id == "acc-a"
+    assert got.contents == ["nội dung đã soạn sẵn"]
+    assert got.confidence == 0.5
+
+
+def test_needs_review_round_trip_preserves_none_confidence(isolated_store):
+    """Decision #2 (owner): a job missing `confidence` entirely is stored
+    as None, not coerced into some other sentinel — JSON round-trips
+    None <-> null natively, this just confirms it survives read-back."""
+    review = _make_review(isolated_store, confidence=None)
+    got = isolated_store.get_needs_review(review.review_id)
+    assert got.confidence is None
+
+
+def test_list_needs_review_sorted_oldest_first(isolated_store, monkeypatch):
+    from datetime import datetime as _dt, timezone as _tz
+    times = iter([
+        _dt(2026, 1, 3, tzinfo=_tz.utc),
+        _dt(2026, 1, 1, tzinfo=_tz.utc),
+        _dt(2026, 1, 2, tzinfo=_tz.utc),
+    ])
+
+    class _FakeDatetime(_dt):
+        @classmethod
+        def now(cls, tz=None):
+            return next(times)
+
+    monkeypatch.setattr(schedule_store, "datetime", _FakeDatetime)
+    r1 = _make_review(isolated_store, review_id="r1")
+    r2 = _make_review(isolated_store, review_id="r2")
+    r3 = _make_review(isolated_store, review_id="r3")
+    ordered = [r.review_id for r in isolated_store.list_needs_review()]
+    assert ordered == ["r2", "r3", "r1"]
+
+
+def test_get_needs_review_missing_returns_none(isolated_store):
+    assert isolated_store.get_needs_review("nonexistent") is None
+
+
+def test_approve_needs_review_removes_the_file(isolated_store):
+    review = _make_review(isolated_store)
+    assert isolated_store.approve_needs_review(review.review_id) is True
+    assert isolated_store.get_needs_review(review.review_id) is None
+
+
+def test_approve_needs_review_missing_returns_false(isolated_store):
+    assert isolated_store.approve_needs_review("nonexistent") is False
+
+
+def test_approve_needs_review_is_idempotent_a_second_call_returns_false(isolated_store):
+    """2026-10-08 code-review fix: the is_file()-then-unlink() pair isn't
+    atomic, so missing_ok=True on the unlink must make a SECOND call for
+    the same review_id a graceful False, never an unhandled
+    FileNotFoundError."""
+    review = _make_review(isolated_store)
+    assert isolated_store.approve_needs_review(review.review_id) is True
+    assert isolated_store.approve_needs_review(review.review_id) is False
+
+
+def test_reject_needs_review_moves_to_rejected_dir_not_deleted(isolated_store):
+    review = _make_review(isolated_store)
+    assert isolated_store.reject_needs_review(review.review_id) is True
+    assert isolated_store.get_needs_review(review.review_id) is None  # gone from needs_review/
+    rejected_files = list(isolated_store.REJECTED_REVIEW_DIR.glob("*.json"))
+    assert len(rejected_files) == 1  # still on disk, just relocated
+
+
+def test_reject_needs_review_missing_returns_false(isolated_store):
+    assert isolated_store.reject_needs_review("nonexistent") is False
+
+
+def test_ensure_dirs_creates_needs_review_and_rejected_review(isolated_store):
+    isolated_store.ensure_dirs()
+    assert isolated_store.NEEDS_REVIEW_DIR.is_dir()
+    assert isolated_store.REJECTED_REVIEW_DIR.is_dir()
+
+
+def test_add_needs_review_writes_into_the_monkeypatched_needs_review_dir(isolated_store):
+    """Same regression class as test_move_to_reads_source_dir_at_call_time_
+    not_def_time above: add_needs_review()/get_needs_review()/
+    reject_needs_review() all resolve NEEDS_REVIEW_DIR via
+    _safe_path_in(review_id, NEEDS_REVIEW_DIR) — an explicit argument
+    read fresh from the module global at the call site, never a default
+    parameter value — so isolated_store's monkeypatch is honored instead
+    of silently falling through to the real project directory."""
+    review = _make_review(isolated_store)
+    files = list(isolated_store.NEEDS_REVIEW_DIR.glob("*.json"))
+    assert len(files) == 1
+    assert files[0].parent == isolated_store.NEEDS_REVIEW_DIR
+
+
 # --- cleanup_old(): 6-month default + orphaned missed/*.result.txt (2026-09-28) ---
 
 def _age_file(path, days: float) -> None:
@@ -360,6 +479,15 @@ def test_cleanup_old_removes_only_old_orphaned_missed_result_txt(isolated_store,
     assert fresh_orphan.exists()
     assert live_json.exists() and live_note.exists()
     assert removed["missed_orphans"] == 1
+
+
+def test_cleanup_old_removes_only_old_rejected_review(isolated_store, isolated_runtime_config):
+    old = _put(isolated_store.REJECTED_REVIEW_DIR, "old.json", 200)
+    fresh = _put(isolated_store.REJECTED_REVIEW_DIR, "fresh.json", 5)
+    removed = isolated_store.cleanup_old()
+    assert not old.exists()
+    assert fresh.exists()
+    assert removed["rejected_review"] == 1
 
 
 def test_screenshots_cleanup_default_is_sixty_days(tmp_path, isolated_runtime_config, monkeypatch):

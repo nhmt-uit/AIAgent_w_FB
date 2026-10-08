@@ -108,6 +108,17 @@ class DataSyncConfig:
         default_factory=lambda: _env_float("DATA_SYNC_CANDIDATE_MAX_AGE_DAYS", 14.0)
     )
 
+    # Job-side equivalent of candidate_min_confidence (2026-10-08, owner
+    # request) — a job below this is never auto-scheduled; it still gets
+    # drafted via template (sync_all()'s normal template_variants() path)
+    # but lands in schedule_store's needs_review/ for an admin to approve
+    # at /admin/schedule's "Chờ duyệt" tab instead of pending/. A job with
+    # no confidence field at all (side B omitted it) is treated the same
+    # as below-threshold — see data_sync.py's sync_all() split.
+    job_min_confidence: float = field(
+        default_factory=lambda: _env_float("DATA_SYNC_JOB_MIN_CONFIDENCE", 0.9)
+    )
+
     # How long a fetched item's id stays in the local dedup cache before
     # being pruned — conservative default, side B's data doesn't document
     # how far back a record might resurface (see docs/architecture.md

@@ -42,15 +42,17 @@ def isolated_runtime_config(tmp_path, monkeypatch):
 @pytest.fixture
 def isolated_schedule_dirs(tmp_path, monkeypatch):
     """Redirects every schedule_store.py status directory (pending/posted/
-    failed/cancelled/missed) to throwaway tmp_path subdirs. Moved here
-    2026-09-25 from tests/test_admin.py (where it was first defined) so
-    every test file touching schedule_store can share it, not just that
-    one."""
+    failed/cancelled/missed/needs_review/rejected_review) to throwaway
+    tmp_path subdirs. Moved here 2026-09-25 from tests/test_admin.py
+    (where it was first defined) so every test file touching
+    schedule_store can share it, not just that one."""
     monkeypatch.setattr(schedule_store, "PENDING_DIR", tmp_path / "pending")
     monkeypatch.setattr(schedule_store, "POSTED_DIR", tmp_path / "posted")
     monkeypatch.setattr(schedule_store, "FAILED_DIR", tmp_path / "failed")
     monkeypatch.setattr(schedule_store, "CANCELLED_DIR", tmp_path / "cancelled")
     monkeypatch.setattr(schedule_store, "MISSED_DIR", tmp_path / "missed")
+    monkeypatch.setattr(schedule_store, "NEEDS_REVIEW_DIR", tmp_path / "needs_review")
+    monkeypatch.setattr(schedule_store, "REJECTED_REVIEW_DIR", tmp_path / "rejected_review")
     return schedule_store
 
 
