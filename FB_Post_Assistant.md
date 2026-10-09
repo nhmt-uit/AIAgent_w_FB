@@ -743,6 +743,27 @@ liệu thật hằng ngày và yêu cầu kiểm tra chéo lại mọi thứ tr�
   ngay lúc này) — chỉ mới kiểm qua test tự động mô phỏng đúng luồng
   request/response. Chưa commit.
 
+- **Kiểm tra mạng trước khi tự động chạy task (09/10).** Owner báo nhiều task
+  gần đây thất bại chỉ vì máy mất mạng — mỗi lần như vậy tốn một lượt task và
+  một dòng log cho lỗi không liên quan đến task. Giờ trước khi chạy các task đến
+  hạn, hệ thống thử kết nối tới Facebook và 2 máy chủ DNS công cộng (chỉ cần 1
+  nơi thông). Mất mạng thì thử lại 3 lần cách nhau 10 giây (tổng khoảng 30
+  giây); vẫn không có thì các task đến hạn được đưa vào **Task quá hạn** với lý
+  do "Mất mạng", để admin lên lịch lại — cùng cơ chế với trường hợp server bị
+  tắt. Chỉ áp dụng cho luồng tự động; "Đăng ngay" thủ công và API `/tasks` không
+  bị chặn. Vì chặn trước khi chạy nên không tính vào hạn mức ngày. Owner đã thử
+  tắt mạng thật: task vào đúng mục Task quá hạn.
+- **"Lên lịch lại" chọn giờ trống sớm nhất (09/10).** Owner thấy task quá hạn
+  được gợi ý sang sáng hôm sau dù hôm nay còn trống (khoảng 18:24–19:14 JST).
+  Nguyên nhân: gợi ý giờ mới chỉ xếp vào SAU task chờ cuối cùng, không nhìn các
+  khoảng trống phía trước; hàng chờ kéo qua giờ yên lặng thì bị đẩy sang ngày
+  sau. Nay giờ gợi ý là giờ sớm nhất thoả: cách mọi task chờ cùng tài khoản và
+  loại hành động đủ khoảng nghỉ tối thiểu (cả trước lẫn sau), không rơi vào giờ
+  yên lặng, ngày đó còn hạn mức, không sớm hơn hiện tại. Đã đối chiếu với tìm
+  kiếm vét cạn trên 3000 tình huống ngẫu nhiên, không có vi phạm. Lưu ý: task
+  lên lịch lại có thể chen vào trước các task đã xếp (vẫn đủ khoảng nghỉ); ảnh
+  hưởng cả "Lên lịch lại" ở trang báo cáo, "Mượn giờ" và duyệt bài chờ review.
+
 ---
 
 # 5. Những quyết định quan trọng đã bàn kỹ với chủ dự án
@@ -1046,19 +1067,3 @@ lợi ích).
   thống (không dành cho khách ngoài xem).
 - **Sponsored (tin trả tiền)**: tin tuyển dụng được đánh dấu ưu tiên vì có trả phí,
   cần đăng sớm hơn các tin thường.
-
-## Kiểm tra mạng trước khi chạy task (2026-10-09)
-
-**Vấn đề:** khi máy mất mạng, các task đến giờ vẫn được chạy và đều thất bại,
-tốn 1 lượt task + 1 dòng log cho một lỗi không liên quan đến task.
-
-**Cách làm:** trước khi tự động chạy các task đến hạn, hệ thống kiểm tra mạng
-bằng cách thử mở kết nối tới Facebook và 2 máy chủ DNS công cộng (chỉ cần 1 nơi
-thông). Không có mạng thì thử lại 3 lần, cách nhau 10 giây (tổng khoảng 30
-giây — đủ để vượt qua một lần chập chờn ngắn mà không bắt cả hàng đợi chờ quá
-lâu). Vẫn không có mạng thì các task đến hạn được đưa vào mục **Task quá hạn**
-với lý do "Mất mạng", để admin xem và lên lịch lại — cùng cơ chế với trường hợp
-server bị tắt.
-
-**Lưu ý:** chỉ áp dụng cho luồng tự động; "Đăng ngay" thủ công không bị chặn.
-Mất mạng kéo dài sẽ đẩy mọi task đến hạn sang "Task quá hạn" (tự huỷ sau 30 ngày).

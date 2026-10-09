@@ -6496,12 +6496,14 @@ def _suggest_reschedule_at(account, action: str, exclude_task_id: str | None = N
          (daily_limits.count_since_business_day_start(), today only) +
          however many pending tasks already land in that same business-
          day window.
-      2. Gap check — same "kẹp sàn" as before via
-         RateLimiter.next_allowed_at() (last REAL action), but also
-         floored against the LATEST pending task's own scheduled_at +
-         this account's min_delay_seconds for this bucket — otherwise 2
-         reschedules in a row could still land back-to-back with no gap
-         at all between them.
+      2. Gap check — floored by RateLimiter.next_allowed_at() (last
+         REAL action), and kept at least this account's min_delay_seconds
+         for this bucket away from EVERY pending task, before and after
+         (2026-10-09; it used to only look after the LATEST pending
+         task, so it never found a free slot earlier in the day — owner
+         saw "Lên lịch lại" suggest tomorrow with hours free today). So
+         the earliest hole that fits is used, and 2 reschedules in a row
+         still can't land back-to-back.
 
     These 3 checks (gap floor, quiet hours, day cap) are applied in a
     CONVERGING LOOP, not a single pass — owner-reported bug 2026-09-14:
@@ -6583,8 +6585,6 @@ def _suggest_reschedule_at(account, action: str, exclude_task_id: str | None = N
             if real_floor.tzinfo is None:
                 real_floor = real_floor.replace(tzinfo=timezone.utc)
             floors.append(real_floor)
-    if pending_times:
-        floors.append(pending_times[-1] + timedelta(seconds=gap_seconds))
 
     cfg = get_data_sync_config()
     candidate = now
@@ -6592,7 +6592,9 @@ def _suggest_reschedule_at(account, action: str, exclude_task_id: str | None = N
     # 30 consecutive fully-capped business days is already a config
     # problem worth surfacing, not something to keep searching past),
     # at up to 3 iterations/day per this function's own docstring above.
-    for _ in range(_RESCHEDULE_SEARCH_DAYS * 3):
+    # + len(pending_times): the gap-conflict jump below can cost one
+    # iteration per pending task it has to hop over.
+    for _ in range(_RESCHEDULE_SEARCH_DAYS * 3 + len(pending_times) + 5):
         moved = False
 
         if floors:
@@ -6603,6 +6605,20 @@ def _suggest_reschedule_at(account, action: str, exclude_task_id: str | None = N
         clamped = apply_quiet_hours(candidate, cfg)
         if clamped != candidate:
             candidate, moved = clamped, True
+
+        # Gap vs EVERY pending task, on both sides (2026-10-09): a task
+        # before `candidate` needs `gap` of rest first, one after it
+        # needs `gap` of rest following `candidate`. Replaces the old
+        # single floor "latest pending + gap", which could only ever
+        # append to the end of the queue and never saw free slots earlier
+        # in the day. Forward-only jump past the latest conflicting
+        # task, so it always converges.
+        conflicts = [
+            t for t in pending_times
+            if abs((candidate - t).total_seconds()) < gap_seconds
+        ]
+        if conflicts:
+            candidate, moved = max(conflicts) + timedelta(seconds=gap_seconds), True
 
         if cap is not None:
             day_start = daily_limits.business_day_start(candidate)

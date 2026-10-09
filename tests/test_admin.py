@@ -93,26 +93,92 @@ def test_suggestion_avoids_quiet_hours_even_after_gap_floor_pushes_into_it(isola
     )
 
 
-def test_suggestion_skips_a_day_already_full_from_pending_tasks_plus_gap_floor(isolated_schedule_dirs, account):
+def test_suggestion_skips_a_day_already_full_from_pending_tasks_plus_gap_floor(isolated_schedule_dirs, account, monkeypatch):
     """Owner-reported bug 2026-09-14: the daily-cap day-search only ran
     ONCE, before the gap floor was applied — so the gap floor (from the
     latest pending task) could push the suggestion onto a day that
-    search never re-checked. Fill tomorrow to cap via pending tasks and
-    confirm the suggestion lands on a LATER day, not on the full one."""
+    search never re-checked. Fill TODAY and tomorrow to cap via pending
+    tasks (today too since 2026-10-09: free slots earlier in a day are
+    now used, so only a full today forces the search onward) and confirm
+    the suggestion lands on a LATER day, not on a full one."""
+    monkeypatch.setattr("human_bot.admin.apply_quiet_hours", lambda dt, cfg: dt)
     cap = account.rate_limits.posts_per_day
     now = datetime.now(timezone.utc)
-    tomorrow_start = daily_limits.business_day_start(now) + timedelta(days=1)
+    today_start = daily_limits.business_day_start(now)
+    tomorrow_start = today_start + timedelta(days=1)
 
-    for i in range(cap):
-        _add_pending(isolated_schedule_dirs, account.account_id, tomorrow_start + timedelta(hours=10 + i))
-    # One more pending task landing LATE on tomorrow — its own gap floor
-    # (scheduled_at + post_min_delay_seconds) is what used to push the
-    # suggestion onto this already-full day without re-checking it.
+    for day_start in (today_start, tomorrow_start):
+        for i in range(cap):
+            _add_pending(isolated_schedule_dirs, account.account_id, day_start + timedelta(hours=10, minutes=i))
+    # One more pending task landing LATE on tomorrow.
     _add_pending(isolated_schedule_dirs, account.account_id, tomorrow_start + timedelta(hours=20))
 
     suggested = _suggest_reschedule_at(account, "post_to_group")
-    tomorrow_key = daily_limits.business_day_key(tomorrow_start)
-    assert daily_limits.business_day_key(suggested) != tomorrow_key
+    full_keys = {daily_limits.business_day_key(today_start), daily_limits.business_day_key(tomorrow_start)}
+    assert daily_limits.business_day_key(suggested) not in full_keys
+
+
+def test_suggestion_fills_free_slot_before_a_later_pending_task(isolated_schedule_dirs, account, monkeypatch):
+    """Owner-reported 2026-10-09: pending tasks later today made the
+    suggestion jump to tomorrow, though plenty of room was left before
+    them. A pending task 3x the gap away leaves room right now."""
+    monkeypatch.setattr("human_bot.admin.apply_quiet_hours", lambda dt, cfg: dt)
+    gap = timedelta(seconds=account.rate_limits.post_min_delay_seconds)
+    before = datetime.now(timezone.utc)
+    pending_at = before + 3 * gap
+    _add_pending(isolated_schedule_dirs, account.account_id, pending_at)
+
+    suggested = _suggest_reschedule_at(account, "post_to_group")
+    assert before <= suggested <= before + timedelta(seconds=5)
+
+
+def test_suggestion_skips_a_hole_too_narrow_for_the_gap_on_both_sides(isolated_schedule_dirs, account, monkeypatch):
+    """Two pending tasks only 1.5x gap apart leave no valid point between
+    them (it needs `gap` on each side) — the suggestion must go after
+    the later one, not into that hole."""
+    monkeypatch.setattr("human_bot.admin.apply_quiet_hours", lambda dt, cfg: dt)
+    gap = timedelta(seconds=account.rate_limits.post_min_delay_seconds)
+    now = datetime.now(timezone.utc)
+    first, second = now + timedelta(minutes=1), now + timedelta(minutes=1) + gap * 1.5
+    _add_pending(isolated_schedule_dirs, account.account_id, first)
+    _add_pending(isolated_schedule_dirs, account.account_id, second)
+
+    suggested = _suggest_reschedule_at(account, "post_to_group")
+    assert suggested >= second + gap - timedelta(seconds=1)
+
+
+def test_suggestion_fills_a_hole_between_two_pending_tasks(isolated_schedule_dirs, account, monkeypatch):
+    """A hole >= 2x gap wide between two pending tasks is usable: the
+    earliest valid point is `gap` after the first one."""
+    monkeypatch.setattr("human_bot.admin.apply_quiet_hours", lambda dt, cfg: dt)
+    gap = timedelta(seconds=account.rate_limits.post_min_delay_seconds)
+    now = datetime.now(timezone.utc)
+    first = now - timedelta(seconds=10)
+    second = first + gap * 3
+    _add_pending(isolated_schedule_dirs, account.account_id, first)
+    _add_pending(isolated_schedule_dirs, account.account_id, second)
+
+    suggested = _suggest_reschedule_at(account, "post_to_group")
+    assert abs(suggested - (first + gap)) < timedelta(seconds=1)
+    assert second - suggested >= gap
+
+
+def test_suggestion_search_budget_covers_a_long_chain_of_pending_tasks(isolated_schedule_dirs, account, monkeypatch):
+    """Each gap-conflict jump can hop over only one pending task per loop
+    iteration, so the loop bound must grow with the number of pending
+    tasks: many back-to-back tasks (exactly `gap` apart, no usable hole)
+    must still end up AFTER the last one."""
+    monkeypatch.setattr("human_bot.admin.apply_quiet_hours", lambda dt, cfg: dt)
+    monkeypatch.setattr("human_bot.admin._RESCHEDULE_SEARCH_DAYS", 1)
+    gap = timedelta(seconds=account.rate_limits.post_min_delay_seconds)
+    start = datetime.now(timezone.utc)
+    last = start
+    for i in range(100):
+        last = start + gap * i
+        _add_pending(isolated_schedule_dirs, account.account_id, last)
+
+    suggested = _suggest_reschedule_at(account, "post_to_group")
+    assert suggested >= last + gap - timedelta(seconds=1)
 
 
 def test_two_consecutive_suggestions_differ_once_first_is_pending(isolated_schedule_dirs, account):

@@ -6365,3 +6365,16 @@ Xem đầy đủ lý do thiết kế ở `FB_Post_Assistant.md`.
       (cách nhau 10s, tổng ≈ 30s); vẫn mất mạng → chuyển TOÀN BỘ task đến hạn
       sang "Task quá hạn" (`mark_missed`) với lý do "Mất mạng: ...". Không áp
       dụng cho nút "Đăng ngay" thủ công (có người đang nhìn). Thêm 2 test.
+
+- [x] **"Lên lịch lại" tận dụng khoảng trống trong ngày (2026-10-09)** —
+      `admin._suggest_reschedule_at()` trước đây chỉ lấy task chờ MUỘN NHẤT
+      + khoảng nghỉ làm mốc sàn, nên luôn xếp vào cuối hàng chờ; hàng chờ
+      kéo qua giờ yên lặng thì gợi ý nhảy sang ngày mai dù hôm nay còn
+      trống (task `20261009T091657Z_2d4ca397`: gợi ý 06:23 JST mai, trong
+      khi 18:24–19:14 JST hôm nay còn trống). Nay kiểm tra khoảng nghỉ với
+      MỌI task chờ cùng tài khoản + loại hành động, cả 2 phía (|t−p| ≥
+      gap); xung đột thì nhảy tiến tới sau task xung đột muộn nhất. Giới
+      hạn số vòng lặp cộng thêm số task chờ. Giờ gợi ý vẫn là giờ SỚM NHẤT
+      (không thêm ngẫu nhiên). Đã đối chiếu với tìm kiếm vét cạn 3000 ca
+      ngẫu nhiên: 0 vi phạm. Sửa 1 test cũ (nay phải lấp đầy cả hôm nay),
+      thêm 4 test mới. Toàn bộ suite 673/673 pass.
