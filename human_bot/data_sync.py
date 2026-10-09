@@ -55,7 +55,7 @@ from typing import Any
 
 import httpx
 
-from human_bot import content_strategist, daily_limits, db, schedule_store, telegram_notify
+from human_bot import content_strategist, daily_limits, db, network_check, schedule_store, telegram_notify
 from human_bot.config import AccountConfig, GroupRef, get_account
 from human_bot.data_sync_config import DataSyncConfig
 from human_bot.scheduling_config import SchedulingConfig
@@ -1979,6 +1979,19 @@ async def fire_due_tasks(cfg: SchedulingConfig | None = None) -> dict[str, Any]:
         return {"due": 0, "fired": 0}
     if not cfg.auto_fire_enabled:
         return {"due": len(due), "fired": 0, "reason": "auto_fire_enabled is False"}
+
+    # Internet gate (2026-10-09): checked once per cycle, only when there
+    # IS something to fire. Offline after retries -> park every due task in
+    # "Task quá hạn" instead of letting each one fail against Facebook.
+    if not await network_check.wait_for_internet():
+        now_iso = datetime.now(timezone.utc).isoformat()
+        for task in due:
+            schedule_store.mark_missed(
+                task.task_id,
+                f"Mất mạng: không kết nối được internet khi đến giờ đăng ({task.scheduled_at}), "
+                f"đã thử lại {network_check.MAX_ATTEMPTS} lần đến {now_iso}. Cần admin duyệt lại.",
+            )
+        return {"due": len(due), "fired": 0, "reason": "no_internet", "missed": len(due)}
 
     from human_bot import daily_limits
     from human_bot.agent import TaskRequest, run_task, rate_limit_bucket_for, resolve_group_name  # local import — avoid import cycle at module load

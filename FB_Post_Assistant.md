@@ -1046,3 +1046,19 @@ lợi ích).
   thống (không dành cho khách ngoài xem).
 - **Sponsored (tin trả tiền)**: tin tuyển dụng được đánh dấu ưu tiên vì có trả phí,
   cần đăng sớm hơn các tin thường.
+
+## Kiểm tra mạng trước khi chạy task (2026-10-09)
+
+**Vấn đề:** khi máy mất mạng, các task đến giờ vẫn được chạy và đều thất bại,
+tốn 1 lượt task + 1 dòng log cho một lỗi không liên quan đến task.
+
+**Cách làm:** trước khi tự động chạy các task đến hạn, hệ thống kiểm tra mạng
+bằng cách thử mở kết nối tới Facebook và 2 máy chủ DNS công cộng (chỉ cần 1 nơi
+thông). Không có mạng thì thử lại 3 lần, cách nhau 10 giây (tổng khoảng 30
+giây — đủ để vượt qua một lần chập chờn ngắn mà không bắt cả hàng đợi chờ quá
+lâu). Vẫn không có mạng thì các task đến hạn được đưa vào mục **Task quá hạn**
+với lý do "Mất mạng", để admin xem và lên lịch lại — cùng cơ chế với trường hợp
+server bị tắt.
+
+**Lưu ý:** chỉ áp dụng cho luồng tự động; "Đăng ngay" thủ công không bị chặn.
+Mất mạng kéo dài sẽ đẩy mọi task đến hạn sang "Task quá hạn" (tự huỷ sau 30 ngày).

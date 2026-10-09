@@ -6355,3 +6355,13 @@ Xem đầy đủ lý do thiết kế ở `FB_Post_Assistant.md`.
       tài khoản ban đầu). **Toàn bộ suite: 667/667 pass.** Vẫn chưa kiểm
       tay qua browser thật — mọi thay đổi trên đều mới chỉ qua test HTTP
       tự động. Chưa commit.
+
+- [x] **Kiểm tra mạng trước khi tự động chạy task đã lên lịch (2026-10-09)** —
+      Nhiều task gần đây lỗi vì máy mất mạng. Thêm `human_bot/network_check.py`
+      (thử kết nối TCP tới www.facebook.com / 1.1.1.1 / 8.8.8.8 cổng 443,
+      chỉ cần 1 đích thông là coi như có mạng; mỗi lần thử timeout 5s). Trong
+      `data_sync.fire_due_tasks()`, mỗi chu kỳ, nếu có task đến hạn thì kiểm
+      tra mạng 1 lần: có mạng → chạy như cũ; không có → thử lại tối đa 3 lần
+      (cách nhau 10s, tổng ≈ 30s); vẫn mất mạng → chuyển TOÀN BỘ task đến hạn
+      sang "Task quá hạn" (`mark_missed`) với lý do "Mất mạng: ...". Không áp
+      dụng cho nút "Đăng ngay" thủ công (có người đang nhìn). Thêm 2 test.

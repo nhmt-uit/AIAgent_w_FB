@@ -1222,3 +1222,39 @@ def test_draft_candidate_reply_placeholder_falls_back_to_default_on_bad_override
     text = data_sync._draft_candidate_reply_placeholder(candidate)
     assert any(text == t.format(field="cơ khí", region_clause=" ở khu vực Tokyo")
                for t in data_sync._CANDIDATE_REPLY_TEMPLATES_DEFAULT)
+
+
+# --- fire_due_tasks internet gate (2026-10-09) -------------------------------
+
+@pytest.mark.asyncio
+async def test_fire_due_tasks_offline_moves_due_tasks_to_missed(isolated_schedule_dirs, monkeypatch):
+    from human_bot import network_check
+    from human_bot.data_sync import fire_due_tasks
+    from human_bot.scheduling_config import SchedulingConfig
+
+    async def offline(*a, **k):
+        return False
+
+    monkeypatch.setattr(network_check, "wait_for_internet", offline)
+    store = isolated_schedule_dirs
+    _add_task(store, datetime.now(timezone.utc) - timedelta(minutes=5))
+    result = await fire_due_tasks(SchedulingConfig(auto_fire_enabled=True))
+    assert result["reason"] == "no_internet" and result["missed"] == 1
+    assert store.list_pending() == []
+    missed = store.list_missed()
+    assert len(missed) == 1
+    assert "Mất mạng" in store.get_missed_reason(missed[0].task_id)
+
+
+@pytest.mark.asyncio
+async def test_wait_for_internet_retries_then_gives_up(monkeypatch):
+    from human_bot import network_check
+    calls = []
+
+    async def offline():
+        calls.append(1)
+        return False
+
+    monkeypatch.setattr(network_check, "is_online", offline)
+    assert await network_check.wait_for_internet(attempts=3, retry_delay=0) is False
+    assert len(calls) == 3
