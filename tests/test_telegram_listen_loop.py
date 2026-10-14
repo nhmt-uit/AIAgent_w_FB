@@ -201,7 +201,7 @@ async def test_listen_loop_computes_reply_once_per_batch_not_once_per_message(mo
 
     async def fake_get_updates(offset, **kwargs):
         if offset is None:
-            return [_update(1), _update(2)]  # 2 valid messages in 1 batch
+            return [_update(1, text="/suckhoe"), _update(2, text="/suckhoe")]  # 2 valid messages in 1 batch
         raise asyncio.CancelledError
 
     monkeypatch.setattr(telegram_notify, "get_updates", fake_get_updates)
@@ -245,7 +245,7 @@ async def test_listen_loop_isolates_a_failed_reply_from_the_rest_of_the_batch(mo
 
     async def fake_get_updates(offset, **kwargs):
         if offset is None:
-            return [_update(1), _update(2)]
+            return [_update(1, text="/suckhoe"), _update(2, text="/suckhoe")]
         raise asyncio.CancelledError
 
     monkeypatch.setattr(telegram_notify, "get_updates", fake_get_updates)
@@ -537,3 +537,96 @@ async def test_listen_loop_does_not_record_a_registered_recipient_as_pending(mon
         await svc._telegram_listen_loop()
 
     assert telegram_notify.get_pending_senders() == {}
+
+
+# --- "/" commands (2026-10-13, Telegram Vòng 1) --------------------------------
+
+async def _run_one_batch(monkeypatch, updates):
+    monkeypatch.setattr(telegram_notify, "is_configured", lambda: True)
+    sent = []
+
+    async def fake_send_message_to(chat_id, text, *, silent=False):
+        sent.append((chat_id, text))
+
+    monkeypatch.setattr(telegram_notify, "send_message_to", fake_send_message_to)
+
+    async def fake_get_updates(offset, **kwargs):
+        if offset is None:
+            return updates
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr(telegram_notify, "get_updates", fake_get_updates)
+    with pytest.raises(asyncio.CancelledError):
+        await svc._telegram_listen_loop()
+    return sent
+
+
+async def test_listen_loop_plain_text_gets_help_not_the_health_snapshot(monkeypatch, isolated_runtime_config):
+    add_telegram_recipient("12345", "Test")
+    sent = await _run_one_batch(monkeypatch, [_update(1, text="chào bot")])
+    assert len(sent) == 1
+    assert "/lich" in sent[0][1] and "/suckhoe" in sent[0][1]
+
+
+async def test_listen_loop_non_text_message_gets_help(monkeypatch, isolated_runtime_config):
+    add_telegram_recipient("12345", "Test")
+    sent = await _run_one_batch(
+        monkeypatch, [{"update_id": 1, "message": {"chat": {"id": "12345"}, "sticker": {"file_id": "abc"}}}],
+    )
+    assert len(sent) == 1 and "/help" in sent[0][1]
+
+
+async def test_listen_loop_unknown_command_gets_help(monkeypatch, isolated_runtime_config):
+    add_telegram_recipient("12345", "Test")
+    sent = await _run_one_batch(monkeypatch, [_update(1, text="/xyz")])
+    assert "/lich" in sent[0][1]
+
+
+async def test_listen_loop_routes_each_known_command(monkeypatch, isolated_runtime_config):
+    add_telegram_recipient("12345", "Test")
+    monkeypatch.setattr(telegram_notify, "get_cached_bot_username", lambda: "my_bot")
+    monkeypatch.setattr(svc.telegram_commands, "schedule_text", lambda: "SCHED")
+    monkeypatch.setattr(svc.telegram_commands, "missed_text", lambda: "MISSED")
+    monkeypatch.setattr(svc.telegram_commands, "report_text", lambda: "REPORT")
+    monkeypatch.setattr(svc, "get_all_accounts", lambda: {})
+    monkeypatch.setattr(svc.data_sync, "get_all_sync_statuses", lambda: {})
+    monkeypatch.setattr(svc.db, "last_successful_action_per_account", lambda: {})
+    sent = await _run_one_batch(monkeypatch, [
+        _update(1, text="/lich"), _update(2, text="/quahan@my_bot"), _update(3, text="/baocao"), _update(4, text="/suckhoe"),
+    ])
+    assert [t for _c, t in sent] == ["SCHED", "MISSED", "REPORT", "Chưa có tài khoản nào."]
+
+
+async def test_listen_loop_command_from_unregistered_chat_is_not_answered(monkeypatch, isolated_runtime_config):
+    add_telegram_recipient("12345", "Test")
+
+    async def no_sleep(seconds):
+        pass
+
+    monkeypatch.setattr(svc.asyncio, "sleep", no_sleep)  # the idle sleep after an unanswered batch
+    sent = await _run_one_batch(monkeypatch, [_update(1, chat_id="999", text="/lich")])
+    assert sent == []
+
+
+async def test_listen_loop_ignores_a_command_addressed_to_another_bot(monkeypatch, isolated_runtime_config):
+    add_telegram_recipient("12345", "Test")
+    monkeypatch.setattr(telegram_notify, "get_cached_bot_username", lambda: "my_bot")
+
+    async def no_sleep(seconds):
+        pass
+
+    monkeypatch.setattr(svc.asyncio, "sleep", no_sleep)
+    sent = await _run_one_batch(monkeypatch, [_update(1, text="/lich@other_bot"), _update(2, text="/help@MY_BOT")])
+    assert len(sent) == 1 and "/lich" in sent[0][1]  # only the one addressed to us (case-insensitive) is answered
+
+
+async def test_listen_loop_fails_closed_on_a_suffixed_command_while_own_username_unknown(monkeypatch, isolated_runtime_config):
+    add_telegram_recipient("12345", "Test")
+    monkeypatch.setattr(telegram_notify, "get_cached_bot_username", lambda: None)
+
+    async def no_sleep(seconds):
+        pass
+
+    monkeypatch.setattr(svc.asyncio, "sleep", no_sleep)
+    sent = await _run_one_batch(monkeypatch, [_update(1, text="/lich@some_bot"), _update(2, text="/lich")])
+    assert len(sent) == 1  # the unsuffixed (private-chat style) command is still answered

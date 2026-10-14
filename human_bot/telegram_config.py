@@ -20,3 +20,8 @@ from dataclasses import dataclass
 @dataclass
 class TelegramConfig:
     enabled: bool = True
+    # Daily summary of the business day that just ended (2026-10-13) —
+    # sent once a day at this JST hour (default 6, i.e. right after the
+    # 02:00-06:00 quiet window, when the previous business day is fully over).
+    daily_summary_enabled: bool = True
+    daily_summary_hour_jst: int = 6

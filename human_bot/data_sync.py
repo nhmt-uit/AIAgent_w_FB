@@ -55,7 +55,7 @@ from typing import Any
 
 import httpx
 
-from human_bot import content_strategist, daily_limits, db, network_check, schedule_store, telegram_notify
+from human_bot import content_strategist, daily_limits, db, network_check, schedule_store, telegram_alerts, telegram_notify
 from human_bot.config import AccountConfig, GroupRef, get_account
 from human_bot.data_sync_config import DataSyncConfig
 from human_bot.scheduling_config import SchedulingConfig
@@ -1472,7 +1472,11 @@ async def sync_all(account_ids: list[str], cfg: DataSyncConfig | None = None) ->
     # timestamp (already folded into latest_job_ts by the fetch loop
     # above) would let the cursor advance past it and drop it from side
     # B's `since` window forever on the very next poll.
-    deferred_jobs.extend(_draft_needs_review_jobs(low_confidence_jobs, accounts, sponsored_only_ids, cfg))
+    undrafted = _draft_needs_review_jobs(low_confidence_jobs, accounts, sponsored_only_ids, cfg)
+    deferred_jobs.extend(undrafted)
+    # One combined Telegram message per sync cycle (2026-10-13) for the
+    # jobs that actually landed in "Chờ duyệt" this time.
+    telegram_alerts.spawn(telegram_alerts.notify_needs_review(len(low_confidence_jobs) - len(undrafted)))
 
     # --- Candidates: same idea, but the confidence/age/contact skip check
     # is account-independent, so it's applied ONCE up front — a candidate
@@ -1944,6 +1948,7 @@ def sweep_overdue_on_startup() -> dict[str, Any]:
     right here, once, not against anything from the previous run."""
     now = datetime.now(timezone.utc)
     swept = 0
+    items: list[dict[str, str]] = []
     for task in schedule_store.list_pending():
         try:
             scheduled = datetime.fromisoformat(task.scheduled_at.replace("Z", "+00:00"))
@@ -1958,7 +1963,8 @@ def sweep_overdue_on_startup() -> dict[str, Any]:
                 f"({now.isoformat()}) — có thể do service từng bị tắt. Cần admin duyệt lại.",
             )
             swept += 1
-    return {"checked_at": now.isoformat(), "swept": swept}
+            items.append({"account_id": task.account_id, "action": task.action, "scheduled_at": task.scheduled_at})
+    return {"checked_at": now.isoformat(), "swept": swept, "items": items}
 
 
 async def fire_due_tasks(cfg: SchedulingConfig | None = None) -> dict[str, Any]:
@@ -1991,6 +1997,10 @@ async def fire_due_tasks(cfg: SchedulingConfig | None = None) -> dict[str, Any]:
                 f"Mất mạng: không kết nối được internet khi đến giờ đăng ({task.scheduled_at}), "
                 f"đã thử lại {network_check.MAX_ATTEMPTS} lần đến {now_iso}. Cần admin duyệt lại.",
             )
+        # No Telegram message NOW — it can't be delivered with the
+        # internet down. service.py's fire loop sends one combined message
+        # once the internet is back (telegram_alerts.flush_pending()).
+        telegram_alerts.record_outage(due)
         return {"due": len(due), "fired": 0, "reason": "no_internet", "missed": len(due)}
 
     from human_bot import daily_limits

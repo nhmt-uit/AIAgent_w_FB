@@ -18,6 +18,7 @@ from human_bot.admin import NotLoggedIn, router as admin_router
 from human_bot.runtime_config import (
     get_mouse_overrides,
     get_data_sync_overrides,
+    get_telegram_overrides,
     get_secrets_overrides,
     get_job_post_openers,
     get_contact_cta,
@@ -458,3 +459,32 @@ def test_content_library_reset_restores_default_and_removes_override(client, iso
         {"text": "TÌM NHÂN SỰ MỚI", "visa_restrictions": []},
         {"text": "CHỈ DÀNH CHO KỸ SƯ", "visa_restrictions": ["gijinkoku"]},
     ]
+
+
+def test_config_save_telegram_daily_summary_hour_survives_as_int(client):
+    """2026-10-13: TelegramConfig gained daily_summary_hour_jst (int) —
+    must round-trip through the generic save as a real int (same failure
+    class as the 2026-10-06 float corruption) and the page must show it."""
+    page = client.get("/admin/config?tab=behavior")
+    assert "daily_summary_hour_jst" in page.text or "Giờ gửi tóm tắt" in page.text
+    resp = client.post("/admin/config", data={"telegram__daily_summary_hour_jst": "7", "telegram__daily_summary_enabled": "on"})
+    assert resp.status_code == 303
+    overrides = get_telegram_overrides()
+    assert overrides["daily_summary_hour_jst"] == 7
+    assert isinstance(overrides["daily_summary_hour_jst"], int)
+    assert overrides["daily_summary_enabled"] is True
+
+
+def test_every_bool_config_field_is_registered_as_a_checkbox():
+    """Found 2026-10-13 while adding TelegramConfig.daily_summary_enabled:
+    config_save()/the form renderer decide "checkbox vs number" from the
+    hand-maintained _BOOL_FIELDS set, NOT from the dataclass type — a new
+    bool field left out of it renders as a number box and saves as a
+    float. Guard every section's editable bool field."""
+    from typing import get_type_hints
+    from human_bot.admin import _BOOL_FIELDS, _CONFIG_SECTIONS
+    for _key, _prefix, _title, config_cls, editable_fields, *_rest in _CONFIG_SECTIONS:
+        hints = get_type_hints(config_cls)
+        for name in editable_fields:
+            if hints.get(name) is bool:
+                assert name in _BOOL_FIELDS, f"{config_cls.__name__}.{name} is bool but missing from _BOOL_FIELDS"

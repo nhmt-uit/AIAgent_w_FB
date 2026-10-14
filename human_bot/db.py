@@ -294,12 +294,16 @@ def list_accounts_with_activity() -> list[str]:
         conn.close()
 
 
-def _base_where(account_id: str | None, since: str | None) -> tuple[str, list]:
+def _base_where(account_id: str | None, since: str | None, until: str | None = None) -> tuple[str, list]:
     """Shared WHERE-clause builder for the account/date-range filters every
     report query below takes — `since` is an ISO 8601 UTC cutoff (rows with
     created_at >= since), None means "all time". Kept as one function so
     the two filters compose the same way (and in the same param order)
-    everywhere, instead of each query hand-rolling its own AND chain."""
+    everywhere, instead of each query hand-rolling its own AND chain.
+
+    `until` (2026-10-13, Telegram "báo cáo hôm qua") is an exclusive upper
+    bound in the same ISO format (created_at < until); None = no upper
+    bound, which is what every pre-existing caller gets."""
     clauses: list[str] = []
     params: list = []
     if account_id:
@@ -308,6 +312,9 @@ def _base_where(account_id: str | None, since: str | None) -> tuple[str, list]:
     if since:
         clauses.append("created_at >= ?")
         params.append(since)
+    if until:
+        clauses.append("created_at < ?")
+        params.append(until)
     where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
     return where, params
 
@@ -362,7 +369,7 @@ def group_post_counts(account_id: str | None = None, since: str | None = None) -
         conn.close()
 
 
-def action_type_counts(account_id: str | None = None, since: str | None = None) -> list[sqlite3.Row]:
+def action_type_counts(account_id: str | None = None, since: str | None = None, until: str | None = None) -> list[sqlite3.Row]:
     """Success/failure breakdown per action type — a quick health check
     (e.g. a spike in failed post_to_group could mean a broken selector or
     an account restriction, see docs/agents/safety-monitor.md).
@@ -373,7 +380,7 @@ def action_type_counts(account_id: str | None = None, since: str | None = None) 
     failures, with no way to tell them apart in this table."""
     conn = _connect()
     try:
-        where, params = _base_where(account_id, since)
+        where, params = _base_where(account_id, since, until)
         extra = "(message IS NULL OR message NOT LIKE 'rate_limited:%')"
         where = f"{where} AND {extra}" if where else f"WHERE {extra}"
         cur = conn.execute(
@@ -391,7 +398,7 @@ def action_type_counts(account_id: str | None = None, since: str | None = None) 
         conn.close()
 
 
-def summary_stats(account_id: str | None = None, since: str | None = None) -> dict:
+def summary_stats(account_id: str | None = None, since: str | None = None, until: str | None = None) -> dict:
     """One-row KPI overview for the top of /admin/reports: total
     successful/failed actions in the filtered window, the resulting
     success rate, and how many distinct accounts had any activity at all
@@ -410,7 +417,7 @@ def summary_stats(account_id: str | None = None, since: str | None = None) -> di
     activity, just not a completed one."""
     conn = _connect()
     try:
-        where, params = _base_where(account_id, since)
+        where, params = _base_where(account_id, since, until)
         not_rate_limited = "(message IS NULL OR message NOT LIKE 'rate_limited:%')"
         cur = conn.execute(
             f"""

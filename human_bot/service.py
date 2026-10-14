@@ -50,9 +50,9 @@ import secrets  # noqa: E402
 import sys  # noqa: E402
 import time  # noqa: E402
 from urllib.parse import quote  # noqa: E402
-from datetime import datetime, timezone  # noqa: E402
+from datetime import datetime, timedelta, timezone  # noqa: E402
 
-from human_bot import data_sync, db, schedule_store, screenshots, telegram_notify  # noqa: E402
+from human_bot import data_sync, db, schedule_store, screenshots, telegram_alerts, telegram_commands, telegram_notify  # noqa: E402
 from human_bot.admin import (  # noqa: E402
     NotLoggedIn,
     _SESSION_EXPIRY_WARNING_DAYS,
@@ -72,6 +72,7 @@ from human_bot.runtime_config import (  # noqa: E402
     get_config_changed_event,
     get_data_sync_config,
     get_sync_disabled_account_ids,
+    get_telegram_config,
     get_telegram_recipients,
 )
 
@@ -153,6 +154,19 @@ async def _data_sync_poll_loop() -> None:
             await _wait_until_due(remaining)
 
 
+_telegram_flush_task: asyncio.Task | None = None
+
+
+def _spawn_telegram_flush() -> None:
+    """Runs telegram_alerts.flush_pending() in the BACKGROUND (never
+    awaited inline): a Telegram that keeps failing must not delay firing
+    tasks (code review 2026-10-13). At most one in flight."""
+    global _telegram_flush_task
+    if _telegram_flush_task is not None and not _telegram_flush_task.done():
+        return
+    _telegram_flush_task = telegram_alerts.spawn(telegram_alerts.flush_pending())
+
+
 async def _data_sync_fire_loop() -> None:
     """Background loop: check for scheduled tasks that are now due and,
     only if SchedulingConfig.auto_fire_enabled is True, actually post them
@@ -177,6 +191,11 @@ async def _data_sync_fire_loop() -> None:
         due = elapsed is None or elapsed >= interval_seconds
         if due:
             last_run_at = now
+            # Pending Telegram alert from an earlier internet outage
+            # (telegram_alerts.record_outage()) — a cheap file read when
+            # there's nothing to send; sends one combined message the
+            # first tick the internet is back.
+            _spawn_telegram_flush()
             try:
                 await data_sync.fire_due_tasks()
             except Exception:  # noqa: BLE001 - keep the loop alive across failures
@@ -315,6 +334,19 @@ _TELEGRAM_LISTEN_IDLE_SLEEP_SECONDS = 30
 _TELEGRAM_LISTEN_MIN_POLL_SECONDS = 2
 
 
+_telegram_commands_registered = False
+
+
+async def _register_telegram_commands() -> None:
+    """Registers the "/" menu once; only retried (from the health loop's
+    cycle) while the last attempt failed — no Telegram call per cycle once
+    it has succeeded."""
+    global _telegram_commands_registered
+    if _telegram_commands_registered:
+        return
+    _telegram_commands_registered = await telegram_notify.set_my_commands(telegram_commands.COMMANDS)
+
+
 async def _telegram_health_check_loop() -> None:
     """Background loop: the "sức khoẻ tài khoản" signals that are a
     slowly-true CONDITION rather than a one-off EVENT (2026-10-05, alert
@@ -361,6 +393,9 @@ async def _telegram_health_check_loop() -> None:
             # Telegram once it has already succeeded once.
             if not telegram_notify.get_cached_bot_username():
                 await telegram_notify.refresh_bot_username()
+            # Retries the "/" command menu registration only while the
+            # startup attempt (maybe made while offline) has not succeeded.
+            await _register_telegram_commands()
             last_success_map = db.last_successful_action_per_account()
             for aid, account in get_all_accounts().items():
                 # Isolated per-account (2026-10-05 self-review, round 4) —
@@ -387,6 +422,72 @@ async def _telegram_health_check_loop() -> None:
         except Exception:  # noqa: BLE001 - one bad scan must not kill the loop
             logger.exception("_telegram_health_check_loop failed")
         await asyncio.sleep(_TELEGRAM_HEALTH_CHECK_INTERVAL_SECONDS)
+
+
+def _telegram_reply_for(command: str) -> str:
+    if command == "suckhoe":
+        sync_statuses = data_sync.get_all_sync_statuses()
+        last_success_map = db.last_successful_action_per_account()
+        return "\n\n".join(
+            _account_health_telegram_text(aid, a, sync_statuses, last_success_map)
+            for aid, a in get_all_accounts().items()
+        ) or "Chưa có tài khoản nào."
+    if command == "lich":
+        return telegram_commands.schedule_text()
+    if command == "quahan":
+        return telegram_commands.missed_text()
+    if command == "baocao":
+        return telegram_commands.report_text()
+    return telegram_commands.help_text()
+
+
+# Daily summary (2026-10-13): checked every few minutes; sends at most once
+# per JST date (marker in telegram_alerts' state file, so a restart neither
+# resends nor skips), only within a short window after the configured hour
+# — a service that was down at 06:00 still sends if back by 08:00, but a
+# stale "yesterday" summary is not sent at noon.
+_TELEGRAM_SUMMARY_CHECK_SECONDS = 300
+_TELEGRAM_SUMMARY_CATCHUP_HOURS = 2
+
+
+async def _maybe_send_daily_summary(now: datetime | None = None) -> bool:
+    cfg = get_telegram_config()
+    if not (cfg.daily_summary_enabled and telegram_notify.is_configured()):
+        return False
+    now = now or datetime.now(timezone.utc)
+    try:
+        # >= 2: the business day rolls over at 02:00 JST — an earlier hour
+        # would "summarize" a day that has not ended yet.
+        hour = min(max(int(cfg.daily_summary_hour_jst), 2), 23)
+    except (TypeError, ValueError):
+        hour = 6  # a hand-edited/garbled value must not make this loop log an error every cycle
+    jst = now + timedelta(hours=9)
+    # Today's slot, or yesterday's (a late-evening hour's catch-up window
+    # can run past midnight).
+    for days_back in (0, 1):
+        target = (jst - timedelta(days=days_back)).replace(hour=hour, minute=0, second=0, microsecond=0)
+        if target <= jst < target + timedelta(hours=_TELEGRAM_SUMMARY_CATCHUP_HOURS):
+            break
+    else:
+        return False
+    key = target.date().isoformat()
+    if telegram_alerts.get_state().get("last_summary_date") == key:
+        return False
+    anchor_utc = target - timedelta(hours=9)
+    text = await asyncio.to_thread(telegram_commands.daily_summary_text, now, anchor_utc)
+    if not await telegram_notify.send_message_checked(text, silent=True):
+        return False
+    telegram_alerts.update_state(last_summary_date=key)
+    return True
+
+
+async def _telegram_daily_summary_loop() -> None:
+    while True:
+        try:
+            await _maybe_send_daily_summary()
+        except Exception:  # noqa: BLE001 - one bad cycle must not kill the loop
+            logger.exception("_telegram_daily_summary_loop failed")
+        await asyncio.sleep(_TELEGRAM_SUMMARY_CHECK_SECONDS)
 
 
 async def _telegram_listen_loop() -> None:
@@ -449,7 +550,7 @@ async def _telegram_listen_loop() -> None:
             # in this batch needs it (most polls return 0 updates, or
             # updates from an unregistered chat, so skip the work
             # entirely then).
-            reply = None
+            replies_by_command: dict[str, str] = {}
             replied_to_anything = False
             for update in updates:
                 offset = update["update_id"] + 1
@@ -485,15 +586,22 @@ async def _telegram_listen_loop() -> None:
                 # must not also abort every OTHER valid message already
                 # advanced past in this same batch.
                 try:
-                    if reply is None:
-                        sync_statuses = data_sync.get_all_sync_statuses()
-                        last_success_map = db.last_successful_action_per_account()
-                        accounts = get_all_accounts()
-                        reply = "\n\n".join(
-                            _account_health_telegram_text(aid, a, sync_statuses, last_success_map)
-                            for aid, a in accounts.items()
-                        ) or "Chưa có tài khoản nào."
-                    await telegram_notify.send_message_to(chat_id, reply, silent=True)
+                    # "/" commands (2026-10-13). Anything that isn't a
+                    # known command — plain text, stickers, photos — gets
+                    # the /help list instead of the health snapshot it
+                    # used to get for every message. Built once per
+                    # command per batch (replies_by_command).
+                    target_bot = telegram_commands.command_target(message.get("text"))
+                    my_username = telegram_notify.get_cached_bot_username()
+                    if target_bot and (not my_username or target_bot.lower() != my_username.lower()):
+                        continue  # "/lich@some_other_bot" — meant for a different bot in a shared chat (fails closed while our own username is still unknown)
+                    command = telegram_commands.parse_command(message.get("text"))
+                    if not telegram_commands.is_known_command(command):
+                        command = "help"
+                    if command not in replies_by_command:
+                        # Disk/SQLite reads — off the event loop thread.
+                        replies_by_command[command] = await asyncio.to_thread(_telegram_reply_for, command)
+                    await telegram_notify.send_message_to(chat_id, replies_by_command[command], silent=True)
                     replied_to_anything = True
                 except Exception:  # noqa: BLE001 - one bad reply must not skip the rest of this batch
                     logger.exception("_telegram_listen_loop failed to reply to update %s", update.get("update_id"))
@@ -623,6 +731,10 @@ async def lifespan(app: FastAPI):
     # receiving alerts with no manual step. See
     # runtime_config.migrate_legacy_telegram_chat_id_once()'s own docstring.
     runtime_config.migrate_legacy_telegram_chat_id_once()
+    # Fire-and-forget like refresh_bot_username() below — a Telegram call
+    # (up to its 15s timeout) must never delay startup.
+    telegram_alerts.spawn(telegram_alerts.notify_startup_sweep(swept.get("items", [])))
+    telegram_alerts.spawn(_register_telegram_commands())
     # Fire-and-forget (self-review follow-up) — caches the bot's own
     # @username so the admin tab can link straight to its Telegram chat
     # instead of just describing it in words (telegram_notify.
@@ -634,7 +746,7 @@ async def lifespan(app: FastAPI):
     # task rather than blocking `yield`, this just matches that.
     # _telegram_health_check_loop() retries this on its own 6h cadence
     # (only while still uncached) if this first attempt fails.
-    asyncio.create_task(telegram_notify.refresh_bot_username())
+    telegram_alerts.spawn(telegram_notify.refresh_bot_username())
     active_accounts = [a for a in get_all_accounts().values() if a.status == AccountStatus.ACTIVE]
     await warm_up(active_accounts)
     poll_task = asyncio.create_task(_data_sync_poll_loop())
@@ -644,6 +756,7 @@ async def lifespan(app: FastAPI):
     resume_cooldown_task = asyncio.create_task(_resume_cooldown_maintenance_loop())
     telegram_health_task = asyncio.create_task(_telegram_health_check_loop())
     telegram_listen_task = asyncio.create_task(_telegram_listen_loop())
+    telegram_summary_task = asyncio.create_task(_telegram_daily_summary_loop())
     yield
     poll_task.cancel()
     fire_task.cancel()
@@ -652,6 +765,7 @@ async def lifespan(app: FastAPI):
     resume_cooldown_task.cancel()
     telegram_health_task.cancel()
     telegram_listen_task.cancel()
+    telegram_summary_task.cancel()
     for t in (
         poll_task,
         fire_task,
@@ -660,6 +774,7 @@ async def lifespan(app: FastAPI):
         resume_cooldown_task,
         telegram_health_task,
         telegram_listen_task,
+        telegram_summary_task,
     ):
         try:
             await t

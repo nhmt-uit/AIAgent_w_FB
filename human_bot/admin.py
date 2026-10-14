@@ -316,6 +316,7 @@ _SCROLL_LABELS: dict[str, str] = {
 _BOOL_FIELDS = {
     "enabled", "auto_fire_enabled", "attach_random_meme_default",
     "job_post_ai_enabled", "candidate_reply_ai_enabled",
+    "daily_summary_enabled",
 }
 
 # Pulled out of DataSyncConfig's usual card into their own "🤖 AI" tab in
@@ -900,6 +901,8 @@ _TELEGRAM_LABELS: dict[str, str] = {
         "Bật báo cáo/báo động qua Telegram (cần khai báo TELEGRAM_BOT_TOKEN trong .env, và "
         "thêm người nhận ở /admin/accounts, tab \"Tài khoản Telegram\" — tắt ở đây để im lặng ngay không cần sửa .env/khởi động lại)"
     ),
+    "daily_summary_enabled": "Gửi tóm tắt mỗi ngày về những gì đã làm hôm qua (ngày nghiệp vụ 02:00 → 02:00 JST)",
+    "daily_summary_hour_jst": "Giờ gửi tóm tắt (giờ Nhật, 2–23 — ngày nghiệp vụ kết thúc lúc 2h sáng nên không đặt sớm hơn; mặc định 6 = 6h sáng, sau khung giờ yên lặng)",
 }
 
 _ICONS["telegram"] = "📨"

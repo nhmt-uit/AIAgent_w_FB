@@ -29,6 +29,22 @@ def _isolated_telegram_pending_senders():
     telegram_notify._cached_bot_username = None
 
 
+@pytest.fixture(autouse=True)
+def _isolated_telegram_state_and_no_real_telegram(tmp_path, monkeypatch):
+    """telegram_alerts keeps a small state file (an outage record, queued
+    notices, the daily-summary marker) under data_sync_cache/. Found
+    2026-10-13 by a code audit: tests that run fire_due_tasks() offline
+    wrote a FAKE outage into the REAL file, which the real service would
+    then have announced to the real Telegram recipients on its next start.
+    Every test now gets its own throwaway state file. The bot token is also
+    removed from the environment so no test can reach the real Telegram API
+    by accident — tests that need a token set one themselves (their own
+    monkeypatch.setenv runs after this fixture)."""
+    from human_bot import telegram_alerts
+    monkeypatch.setattr(telegram_alerts, "STATE_PATH", tmp_path / "_telegram_state.json")
+    monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
+
+
 @pytest.fixture
 def isolated_runtime_config(tmp_path, monkeypatch):
     """Redirects human_bot.runtime_config's on-disk JSON store to a throwaway

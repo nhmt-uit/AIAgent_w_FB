@@ -1043,6 +1043,39 @@ khai:**
     báo ngược lại). Phụ thuộc bên B có muốn nhận không, cần bàn với họ
     trước khi làm.
 
+**[MỚI, 09/10] Ý tưởng mở rộng Telegram — owner yêu cầu ghi nhận, chưa lên kế
+hoạch triển khai.** Hiện bot chỉ tự báo mỗi lượt đăng + 5 loại cảnh báo, và trả
+lời mọi tin nhắn bằng bảng sức khoẻ tài khoản (chưa có lệnh `/`, chưa có nút
+bấm):
+
+11. **Báo khi có task rơi vào "Task quá hạn"** (ví dụ do mất mạng) + tin khi mạng
+    có lại + báo khi tab "Chờ duyệt" có job mới — ưu tiên cao, nối thẳng với
+    tính năng kiểm tra mạng vừa làm.
+12. **Lệnh `/`** (`/lich`, `/quahan`, `/baocao`, `/suckhoe`) và **tóm tắt đầu/cuối
+    ngày tự gửi** — ưu tiên cao, rẻ.
+13. **Nút bấm dưới tin nhắn** (Duyệt/Bỏ qua job chờ duyệt, Lên lịch lại/Huỷ task
+    quá hạn, Hoãn task sắp đăng) và **`/tamdung`, `/tieptuc`** để dừng/bật tự
+    đăng từ xa. Cần phân quyền trước (người chỉ xem vs người được điều khiển —
+    hiện danh sách người nhận chưa phân biệt), nên chốt với owner trước khi làm.
+14. **Cảnh báo "service ngừng hẳn"** (cần bên ngoài giám sát, vì bot không tự báo
+    được lúc chính nó tắt), **cảnh báo sớm theo xu hướng** (tỉ lệ lỗi tăng, sắp
+    hết hạn mức ngày, một nhóm thất bại liên tục) và **gửi ảnh bằng chứng khi
+    đăng thất bại**.
+
+*Vòng 1 — ĐÃ LÀM XONG (13/10, chưa thử với bot thật):* báo task vào "Task quá hạn" (khi mất
+mạng thì gửi 1 tin gom sau khi có mạng lại, vì lúc mất mạng Telegram cũng không
+gửi được), báo job mới vào "Chờ duyệt", các lệnh `/lich` `/quahan` `/baocao`
+`/suckhoe` `/help` (tin không phải lệnh chỉ trả hướng dẫn), và tóm tắt tự động
+6h sáng mỗi ngày về ngày hôm trước (bật/tắt và đổi giờ ở trang cấu hình). Lệnh
+`/lich` tách riêng các task "đã đến giờ nhưng chưa chạy" — khi thử trên dữ liệu thật
+đã thấy hàng chờ có task từ 09/10 chưa chạy (service đã tắt mấy ngày). Lưu ý: task
+đã vào "Task quá hạn" vì mất mạng không tự chạy lại, vẫn cần admin lên lịch lại.
+*Để sau:* nhắc lại job chờ duyệt quá lâu.
+
+Cố tình không đề xuất: soạn/đăng bài thật từ Telegram (rủi ro tin nhắn bị chuyển
+tiếp, tăng bề mặt rủi ro) và hỏi đáp ngôn ngữ tự nhiên qua AI (tốn chi phí, dễ
+trả lời sai số liệu).
+
 Cố tình KHÔNG đề xuất 2 hướng vì đi ngược tinh thần "giảm dấu vết bot": phân
 tích engagement (like/comment nhận được — đòi hỏi bot quay lại đọc trang
 nhiều hơn, tăng tín hiệu bot) và tự động phát hiện trùng lặp văn bản giữa các

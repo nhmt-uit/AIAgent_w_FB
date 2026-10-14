@@ -6378,3 +6378,107 @@ Xem đầy đủ lý do thiết kế ở `FB_Post_Assistant.md`.
       (không thêm ngẫu nhiên). Đã đối chiếu với tìm kiếm vét cạn 3000 ca
       ngẫu nhiên: 0 vi phạm. Sửa 1 test cũ (nay phải lấp đầy cả hôm nay),
       thêm 4 test mới. Toàn bộ suite 673/673 pass.
+
+## Ý tưởng mở rộng Telegram (2026-10-09) — đã note, chưa lên kế hoạch làm
+
+Hiện bot chỉ: (a) tự báo mỗi lượt đăng + 5 loại cảnh báo, (b) trả lời MỌI tin
+nhắn bằng bảng sức khoẻ tài khoản (không có lệnh `/`, không có nút bấm).
+
+- [ ] **Báo khi task rơi vào "Task quá hạn" (ưu tiên 1)** — vd "mất mạng, 3
+      task chuyển sang quá hạn" + tin khi mạng có lại; báo khi tab "Chờ duyệt"
+      có job mới. Nối trực tiếp với kiểm tra mạng 2026-10-09.
+- [ ] **Lệnh `/` (ưu tiên 1)** — `/lich` (task sắp đăng hôm nay), `/quahan`,
+      `/baocao` (tóm tắt hôm nay), `/suckhoe`; thay cho "nhắn gì cũng trả cùng
+      một thứ".
+- [ ] **Tóm tắt đầu/cuối ngày tự gửi** thay vì phải hỏi.
+- [ ] **Nút bấm dưới tin nhắn (inline button)** — Duyệt/Bỏ qua job "Chờ
+      duyệt", "Lên lịch lại"/"Huỷ" task quá hạn, "Hoãn" task sắp đăng.
+- [ ] **`/tamdung` và `/tieptuc`** — dừng/bật việc tự đăng
+      (`auto_fire_enabled`) hoặc từng tài khoản từ xa.
+      ⚠ Hai mục điều khiển này cần phân quyền trước: danh sách người nhận
+      hiện chưa phân biệt "chỉ xem" và "được điều khiển" — cần chốt với owner.
+- [ ] **Cảnh báo "service ngừng hẳn"** — bot không tự báo được khi chính nó
+      tắt; cần bên ngoài ping/máy khác gửi tin khi mất tín hiệu.
+- [ ] **Cảnh báo sớm theo xu hướng** — tỉ lệ lỗi tăng bất thường, hạn mức
+      ngày sắp hết, một nhóm thất bại liên tục (ghép với ý circuit breaker).
+- [ ] **Gửi ảnh chụp bằng chứng khi một lượt đăng thất bại** — `send_photo`
+      đã có sẵn trong `telegram_notify.py`; cần kiểm tra đã dùng cho trường
+      hợp này chưa.
+- Cân nhắc kỹ, KHÔNG đề xuất làm: soạn/đăng bài thật từ Telegram (tin nhắn
+  có thể bị chuyển tiếp, tăng bề mặt rủi ro); hỏi đáp ngôn ngữ tự nhiên qua
+  AI (tốn chi phí, cần chống trả lời sai số liệu).
+
+### Telegram Vòng 1 — chốt thiết kế với owner và LÀM XONG (2026-10-13)
+
+- [x] Báo task vào "Task quá hạn": do mất mạng (gửi 1 tin gom SAU KHI có mạng
+      lại — lúc mất mạng thì Telegram cũng không gửi được) và do khởi động
+      lại (1 tin gom sau khi quét).
+- [x] Báo job mới vào "Chờ duyệt" (gom theo mỗi lượt đồng bộ).
+- [x] Lệnh `/lich`, `/quahan`, `/baocao`, `/suckhoe`, `/help` + menu
+      (`setMyCommands`). Tin KHÔNG phải lệnh → chỉ trả hướng dẫn `/help`
+      (đổi so với hiện tại: không còn trả bảng sức khoẻ cho mọi tin).
+- [x] Tóm tắt tự động 06:00 JST mỗi sáng về ngày nghiệp vụ hôm qua
+      (02:00 → 02:00 JST, cùng định nghĩa với hạn mức ngày).
+- Chat nhận hiện toàn chat riêng, chưa có nhóm → không cần rút gọn nội dung.
+- [ ] **Để sau:** nhắc lại job "Chờ duyệt" quá lâu chưa duyệt (vd > 24 giờ).
+
+**Đã làm (2026-10-13):** mô-đun mới `human_bot/telegram_alerts.py` (trạng thái
+trên đĩa `data_sync_cache/_telegram_state.json` + gửi tin gom) và
+`human_bot/telegram_commands.py` (các lệnh `/lich /quahan /baocao /suckhoe /help`
++ nội dung tóm tắt).
+- **Mất mạng:** `fire_due_tasks()` chỉ GHI NHẬN đợt mất mạng (lúc đó Telegram
+  cũng không gửi được); vòng kiểm tra giờ gọi `flush_pending()` mỗi chu kỳ ~60s
+  (không thêm vòng mới) — lần đầu có mạng lại gửi 1 tin gom rồi xoá ghi nhận;
+  gửi lỗi thì giữ lại thử tiếp; tắt Telegram thì bỏ ghi nhận (không thử mãi).
+  Task đã vào "Task quá hạn" KHÔNG tự chạy lại — cần admin lên lịch lại.
+- **Khởi động lại:** `sweep_overdue_on_startup()` trả thêm danh sách task; 1 tin
+  gom, gửi lỗi thì xếp hàng thử lại.
+- **Chờ duyệt:** 1 tin gom mỗi lượt đồng bộ (`sync_all()`).
+- **Lệnh:** tin không phải lệnh / sticker / ảnh → chỉ trả `/help` (đổi so với
+  trước, theo yêu cầu owner). Menu đăng ký bằng `setMyCommands` lúc khởi động và
+  mỗi 6 giờ. `/lich` tách riêng task "⏰ đã đến giờ nhưng chưa chạy" — phát hiện
+  khi thử trên dữ liệu thật: hàng chờ có task từ 09/10 chưa chạy.
+- **Tóm tắt 6h sáng JST** về ngày nghiệp vụ hôm trước (02:00→02:00 JST); gửi tối
+  đa 1 lần/ngày (đánh dấu trong file trạng thái), bù được nếu service bật lại
+  trong 2 giờ sau giờ gửi. Bật/tắt + giờ gửi chỉnh ở `/admin/config`.
+- `db.summary_stats()/action_type_counts()` thêm tham số `until`.
+- ⚠ Bài học: trường bool mới trong config PHẢI thêm vào `admin._BOOL_FIELDS`
+  (danh sách viết tay), nếu không ô bật/tắt hiện thành ô số và lưu thành float;
+  đã thêm test bảo vệ chung cho mọi section.
+- Test: thêm `tests/test_telegram_alerts.py`, `tests/test_telegram_commands.py`,
+  mở rộng 2 file test cũ (sửa 2 test giả định "mọi tin → bảng sức khoẻ").
+  Toàn bộ suite 717/717 pass. CHƯA thử với bot Telegram thật (cần restart
+  service rồi thử `/help`, `/lich`; tắt mạng thử đợt mất mạng).
+- **Tự rà soát (`/code-review`, 2026-10-13) — 10 phát hiện, sửa 9:** (1) `flush_pending()`
+  ghi đè trạng thái cũ sau khi chờ mạng → nay đọc lại file sau mỗi lần chờ, chỉ đổi
+  đúng khoá của mình; (2) flush chạy NỀN (không chặn vòng bắn task khi Telegram lỗi),
+  tối đa 1 cái cùng lúc; (3) giờ tóm tắt kẹp ≥ 2h (ngày nghiệp vụ chưa kết thúc trước
+  02:00) và bù được qua nửa đêm, tóm tắt neo theo giờ hẹn chứ không theo "bây giờ";
+  (4) `sync_all()` gửi báo "Chờ duyệt" ở nền, không chặn/không làm hỏng lượt đồng bộ;
+  (5) `setMyCommands` chỉ gọi lại khi lần trước thất bại; (6) task nền giữ tham chiếu
+  mạnh (`telegram_alerts.spawn`); (7) bỏ qua lệnh gửi cho bot khác (`/lich@bot_khac`);
+  (8) dựng tin lệnh chạy trong thread, không chặn event loop; (9) lời văn tin mất mạng
+  không còn khẳng định khoảng thời gian chính xác. **Cố ý giữ nguyên:**
+  `send_message_checked()` tính thành công khi gửi được cho ÍT NHẤT 1 người nhận (đòi
+  "tất cả" thì 1 người chặn bot sẽ khiến mọi người nhận lặp tin mãi). Suite 725 pass.
+- **Vòng review thứ 2 (2026-10-13) — 9 phát hiện, sửa 4, bác 1, giữ 4:** sửa (a) flush xoá
+  nhầm task ghi nhận THÊM trong lúc đang gửi → chỉ bỏ phần đã gửi, phần còn lại thành
+  đợt mới; (b) lệnh gửi cho bot khác nay bị bỏ qua cả khi chưa biết username của mình
+  (fail closed); (c) dòng cuối tin ghi "Hiện — chờ đăng hôm nay: N (⏰ M đã quá giờ chưa
+  chạy)" cùng cách đếm với `/lich`, không còn lệch nhau; (d) nhãn config ghi rõ giờ gửi
+  tóm tắt là 2–23. Bác: "đếm lặp job chờ duyệt" — job đã soạn đều `_mark_seen` nên lượt
+  sau không lấy lại. Giữ nguyên có chủ đích: gửi được cho ≥1 người = thành công (kể cả
+  "không có ai để gửi" thì đánh dấu đã gửi trong ngày — thêm người nhận sau đó sẽ không
+  nhận bản tóm tắt hôm đó); đăng ký menu có thể chạy trùng 2 lần lúc khởi động (vô hại);
+  2N truy vấn cho N tài khoản (N nhỏ); mất đồng bộ file trạng thái giữa các lần `await`
+  đã được xử lý bằng đọc lại sau mỗi lần chờ. Suite 727 pass.
+- **Rà soát lần 3 bằng tay (2026-10-13) — tìm ra 1 lỗi thật:** test chạy `fire_due_tasks()`
+  offline đã ghi 1 đợt mất mạng GIẢ (tài khoản `acc-a`) vào file trạng thái THẬT
+  `data_sync_cache/_telegram_state.json`; service thật khởi động lên sẽ gửi tin "đã có
+  mạng lại, 11 task quá hạn" giả cho người nhận thật. Đã xoá file đó, thêm fixture
+  autouse trong `tests/conftest.py` (mỗi test có file trạng thái riêng + gỡ
+  `TELEGRAM_BOT_TOKEN` khỏi môi trường để test không thể chạm Telegram thật), và
+  `_save()` nay không bao giờ ném lỗi vào bộ lên lịch. Suite 729 pass. Không có bằng chứng
+  test từng gửi tin thật (test không chạy `lifespan`/`sync_all`, các đường gửi đều được
+  patch), nhưng nên liếc chat Telegram xem có tin lạ nào không.
+

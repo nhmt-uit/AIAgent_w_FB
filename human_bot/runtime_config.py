@@ -477,6 +477,8 @@ def save_media_overrides(values: dict[str, Any]) -> None:
 
 EDITABLE_TELEGRAM_FIELDS: list[str] = [
     "enabled",
+    "daily_summary_enabled",
+    "daily_summary_hour_jst",
 ]
 
 

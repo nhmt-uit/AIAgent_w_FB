@@ -198,6 +198,45 @@ async def send_message(text: str, *, silent: bool = False) -> None:
         await _send_message_to(recipient["chat_id"], text, silent=silent)
 
 
+async def send_message_checked(text: str, *, silent: bool = False) -> bool:
+    """Broadcast like send_message(), but reports whether the message
+    actually went out (2026-10-13) — for alerts that must not be lost
+    when the internet is down (human_bot/telegram_alerts.py keeps them
+    and retries). True when delivered to at least one recipient, AND
+    when there is nothing to deliver to at all (not configured / muted /
+    no recipients) — retrying those forever would be pointless."""
+    if not is_configured():
+        return True
+    recipients = get_telegram_recipients()
+    if not recipients:
+        return True
+    delivered = False
+    for recipient in recipients:
+        if await _send_message_to(recipient["chat_id"], text, silent=silent):
+            delivered = True
+    return delivered
+
+
+async def set_my_commands(commands: list[tuple[str, str]]) -> bool:
+    """Registers the bot's "/" command menu (setMyCommands). Best-effort,
+    never raises; returns whether Telegram accepted it."""
+    if not is_configured():
+        return False
+    try:
+        async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
+            resp = await client.post(
+                _API_BASE.format(token=_token()) + "/setMyCommands",
+                json={"commands": [{"command": c, "description": d} for c, d in commands]},
+            )
+            if resp.status_code != 200:
+                logger.warning("telegram_notify: setMyCommands HTTP %s: %s", resp.status_code, resp.text[:300])
+                return False
+            return True
+    except Exception:  # noqa: BLE001 — see send_message()'s docstring
+        logger.exception("telegram_notify: setMyCommands failed")
+        return False
+
+
 async def send_message_to(chat_id: str, text: str, *, silent: bool = False) -> bool:
     """Direct reply to ONE specific chat id — used by the 2-way health
     query (human_bot/service.py's _telegram_listen_loop()) so only the
