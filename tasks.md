@@ -6482,3 +6482,43 @@ trên đĩa `data_sync_cache/_telegram_state.json` + gửi tin gom) và
   test từng gửi tin thật (test không chạy `lifespan`/`sync_all`, các đường gửi đều được
   patch), nhưng nên liếc chat Telegram xem có tin lạ nào không.
 
+### Telegram Vòng 2 — nút bấm thao tác (2026-10-16) — LÀM XONG
+
+Quyết định của owner: **mọi người trong danh sách tạo ở ADMIN UI đều thao tác được** (không
+chia vai trò). Mô-đun mới `human_bot/telegram_actions.py`.
+- **Lệnh mới:** `/choduyet` (✅ Duyệt / 🗑 Bỏ qua từng job), `/quahan` giờ gửi từng task kèm
+  nút (🔄 Lên lịch lại / 🗑 Huỷ) thay cho danh sách chữ, `/tamdung` (⏸ Tạm dừng tự đăng),
+  `/tieptuc` (▶️ Bật lại tự đăng). Tối đa 5 tin/lệnh, còn nữa thì có dòng ghi chú.
+- **Mọi nút đều 2 bước:** chạm lần 1 chỉ đổi bàn phím thành [✅ Xác nhận …] [↩ Quay lại];
+  chạm lần 2 mới thực hiện. Nút lên lịch lại ghi giờ gợi ý "khoảng HH:MM" (tính lại lúc xác
+  nhận). Bấm lần 2 trên mục đã được người khác xử lý → báo "đã được xử lý ở nơi khác".
+- **Dùng lại đúng lõi của /admin:** `admin._suggest_reschedule_at`, `schedule_store`, và
+  `admin.approve_needs_review_core()` (tách khỏi route "Duyệt & lên lịch", route giữ nguyên
+  hành vi). Duyệt trên Telegram dùng nội dung đã soạn sẵn, không sửa được (muốn sửa → /admin).
+- **Phân quyền:** chỉ chat đã đăng ký VÀ là chat riêng (id người bấm = id chat); nhóm đăng
+  ký làm người nhận thì bị từ chối bấm (nếu không, bất kỳ thành viên nào cũng bấm được).
+  Tạm dừng/bật lại tự đăng được thông báo cho TẤT CẢ người nhận kèm tên người làm.
+- **Tự rà soát (/code-review) — 9 phát hiện, sửa 8:** (1) lưu config từ thread phụ (nút
+  Telegram) gọi `asyncio.Event.set()` không an toàn luồng → `notify_config_changed()` nay
+  an toàn luồng (`set_notify_loop()` gọi ở lifespan; cũng sửa luôn nguy cơ tương tự của các
+  route admin chạy ở thread); (2) duyệt job giữa chừng lỗi làm mất job + chỉ tạo một phần
+  task → nay hoàn tác (huỷ task đã tạo, trả job về hàng chờ duyệt); (3) `/quahan` không còn
+  gửi trùng (danh sách chữ + nút); (4) tin quá cũ/không có chữ chỉ đổi bàn phím, không ghi
+  đè nội dung; (5) id `af` lạ không còn bị hiểu là "tạm dừng"; (6) đọc danh sách người nhận
+  1 lần cho cả lượt, không đọc đĩa mỗi lần bấm; (7) dùng chung hàm nhãn lý do, so sánh lỗi
+  bằng tập hằng số chung; giờ trên nút ghi "khoảng". **Đã biết, giữ nguyên:** `edit_message`
+  sửa chữ mà không gửi lại bàn phím thì Telegram gỡ nút (đã ghi chú trong docstring).
+- Test: `tests/test_telegram_actions.py` mới + mở rộng listen loop / notify. 761 pass.
+  CHƯA thử với bot thật.
+- **Vòng review thứ 2 của Vòng 2 — 10 phát hiện, sửa 7, giữ 3:** sửa (a) hoàn tác khi duyệt
+  lỗi giữa chừng: nếu không huỷ hết được task đã tạo (đã bị nhặt để đăng) thì KHÔNG trả job
+  về hàng chờ, tránh đăng trùng; (b) job không chọn được nhóm nào → trả lại hàng chờ + báo
+  lỗi thay vì "tạo 0 task" rồi mất job; (c) `reject_needs_review`/`_move_to` thua cuộc đua
+  (2 người bấm cùng lúc) trả False thay vì ném `FileNotFoundError`; (d) báo lỗi (tài khoản
+  không còn…) giữ nguyên nút thay vì gỡ hết nút; (e) `_btn` dùng `ValueError` thay `assert`
+  (bị `python -O` bỏ qua); (f) lệnh có nút trong nhóm/channel chỉ trả "dùng trong chat riêng",
+  không đăng danh sách nút chết + bản xem trước nội dung vào nhóm. **Giữ nguyên:** đọc-sửa-ghi
+  `scheduling` không khoá (section chỉ có 1 trường nên không thể ghi đè sửa đổi khác);
+  `notify_config_changed` ngoài lifespan (chỉ test/CLI); lỗi sửa tin sau khi đã thực hiện
+  không được thử lại (đã có log, bấm lại chỉ báo "đã xử lý"). Suite 767 pass.
+

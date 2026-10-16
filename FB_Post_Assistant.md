@@ -1072,6 +1072,15 @@ gửi được), báo job mới vào "Chờ duyệt", các lệnh `/lich` `/quah
 đã vào "Task quá hạn" vì mất mạng không tự chạy lại, vẫn cần admin lên lịch lại.
 *Để sau:* nhắc lại job chờ duyệt quá lâu.
 
+*Vòng 2 — ĐÃ LÀM (16/10, chưa thử với bot thật):* bot giờ có **nút bấm** ngay dưới tin nhắn.
+`/quahan` gửi từng task quá hạn kèm nút "Lên lịch lại" / "Huỷ"; `/choduyet` gửi từng job
+chờ duyệt kèm nút "Duyệt" / "Bỏ qua"; `/tamdung` và `/tieptuc` tạm dừng / bật lại tự động
+đăng. Theo quyết định của owner, **bất kỳ ai trong danh sách người nhận ở trang quản trị
+đều thao tác được**. Để tránh bấm nhầm trên điện thoại, mọi nút đều hỏi lại một lần
+("Xác nhận / Quay lại"), và việc tạm dừng / bật lại tự đăng được báo cho tất cả người nhận
+kèm tên người thực hiện. Nút chỉ hoạt động trong chat riêng với bot. Duyệt job trên
+Telegram dùng nội dung đã soạn sẵn; muốn sửa chữ vẫn phải vào trang quản trị.
+
 Cố tình không đề xuất: soạn/đăng bài thật từ Telegram (rủi ro tin nhắn bị chuyển
 tiếp, tăng bề mặt rủi ro) và hỏi đáp ngôn ngữ tự nhiên qua AI (tốn chi phí, dễ
 trả lời sai số liệu).

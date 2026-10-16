@@ -586,15 +586,16 @@ async def test_listen_loop_routes_each_known_command(monkeypatch, isolated_runti
     add_telegram_recipient("12345", "Test")
     monkeypatch.setattr(telegram_notify, "get_cached_bot_username", lambda: "my_bot")
     monkeypatch.setattr(svc.telegram_commands, "schedule_text", lambda: "SCHED")
-    monkeypatch.setattr(svc.telegram_commands, "missed_text", lambda: "MISSED")
     monkeypatch.setattr(svc.telegram_commands, "report_text", lambda: "REPORT")
+    monkeypatch.setattr(svc.telegram_actions, "build_items", lambda command: [])  # real one would read the real schedule dirs
     monkeypatch.setattr(svc, "get_all_accounts", lambda: {})
     monkeypatch.setattr(svc.data_sync, "get_all_sync_statuses", lambda: {})
     monkeypatch.setattr(svc.db, "last_successful_action_per_account", lambda: {})
     sent = await _run_one_batch(monkeypatch, [
         _update(1, text="/lich"), _update(2, text="/quahan@my_bot"), _update(3, text="/baocao"), _update(4, text="/suckhoe"),
     ])
-    assert [t for _c, t in sent] == ["SCHED", "MISSED", "REPORT", "Chưa có tài khoản nào."]
+    # /quahan is button-only now (build_items is stubbed empty here) → no text of its own
+    assert [t for _c, t in sent] == ["SCHED", "REPORT", "Chưa có tài khoản nào."]
 
 
 async def test_listen_loop_command_from_unregistered_chat_is_not_answered(monkeypatch, isolated_runtime_config):
@@ -630,3 +631,169 @@ async def test_listen_loop_fails_closed_on_a_suffixed_command_while_own_username
     monkeypatch.setattr(svc.asyncio, "sleep", no_sleep)
     sent = await _run_one_batch(monkeypatch, [_update(1, text="/lich@some_bot"), _update(2, text="/lich")])
     assert len(sent) == 1  # the unsuffixed (private-chat style) command is still answered
+
+
+# --- Vòng 2: buttons (2026-10-16) ------------------------------------------------------
+
+def _callback_update(update_id, *, chat_id="12345", from_id="12345", data="cm|x", text="orig", message_id=7, cb_id="cb1"):
+    return {"update_id": update_id, "callback_query": {
+        "id": cb_id, "from": {"id": from_id, "first_name": "Tu"}, "data": data,
+        "message": {"message_id": message_id, "chat": {"id": chat_id}, "text": text},
+    }}
+
+
+class _Calls:
+    def __init__(self):
+        self.answers, self.edits, self.broadcasts, self.buttons, self.plain = [], [], [], [], []
+
+
+def _wire_buttons(monkeypatch):
+    calls = _Calls()
+
+    async def answer(callback_id, text="", *, alert=False):
+        calls.answers.append((callback_id, text, alert))
+        return True
+
+    async def edit(chat_id, message_id, *, text=None, keyboard=None):
+        calls.edits.append((chat_id, message_id, text, keyboard))
+        return True
+
+    async def broadcast(text, *, silent=False):
+        calls.broadcasts.append(text)
+
+    async def with_buttons(chat_id, text, keyboard, *, silent=True):
+        calls.buttons.append((chat_id, text, keyboard))
+        return True
+
+    monkeypatch.setattr(telegram_notify, "answer_callback_query", answer)
+    monkeypatch.setattr(telegram_notify, "edit_message", edit)
+    monkeypatch.setattr(telegram_notify, "send_message", broadcast)
+    monkeypatch.setattr(telegram_notify, "send_message_with_buttons", with_buttons)
+
+    async def fail_if_sleep_called(seconds):
+        raise AssertionError(f"must not idle-sleep after a real button press (slept {seconds}s)")
+
+    monkeypatch.setattr(svc.asyncio, "sleep", fail_if_sleep_called)
+    return calls
+
+
+async def test_button_press_by_a_registered_recipient_runs_the_action_and_edits_the_message(monkeypatch, isolated_runtime_config):
+    add_telegram_recipient("12345", "Tu")
+    calls = _wire_buttons(monkeypatch)
+    seen = {}
+
+    def fake_handle(data, original_text, actor):
+        seen.update(data=data, original=original_text, actor=actor)
+        return svc.telegram_actions.CallbackResult(toast="Đã huỷ", text="orig\n\nxong", keyboard=[])
+
+    monkeypatch.setattr(svc.telegram_actions, "handle_callback", fake_handle)
+    await _run_one_batch(monkeypatch, [_callback_update(1, data="cm!|abc")])
+    assert seen == {"data": "cm!|abc", "original": "orig", "actor": "Tu"}  # actor = the recipient's label
+    assert calls.answers == [("cb1", "Đã huỷ", False)]
+    assert calls.edits == [("12345", 7, "orig\n\nxong", [])]
+
+
+async def test_button_press_with_only_a_keyboard_change_does_not_resend_the_text(monkeypatch, isolated_runtime_config):
+    add_telegram_recipient("12345", "Tu")
+    calls = _wire_buttons(monkeypatch)
+    kb = [[{"text": "ok", "callback_data": "x"}]]
+    monkeypatch.setattr(svc.telegram_actions, "handle_callback", lambda d, o, a: svc.telegram_actions.CallbackResult(keyboard=kb))
+    await _run_one_batch(monkeypatch, [_callback_update(1)])
+    assert calls.edits == [("12345", 7, None, kb)]
+
+
+async def test_button_press_from_an_unregistered_chat_is_ignored(monkeypatch, isolated_runtime_config):
+    add_telegram_recipient("12345", "Tu")
+    calls = _wire_buttons(monkeypatch)
+
+    async def no_sleep(seconds):
+        pass
+
+    monkeypatch.setattr(svc.asyncio, "sleep", no_sleep)
+    ran = []
+    monkeypatch.setattr(svc.telegram_actions, "handle_callback", lambda *a: ran.append(1))
+    await _run_one_batch(monkeypatch, [_callback_update(1, chat_id="999", from_id="999")])
+    assert ran == [] and calls.edits == []
+    assert calls.answers == [("cb1", "", False)]  # only stops the spinner
+
+
+async def test_button_press_in_a_group_chat_is_refused_even_for_a_registered_chat(monkeypatch, isolated_runtime_config):
+    """Any member of a registered GROUP could press — only a private chat
+    (sender id == chat id) may act."""
+    add_telegram_recipient("-100500", "Nhóm")
+    calls = _wire_buttons(monkeypatch)
+    ran = []
+    monkeypatch.setattr(svc.telegram_actions, "handle_callback", lambda *a: ran.append(1))
+    await _run_one_batch(monkeypatch, [_callback_update(1, chat_id="-100500", from_id="777")])
+    assert ran == [] and calls.edits == []
+    assert calls.answers[0][2] is True and "chat riêng" in calls.answers[0][1]
+
+
+async def test_button_press_broadcasts_a_high_impact_result_to_everyone(monkeypatch, isolated_runtime_config):
+    add_telegram_recipient("12345", "Tu")
+    calls = _wire_buttons(monkeypatch)
+    monkeypatch.setattr(
+        svc.telegram_actions, "handle_callback",
+        lambda d, o, a: svc.telegram_actions.CallbackResult(toast="t", text="x", keyboard=[], broadcast="⏸ Tu đã TẠM DỪNG"),
+    )
+    await _run_one_batch(monkeypatch, [_callback_update(1, data="af!|off")])
+    assert calls.broadcasts == ["⏸ Tu đã TẠM DỪNG"]
+
+
+async def test_a_failing_action_still_answers_the_tap_and_the_batch_continues(monkeypatch, isolated_runtime_config):
+    add_telegram_recipient("12345", "Tu")
+    calls = _wire_buttons(monkeypatch)
+    n = {"i": 0}
+
+    def flaky(data, original, actor):
+        n["i"] += 1
+        if n["i"] == 1:
+            raise RuntimeError("boom")
+        return svc.telegram_actions.CallbackResult(toast="ok")
+
+    monkeypatch.setattr(svc.telegram_actions, "handle_callback", flaky)
+    await _run_one_batch(monkeypatch, [_callback_update(1, cb_id="a"), _callback_update(2, cb_id="b")])
+    assert [a[0] for a in calls.answers] == ["a", "b"]
+    assert calls.answers[0][2] is True  # the failure is shown as a popup
+
+
+async def test_quahan_sends_one_message_per_task_with_buttons_and_no_duplicate_summary(monkeypatch, isolated_runtime_config):
+    add_telegram_recipient("12345", "Tu")
+    calls = _wire_buttons(monkeypatch)
+    kb = [[{"text": "x", "callback_data": "rs|1"}]]
+    monkeypatch.setattr(svc.telegram_actions, "build_items", lambda c: [svc.telegram_actions.Item("TASK1", kb)] if c == "quahan" else [])
+    sent = await _run_one_batch(monkeypatch, [_update(1, text="/quahan")])
+    assert sent == []  # the tasks are not listed a second time as plain text
+    assert calls.buttons == [("12345", "TASK1", kb)]
+
+
+async def test_button_press_on_a_message_without_text_only_changes_the_keyboard(monkeypatch, isolated_runtime_config):
+    """An old/inaccessible message arrives without text: the result line
+    must not overwrite what the message said."""
+    add_telegram_recipient("12345", "Tu")
+    calls = _wire_buttons(monkeypatch)
+    monkeypatch.setattr(
+        svc.telegram_actions, "handle_callback",
+        lambda d, o, a: svc.telegram_actions.CallbackResult(toast="ok", text="\n\nxong", keyboard=[]),
+    )
+    await _run_one_batch(monkeypatch, [_callback_update(1, text="")])
+    assert calls.edits == [("12345", 7, None, [])]
+
+
+async def test_button_only_commands_send_no_help_text_first(monkeypatch, isolated_runtime_config):
+    add_telegram_recipient("12345", "Tu")
+    calls = _wire_buttons(monkeypatch)
+    kb = [[{"text": "x", "callback_data": "af|off"}]]
+    monkeypatch.setattr(svc.telegram_actions, "build_items", lambda c: [svc.telegram_actions.Item("STATE", kb)])
+    sent = await _run_one_batch(monkeypatch, [_update(1, text="/tamdung")])
+    assert sent == [] and calls.buttons == [("12345", "STATE", kb)]
+
+
+async def test_button_commands_in_a_group_chat_get_a_notice_instead_of_dead_buttons(monkeypatch, isolated_runtime_config):
+    add_telegram_recipient("-100500", "Nhóm")
+    calls = _wire_buttons(monkeypatch)
+    monkeypatch.setattr(svc.telegram_actions, "build_items", lambda c: [svc.telegram_actions.Item("X", [[{"text": "a", "callback_data": "b"}]])])
+    update = {"update_id": 1, "message": {"chat": {"id": "-100500", "type": "group"}, "text": "/quahan"}}
+    sent = await _run_one_batch(monkeypatch, [update])
+    assert calls.buttons == []
+    assert len(sent) == 1 and "chat riêng" in sent[0][1]

@@ -52,7 +52,7 @@ import time  # noqa: E402
 from urllib.parse import quote  # noqa: E402
 from datetime import datetime, timedelta, timezone  # noqa: E402
 
-from human_bot import data_sync, db, schedule_store, screenshots, telegram_alerts, telegram_commands, telegram_notify  # noqa: E402
+from human_bot import data_sync, db, schedule_store, screenshots, telegram_actions, telegram_alerts, telegram_commands, telegram_notify  # noqa: E402
 from human_bot.admin import (  # noqa: E402
     NotLoggedIn,
     _SESSION_EXPIRY_WARNING_DAYS,
@@ -434,11 +434,57 @@ def _telegram_reply_for(command: str) -> str:
         ) or "Chưa có tài khoản nào."
     if command == "lich":
         return telegram_commands.schedule_text()
-    if command == "quahan":
-        return telegram_commands.missed_text()
     if command == "baocao":
         return telegram_commands.report_text()
+    if command in _TELEGRAM_BUTTON_ONLY_COMMANDS:
+        return ""  # the reply is the interactive message(s) from telegram_actions.build_items()
     return telegram_commands.help_text()
+
+
+# Commands whose whole answer is the button messages (no summary text first).
+_TELEGRAM_BUTTON_ONLY_COMMANDS = {"quahan", "choduyet", "tamdung", "tieptuc"}
+
+
+async def _handle_telegram_callback(callback: dict, recipients_by_id: dict[str, dict]) -> bool:
+    """One button press (Vòng 2, 2026-10-16). Returns whether it was a
+    real action by a registered recipient (so the loop doesn't idle-sleep).
+
+    Who may act: anyone in the admin-managed recipient list (owner's
+    decision — no separate roles), and ONLY in their private chat with the
+    bot (callback `from.id` == the chat id). A registered GROUP/channel
+    would otherwise let any member of it press the buttons."""
+    callback_id = str(callback.get("id") or "")
+    message = callback.get("message") or {}
+    chat_id = str((message.get("chat") or {}).get("id", ""))
+    sender = callback.get("from") or {}
+    if chat_id not in recipients_by_id:
+        await telegram_notify.answer_callback_query(callback_id)  # just stop the spinner
+        return False
+    if str(sender.get("id", "")) != chat_id:
+        await telegram_notify.answer_callback_query(
+            callback_id, "Chỉ thao tác được trong chat riêng với bot.", alert=True,
+        )
+        return True
+    recipient = recipients_by_id.get(chat_id) or {}
+    actor = recipient.get("label") or sender.get("first_name") or chat_id
+    try:
+        result = await asyncio.to_thread(
+            telegram_actions.handle_callback, callback.get("data") or "", message.get("text") or "", actor,
+        )
+    except Exception:  # noqa: BLE001 - a failing action must still answer the tap
+        logger.exception("telegram callback %r failed", callback.get("data"))
+        await telegram_notify.answer_callback_query(callback_id, "Có lỗi — thử lại hoặc dùng /admin.", alert=True)
+        return True
+    await telegram_notify.answer_callback_query(callback_id, result.toast)
+    message_id = message.get("message_id")
+    # A message Telegram no longer shows us the text of (older than 48h /
+    # inaccessible) must not have its text replaced by just the result line.
+    new_text = result.text if message.get("text") else None
+    if message_id and (new_text is not None or result.keyboard is not None):
+        await telegram_notify.edit_message(chat_id, message_id, text=new_text, keyboard=result.keyboard)
+    if result.broadcast:
+        await telegram_notify.send_message(result.broadcast, silent=False)
+    return True
 
 
 # Daily summary (2026-10-13): checked every few minutes; sends at most once
@@ -541,7 +587,8 @@ async def _telegram_listen_loop() -> None:
             # Reread fresh on every batch that needs it (not cached
             # across iterations) — see this function's own docstring for
             # why (a recipient added via /admin must work next cycle).
-            registered_chat_ids = {r["chat_id"] for r in get_telegram_recipients()} if updates else set()
+            recipients_by_id = {r["chat_id"]: r for r in get_telegram_recipients()} if updates else {}
+            registered_chat_ids = set(recipients_by_id)
             # Computed at most once per poll cycle (round 4), not once
             # per matching message — a user sending several messages
             # before the previous long-poll returns would otherwise
@@ -554,6 +601,13 @@ async def _telegram_listen_loop() -> None:
             replied_to_anything = False
             for update in updates:
                 offset = update["update_id"] + 1
+                if update.get("callback_query"):
+                    try:
+                        if await _handle_telegram_callback(update["callback_query"], recipients_by_id):
+                            replied_to_anything = True
+                    except Exception:  # noqa: BLE001 - one bad tap must not skip the rest of the batch
+                        logger.exception("_telegram_listen_loop failed on callback %s", update.get("update_id"))
+                    continue
                 # A Telegram CHANNEL delivers its posts as "channel_post",
                 # never "message" (self-review follow-up) — without this,
                 # a channel the bot was added to as admin could never be
@@ -598,10 +652,27 @@ async def _telegram_listen_loop() -> None:
                     command = telegram_commands.parse_command(message.get("text"))
                     if not telegram_commands.is_known_command(command):
                         command = "help"
+                    if command in _TELEGRAM_BUTTON_ONLY_COMMANDS and chat.get("type", "private") != "private":
+                        # Buttons only work in a private chat (see _handle_telegram_callback) —
+                        # don't post a list of dead buttons / task previews into a group.
+                        await telegram_notify.send_message_to(
+                            chat_id, "Các nút thao tác chỉ dùng được trong chat riêng với bot.", silent=True,
+                        )
+                        replied_to_anything = True
+                        continue
                     if command not in replies_by_command:
                         # Disk/SQLite reads — off the event loop thread.
                         replies_by_command[command] = await asyncio.to_thread(_telegram_reply_for, command)
-                    await telegram_notify.send_message_to(chat_id, replies_by_command[command], silent=True)
+                    if replies_by_command[command]:
+                        await telegram_notify.send_message_to(chat_id, replies_by_command[command], silent=True)
+                    # Vòng 2: messages with action buttons (/quahan, /choduyet,
+                    # /tamdung, /tieptuc) — built per message, not cached: each
+                    # carries buttons bound to the current items.
+                    for item in await asyncio.to_thread(telegram_actions.build_items, command):
+                        if item.keyboard:
+                            await telegram_notify.send_message_with_buttons(chat_id, item.text, item.keyboard)
+                        else:
+                            await telegram_notify.send_message_to(chat_id, item.text, silent=True)
                     replied_to_anything = True
                 except Exception:  # noqa: BLE001 - one bad reply must not skip the rest of this batch
                     logger.exception("_telegram_listen_loop failed to reply to update %s", update.get("update_id"))
@@ -731,6 +802,8 @@ async def lifespan(app: FastAPI):
     # receiving alerts with no manual step. See
     # runtime_config.migrate_legacy_telegram_chat_id_once()'s own docstring.
     runtime_config.migrate_legacy_telegram_chat_id_once()
+    # So config saves made from worker threads (Telegram buttons) can wake the loops safely.
+    runtime_config.set_notify_loop(asyncio.get_running_loop())
     # Fire-and-forget like refresh_bot_username() below — a Telegram call
     # (up to its 15s timeout) must never delay startup.
     telegram_alerts.spawn(telegram_alerts.notify_startup_sweep(swept.get("items", [])))

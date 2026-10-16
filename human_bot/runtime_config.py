@@ -209,12 +209,34 @@ def get_config_changed_event() -> asyncio.Event:
     return _config_changed_event
 
 
+_notify_loop: asyncio.AbstractEventLoop | None = None
+
+
+def set_notify_loop(loop: asyncio.AbstractEventLoop | None) -> None:
+    """Remembers the service's event loop (called once from
+    human_bot/service.py's lifespan()) so notify_config_changed() can be
+    called safely from a WORKER THREAD too — asyncio.Event.set() is not
+    thread-safe, and e.g. the Telegram "tạm dừng/bật lại tự đăng" button
+    saves config from an asyncio.to_thread() call (code review 2026-10-16)."""
+    global _notify_loop
+    _notify_loop = loop
+
+
 def notify_config_changed() -> None:
     """Call after any write that a background loop's timing/gating
     decisions depend on. Safe to call more times than strictly necessary
     (a loop simply re-reads current config a bit early and finds nothing
     changed) — never call it from a hot path that isn't an explicit
-    config write."""
+    config write. Thread-safe once set_notify_loop() has been called."""
+    loop = _notify_loop
+    if loop is not None and loop.is_running():
+        try:
+            on_loop_thread = asyncio.get_running_loop() is loop
+        except RuntimeError:
+            on_loop_thread = False
+        if not on_loop_thread:
+            loop.call_soon_threadsafe(_config_changed_event.set)
+            return
     _config_changed_event.set()
 
 

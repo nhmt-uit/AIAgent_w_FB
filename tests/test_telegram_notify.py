@@ -391,3 +391,49 @@ async def test_refresh_bot_username_swallows_network_error(monkeypatch, isolated
     _patch_async_client(monkeypatch, handler)
     await telegram_notify.refresh_bot_username()  # must not raise
     assert telegram_notify.get_cached_bot_username() is None
+
+
+# --- Vòng 2 (2026-10-16): buttons ---------------------------------------------------
+
+async def test_send_message_with_buttons_posts_the_inline_keyboard(monkeypatch, isolated_runtime_config):
+    import json
+    _configure(monkeypatch)
+    seen = {}
+
+    def handler(request):
+        seen["url"], seen["body"] = str(request.url), json.loads(request.content)
+        return httpx.Response(200, json={"ok": True, "result": {}})
+
+    _patch_async_client(monkeypatch, handler)
+    kb = [[{"text": "OK", "callback_data": "cm|1"}]]
+    assert await telegram_notify.send_message_with_buttons("12345", "hi", kb) is True
+    assert seen["url"].endswith("/sendMessage")
+    assert seen["body"]["reply_markup"] == {"inline_keyboard": kb} and seen["body"]["chat_id"] == "12345"
+
+
+async def test_answer_callback_query_and_edit_message_use_the_right_methods(monkeypatch, isolated_runtime_config):
+    import json
+    _configure(monkeypatch)
+    calls = []
+
+    def handler(request):
+        calls.append((str(request.url).rsplit("/", 1)[-1], json.loads(request.content)))
+        return httpx.Response(200, json={"ok": True, "result": True})
+
+    _patch_async_client(monkeypatch, handler)
+    assert await telegram_notify.answer_callback_query("cb1", "xong", alert=True) is True
+    assert await telegram_notify.edit_message("12345", 7, text="new", keyboard=[]) is True
+    assert await telegram_notify.edit_message("12345", 7, keyboard=[[{"text": "a", "callback_data": "b"}]]) is True
+    assert calls[0] == ("answerCallbackQuery", {"callback_query_id": "cb1", "show_alert": True, "text": "xong"})
+    assert calls[1][0] == "editMessageText" and calls[1][1]["reply_markup"] == {"inline_keyboard": []}
+    assert calls[2][0] == "editMessageReplyMarkup" and "text" not in calls[2][1]
+
+
+async def test_button_calls_return_false_on_failure_and_when_not_configured(monkeypatch, isolated_runtime_config):
+    monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
+    assert await telegram_notify.send_message_with_buttons("1", "x", []) is False
+    assert await telegram_notify.answer_callback_query("c") is False
+    assert await telegram_notify.edit_message("1", 1, text="x") is False
+    _configure(monkeypatch)
+    _patch_async_client(monkeypatch, lambda request: httpx.Response(400, json={"ok": False}))
+    assert await telegram_notify.answer_callback_query("c") is False

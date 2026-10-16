@@ -250,3 +250,30 @@ async def test_spawn_flush_is_background_and_single_in_flight(monkeypatch):
     assert started == [1]
     release.set()
     await svc._telegram_flush_task
+
+
+def test_notify_config_changed_is_safe_from_a_worker_thread(monkeypatch):
+    """Code review 2026-10-16: asyncio.Event.set() is not thread-safe; the
+    Telegram pause/resume button saves config from asyncio.to_thread()."""
+    import asyncio
+    import threading
+    from human_bot import runtime_config
+
+    async def scenario():
+        loop = asyncio.get_running_loop()
+        runtime_config.set_notify_loop(loop)
+        # A private Event: the module-level one binds to the first loop that
+        # awaits it, which must not be this throwaway loop.
+        event = asyncio.Event()
+        monkeypatch.setattr(runtime_config, "_config_changed_event", event)
+        waiter = asyncio.create_task(event.wait())
+        await asyncio.sleep(0)
+        t = threading.Thread(target=runtime_config.notify_config_changed)
+        t.start()
+        await asyncio.wait_for(waiter, timeout=2)  # woken via call_soon_threadsafe
+        t.join()
+
+    try:
+        asyncio.run(scenario())
+    finally:
+        runtime_config.set_notify_loop(None)

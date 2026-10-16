@@ -5538,9 +5538,24 @@ async def schedule_needs_review_confirm_modal(review_id: str, request: Request, 
 </div>"""
 
 
-@router.post("/schedule/needs-review/{review_id}/approve")
-async def schedule_needs_review_approve(review_id: str, request: Request, _: None = Depends(_require_login)):
-    """"✅ Duyệt & lên lịch" step 2 (2026-10-08, owner request — see
+_REVIEW_MISSING_ERR = "Không tìm thấy job chờ duyệt này (có thể đã được xử lý)"
+_REVIEW_ACCOUNT_GONE_ERR = "Tài khoản dự kiến đăng không còn tồn tại — không thể duyệt"
+_REVIEW_RACE_ERR = "Job này vừa được xử lý ở nơi khác (có thể do bấm 2 lần)"
+# The two "somebody else already handled it" outcomes — callers that need to
+# treat those differently from a real failure compare against THIS set, not
+# against individual message strings.
+REVIEW_ALREADY_HANDLED_ERRS = frozenset({_REVIEW_MISSING_ERR, _REVIEW_RACE_ERR})
+
+
+def approve_needs_review_core(review_id: str, submitted_account_id: str = "", form=None) -> tuple[str | None, int]:
+    """The whole "✅ Duyệt & lên lịch" step 2, shared by the /admin route
+    below and by the Telegram "✅ Duyệt" button (2026-10-16) so both go
+    through exactly the same claim → re-pick groups → slot-per-group logic.
+    Returns (error_message_or_None, number_of_tasks_created). `form` is the
+    admin page's submitted form (its edited content_{i} fields); Telegram
+    passes None and gets the drafted contents as-is.
+
+    Original notes ("✅ Duyệt & lên lịch" step 2 (2026-10-08, owner request — see
     data_sync.py's _draft_needs_review_jobs() for how this row was
     drafted, and schedule_needs_review_confirm_modal() right above for
     step 1's confirmation + account-choice modal). The review is claimed
@@ -5568,15 +5583,11 @@ async def schedule_needs_review_approve(review_id: str, request: Request, _: Non
     content itself doesn't need to change, only the opener line varies
     by position (template_variants()'s own docstring), so re-pairing by
     index is still meaningful even though the groups themselves are new."""
-    form = await request.form()
     review = schedule_store.get_needs_review(review_id)
     if review is None:
-        err = "Không tìm thấy job chờ duyệt này (có thể đã được xử lý)"
-        if _is_htmx(request):
-            return HTMLResponse(_schedule_content_html(tab="needs_review", error=err) + _MODAL_CLOSE_OOB)
-        return _schedule_redirect(None, 1, tab="needs_review", error=err)
+        return _REVIEW_MISSING_ERR, 0
     eligible = _needs_review_eligible_accounts(review)
-    submitted_account_id = str(form.get("account_id") or "").strip()
+    submitted_account_id = (submitted_account_id or "").strip()
     # Only an account still ELIGIBLE right now may be chosen — a stale/
     # tampered value (or one that lost its only joined group since the
     # confirm modal was opened) falls back to the review's own drafted
@@ -5584,48 +5595,80 @@ async def schedule_needs_review_approve(review_id: str, request: Request, _: Non
     chosen_account_id = submitted_account_id if submitted_account_id in eligible else review.account_id
     account = eligible.get(chosen_account_id) or get_all_accounts().get(chosen_account_id)
     if account is None:
-        err = "Tài khoản dự kiến đăng không còn tồn tại — không thể duyệt"
-        if _is_htmx(request):
-            return HTMLResponse(_schedule_content_html(tab="needs_review", error=err) + _MODAL_CLOSE_OOB)
-        return _schedule_redirect(None, 1, tab="needs_review", error=err)
+        return _REVIEW_ACCOUNT_GONE_ERR, 0
     if not schedule_store.approve_needs_review(review_id):
         # Lost the race to a concurrent approve/reject on the SAME review
         # between our get_needs_review() above and now — graceful no-op,
         # same "already resolved" framing as the review-missing case above.
-        err = "Job này vừa được xử lý ở nơi khác (có thể do bấm 2 lần)"
+        return _REVIEW_RACE_ERR, 0
+    created_ids: list[str] = []
+    try:
+        if chosen_account_id != review.account_id:
+            groups = [
+                dataclasses.asdict(g) for g in
+                _pick_groups_for_job(get_joined_groups(chosen_account_id), {}, needed=len(review.groups))
+            ]
+        else:
+            groups = review.groups
+        if not groups:
+            # Nothing to schedule: don't leave the claimed review gone with
+            # "0 tasks created" — put it back and say why.
+            schedule_store.add_needs_review(review)
+            return "Không chọn được nhóm nào để đăng cho job này — kiểm tra nhóm của tài khoản", 0
+        for i, group in enumerate(groups):
+            _schedule_one_review_group(review, i, group, chosen_account_id, account, form, created_ids)
+    except Exception:
+        # The review was already claimed (file removed) above, so a failure
+        # midway would otherwise lose it with only SOME groups scheduled
+        # (code review 2026-10-16). Undo: cancel what was created and put
+        # the review back so it can be approved again.
+        all_undone = True
+        for task_id in created_ids:
+            all_undone = schedule_store.cancel(task_id) and all_undone
+        if all_undone:
+            schedule_store.add_needs_review(review)
+        # else: a task was already picked up for firing and can't be undone —
+        # restoring the review too would make a re-approval post it twice.
+        raise
+    return None, len(created_ids)
+
+
+def _schedule_one_review_group(review, i, group, chosen_account_id, account, form, created_ids: list[str]) -> None:
+    # A SUBMITTED (even blank) field is honored as-is — an admin who
+    # deliberately clears a group's textarea before approving must
+    # not have that edit silently discarded. Falling back to the
+    # original draft only when the field is entirely ABSENT (a
+    # malformed/manual request, never the real form).
+    content = str(form[f"content_{i}"]).strip() if form is not None and f"content_{i}" in form else (
+        review.contents[i] if i < len(review.contents) else ""
+    )
+    scheduled_at = _suggest_reschedule_at(account, "post_to_group")
+    task = schedule_store.ScheduledTask(
+        task_id=schedule_store.new_task_id(scheduled_at.isoformat()),
+        action="post_to_group",
+        account_id=chosen_account_id,
+        scheduled_at=scheduled_at.isoformat(),
+        content=content,
+        target_url=group.get("url"),
+        reasoning=f"admin-approved from review: {review.reasoning}",
+        source_kind=review.source_kind,
+        source_id=review.source_id,
+        job_data=review.job_data,
+    )
+    schedule_store.add(task)
+    created_ids.append(task.task_id)
+
+
+@router.post("/schedule/needs-review/{review_id}/approve")
+async def schedule_needs_review_approve(review_id: str, request: Request, _: None = Depends(_require_login)):
+    """"✅ Duyệt & lên lịch" step 2 — see approve_needs_review_core()'s
+    docstring for the full logic; this only adapts it to the web form."""
+    form = await request.form()
+    err, _created = approve_needs_review_core(review_id, str(form.get("account_id") or ""), form)
+    if err:
         if _is_htmx(request):
             return HTMLResponse(_schedule_content_html(tab="needs_review", error=err) + _MODAL_CLOSE_OOB)
         return _schedule_redirect(None, 1, tab="needs_review", error=err)
-    if chosen_account_id != review.account_id:
-        groups = [
-            dataclasses.asdict(g) for g in
-            _pick_groups_for_job(get_joined_groups(chosen_account_id), {}, needed=len(review.groups))
-        ]
-    else:
-        groups = review.groups
-    for i, group in enumerate(groups):
-        # A SUBMITTED (even blank) field is honored as-is — an admin who
-        # deliberately clears a group's textarea before approving must
-        # not have that edit silently discarded. Falling back to the
-        # original draft only when the field is entirely ABSENT (a
-        # malformed/manual request, never the real form).
-        content = str(form[f"content_{i}"]).strip() if f"content_{i}" in form else (
-            review.contents[i] if i < len(review.contents) else ""
-        )
-        scheduled_at = _suggest_reschedule_at(account, "post_to_group")
-        task = schedule_store.ScheduledTask(
-            task_id=schedule_store.new_task_id(scheduled_at.isoformat()),
-            action="post_to_group",
-            account_id=chosen_account_id,
-            scheduled_at=scheduled_at.isoformat(),
-            content=content,
-            target_url=group.get("url"),
-            reasoning=f"admin-approved from review: {review.reasoning}",
-            source_kind=review.source_kind,
-            source_id=review.source_id,
-            job_data=review.job_data,
-        )
-        schedule_store.add(task)
     if _is_htmx(request):
         return HTMLResponse(_schedule_content_html(tab="needs_review", saved=True) + _MODAL_CLOSE_OOB)
     return _schedule_redirect(None, 1, tab="needs_review", saved=1)

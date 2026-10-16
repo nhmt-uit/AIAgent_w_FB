@@ -465,7 +465,10 @@ def _move_to(task_id: str, target_dir: Path, source_dir: Path | None = None) -> 
     if not src.is_file():
         return None
     dest = target_dir / src.name
-    src.rename(dest)
+    try:
+        src.rename(dest)
+    except FileNotFoundError:
+        return None  # another request (e.g. a second Telegram recipient) moved it between is_file() and here
     return dest
 
 
@@ -630,5 +633,8 @@ def reject_needs_review(review_id: str) -> bool:
     if not src.is_file():
         return False
     dest = REJECTED_REVIEW_DIR / src.name
-    src.rename(dest)
+    try:
+        src.rename(dest)
+    except FileNotFoundError:
+        return False  # lost a race with a concurrent approve/reject — already handled
     return True

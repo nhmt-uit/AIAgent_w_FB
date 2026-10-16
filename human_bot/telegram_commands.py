@@ -28,9 +28,12 @@ from human_bot.telegram_alerts import jst_hhmm
 # digits and "_" in the command itself, so no Vietnamese diacritics there.
 COMMANDS: list[tuple[str, str]] = [
     ("lich", "Task sắp đăng hôm nay"),
-    ("quahan", "Task quá hạn đang chờ xử lý"),
+    ("quahan", "Task quá hạn — lên lịch lại / huỷ"),
+    ("choduyet", "Job chờ duyệt — duyệt / bỏ qua"),
     ("baocao", "Báo cáo hôm nay"),
     ("suckhoe", "Sức khoẻ tài khoản"),
+    ("tamdung", "Tạm dừng tự động đăng"),
+    ("tieptuc", "Bật lại tự động đăng"),
     ("help", "Danh sách lệnh"),
 ]
 _COMMAND_NAMES = {c for c, _ in COMMANDS} | {"start"}
@@ -76,7 +79,7 @@ def _parse(iso: str) -> datetime | None:
     return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
 
 
-def _target_label(task) -> str:
+def target_label(task) -> str:
     """Group name when /admin/groups knows it, else the tail of the URL."""
     target = getattr(task, "target_url", None)
     if not target:
@@ -112,7 +115,7 @@ def schedule_text(now: datetime | None = None) -> str:
     def line(t) -> str:
         when = _parse(t.scheduled_at)
         mark = "⏰ " if (when is None or when <= now) else ""
-        return f"• {mark}{jst_hhmm(t.scheduled_at)} · {t.account_id} · {t.action} · {_target_label(t)}"
+        return f"• {mark}{jst_hhmm(t.scheduled_at)} · {t.account_id} · {t.action} · {target_label(t)}"
 
     lines = [line(t) for t in today[:_MAX_LINES]]
     if len(today) > _MAX_LINES:
@@ -123,7 +126,7 @@ def schedule_text(now: datetime | None = None) -> str:
     return head + ":\n" + "\n".join(lines) + f"\nCác ngày sau: {later} task."
 
 
-def _missed_reason_tag(task_id: str) -> str:
+def missed_reason_tag(task_id: str) -> str:
     reason = schedule_store.get_missed_reason(task_id) or ""
     if reason.startswith("Mất mạng"):
         return "mất mạng"
@@ -139,7 +142,7 @@ def missed_text(now: datetime | None = None) -> str:
         return "✅ Không có task nào quá hạn."
     lines = [
         f"• {jst_hhmm(t.scheduled_at)} · {t.account_id} · {t.action} · "
-        f"{_missed_reason_tag(t.task_id)} · quá {schedule_store.missed_overdue_days(t, now)} ngày"
+        f"{missed_reason_tag(t.task_id)} · quá {schedule_store.missed_overdue_days(t, now)} ngày"
         for t in missed[:_MAX_LINES]
     ]
     if len(missed) > _MAX_LINES:

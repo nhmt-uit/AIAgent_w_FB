@@ -237,6 +237,72 @@ async def set_my_commands(commands: list[tuple[str, str]]) -> bool:
         return False
 
 
+async def _api_post(method: str, payload: dict) -> dict | None:
+    """One Bot API JSON call; returns the parsed `result` (or True-ish
+    dict) on success, None on any failure. Never raises."""
+    try:
+        async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
+            resp = await client.post(_API_BASE.format(token=_token()) + "/" + method, json=payload)
+            if resp.status_code != 200:
+                logger.warning("telegram_notify: %s HTTP %s: %s", method, resp.status_code, resp.text[:300])
+                return None
+            data = resp.json()
+            return data if data.get("ok") else None
+    except Exception:  # noqa: BLE001 — see send_message()'s docstring
+        logger.exception("telegram_notify: %s failed", method)
+        return None
+
+
+async def send_message_with_buttons(
+    chat_id: str, text: str, keyboard: list[list[dict]], *, silent: bool = True,
+) -> bool:
+    """Direct message with an inline keyboard (rows of
+    {"text": ..., "callback_data": ...}) — the Vòng 2 action buttons.
+    callback_data is capped at 64 bytes by Telegram."""
+    if not is_configured():
+        return False
+    result = await _api_post("sendMessage", {
+        "chat_id": chat_id,
+        "text": text[:4096],
+        "disable_notification": silent,
+        "reply_markup": {"inline_keyboard": keyboard},
+    })
+    return result is not None
+
+
+async def answer_callback_query(callback_query_id: str, text: str = "", *, alert: bool = False) -> bool:
+    """Must be called for every button press, or Telegram keeps showing a
+    loading spinner on the button (and may flag the bot as unresponsive).
+    `text` shows as a small toast (alert=True: a popup)."""
+    if not is_configured():
+        return False
+    payload: dict = {"callback_query_id": callback_query_id, "show_alert": alert}
+    if text:
+        payload["text"] = text[:200]  # Telegram's own cap
+    return await _api_post("answerCallbackQuery", payload) is not None
+
+
+async def edit_message(
+    chat_id: str, message_id: int, *, text: str | None = None, keyboard: list[list[dict]] | None = None,
+) -> bool:
+    """Edits a message previously sent by the bot: new `text` (and/or) a
+    new inline `keyboard` ([] removes the buttons). With only a keyboard
+    the text is left as it was. NOTE: editing the text without passing a
+    keyboard also REMOVES the buttons (Telegram drops them unless resent)."""
+    if not is_configured():
+        return False
+    markup = {"inline_keyboard": keyboard if keyboard is not None else []}
+    if text is None:
+        result = await _api_post("editMessageReplyMarkup", {
+            "chat_id": chat_id, "message_id": message_id, "reply_markup": markup,
+        })
+    else:
+        result = await _api_post("editMessageText", {
+            "chat_id": chat_id, "message_id": message_id, "text": text[:4096], "reply_markup": markup,
+        })
+    return result is not None
+
+
 async def send_message_to(chat_id: str, text: str, *, silent: bool = False) -> bool:
     """Direct reply to ONE specific chat id — used by the 2-way health
     query (human_bot/service.py's _telegram_listen_loop()) so only the
