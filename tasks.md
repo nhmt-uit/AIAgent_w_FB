@@ -6522,3 +6522,31 @@ chia vai trò). Mô-đun mới `human_bot/telegram_actions.py`.
   `notify_config_changed` ngoài lifespan (chỉ test/CLI); lỗi sửa tin sau khi đã thực hiện
   không được thử lại (đã có log, bấm lại chỉ báo "đã xử lý"). Suite 767 pass.
 
+### Form "📋 Tin tuyển dụng" ở /admin/post — nhập tay tin tuyển dụng (2026-10-30)
+
+Nguồn: owner copy tin từ nhóm Zalo (admin Zalo đăng, thành viên đem đi đăng lại) — chưa tự động
+hoá việc đọc nhóm Zalo (tài khoản cá nhân Zalo chỉ có đường không chính thức, rủi ro khoá nick;
+để sau), nhập tay trước.
+- **Tab mới trong `/admin/post`:** nhập Tiêu đề (bắt buộc), Công ty, Địa điểm, Visa, JLPT, Lương
+  (từ–đến, theo tháng/năm nhập bằng man, theo giờ nhập yên), **Phúc lợi/ghi chú** (trường mới,
+  văn bản tự do, vd "Trợ cấp vợ con 2m8, trợ cấp nhà, tăng ca 30h/tháng") và số nhóm. Hai nút:
+  **✨ Tạo bằng AI & lên lịch** / **📄 Tạo bằng template & lên lịch**.
+- **Một cú bấm làm hết:** soạn mỗi nhóm một bài khác nhau → tự chọn nhóm (cùng `_pick_groups_for_job`
+  của luồng bên B, ưu tiên nhóm lâu chưa đăng, tối đa `max_groups_per_post` của tài khoản) → xếp
+  giờ từng bài bằng `_suggest_reschedule_at` → lên lịch. Xem/sửa/huỷ ở `/admin/schedule`.
+- AI chưa có key hoặc AI lỗi → dùng template và **nói rõ** trong thông báo (không âm thầm).
+- `content_strategist`: template thêm dòng "Phúc lợi: …" (chỉ khi có), prompt AI thêm quy tắc 11;
+  hàm công khai mới `draft_ai_variants()` (nghiêm ngặt, ném lỗi thay vì lẳng lặng rơi về template).
+- **`ScheduledTask.ai_redraft` (mới, mặc định True):** `fire_due_tasks()` vốn viết lại AI mọi task
+  `source_kind="job"` ngay trước khi đăng nếu công tắc AI bật → sẽ đè mất lựa chọn AI/template của
+  owner. Task tạo từ form này đặt False; "Lên lịch lại" từ báo cáo cũng giữ False cho tin `manual-…`.
+- **Tự rà soát (/code-review) — 10 phát hiện, sửa 8:** lương theo giờ in ra "1400.0" → đổi số
+  nguyên; dấu phẩy "1,400" bị hiểu là 1.4 → theo kỳ lương; số nhóm bị vượt giới hạn tài khoản →
+  chặn phía server; bấm 2 lần/refresh đăng trùng → từ chối tin y hệt còn đang chờ; lỗi giữa chừng
+  → hoàn tác cả lô; tiêu đề "unknown" lọt qua → kiểm tra lại sau khi làm sạch; cờ AI/template
+  tách riêng; đường "Lên lịch lại" từ báo cáo giữ `ai_redraft`. **Giữ nguyên:** các bài trong 1
+  lần tạo cách nhau đúng khoảng nghỉ tối thiểu, không ngẫu nhiên như luồng bên B (cùng hành vi với
+  "Duyệt & lên lịch"); bài đầu tiên có thể đăng gần như ngay.
+- Chưa có: đính kèm ảnh (task đã hỗ trợ `media_path`, form chưa có ô), đọc tự động nhóm Zalo.
+- Test: `tests/test_admin_post_job.py` (24) + test benefits trong `test_content_strategist.py`.
+

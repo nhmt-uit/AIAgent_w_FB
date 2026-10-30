@@ -1081,6 +1081,16 @@ chờ duyệt kèm nút "Duyệt" / "Bỏ qua"; `/tamdung` và `/tieptuc` tạm 
 kèm tên người thực hiện. Nút chỉ hoạt động trong chat riêng với bot. Duyệt job trên
 Telegram dùng nội dung đã soạn sẵn; muốn sửa chữ vẫn phải vào trang quản trị.
 
+- **Form nhập tay tin tuyển dụng (30/10).** Có những tin không đến từ bên B — ví dụ admin đăng
+  trong nhóm Zalo để thành viên đem đi đăng lại. Trang "Đăng bài" có thêm tab **"Tin tuyển
+  dụng"**: nhập tiêu đề, công ty, địa điểm, visa, JLPT, lương và **phúc lợi** (ví dụ "trợ cấp vợ
+  con 2m8, trợ cấp nhà, tăng ca 30h/tháng"), rồi bấm "Tạo bằng AI" hoặc "Tạo bằng template".
+  Hệ thống soạn mỗi nhóm một bài khác nhau, tự chọn nhóm (ưu tiên nhóm lâu chưa đăng, tối đa
+  bằng giới hạn của tài khoản), xếp giờ đăng và lên lịch luôn. Nếu chọn AI mà AI chưa có key
+  hoặc bị lỗi thì dùng template và thông báo rõ. Bài đã chọn kiểu nào thì đăng đúng kiểu đó,
+  không bị AI viết lại lần nữa lúc đăng. Việc tự động đọc nhóm Zalo để lấy tin về được để lại
+  sau (chỉ có đường không chính thức, có rủi ro bị khoá tài khoản Zalo).
+
 Cố tình không đề xuất: soạn/đăng bài thật từ Telegram (rủi ro tin nhắn bị chuyển
 tiếp, tăng bề mặt rủi ro) và hỏi đáp ngôn ngữ tự nhiên qua AI (tốn chi phí, dễ
 trả lời sai số liệu).

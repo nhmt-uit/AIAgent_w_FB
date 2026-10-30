@@ -105,6 +105,7 @@ Quy tắc bắt buộc:
 8. Nếu dữ liệu KHÔNG có visa hoặc KHÔNG có lương: đừng bỏ trống im lặng không nhắc gì — viết một câu ngắn mời nhắn tin/inbox để trao đổi thêm về đúng phần đang thiếu đó.
 9. Mỗi bài dài tối đa khoảng 500 ký tự — đủ thông tin cụ thể nhưng không lan man, dài dòng.
 10. Câu MỞ ĐẦU và câu KẾT của mỗi bài là phần người đọc chú ý nhất khi lướt Facebook — phải thu hút, có sức gợi, tránh mở đầu/kết câu sáo rỗng rập khuôn.
+11. Phúc lợi (benefits, nếu có trong dữ liệu — ví dụ trợ cấp, tăng ca): nêu đúng nội dung được cung cấp bằng cách diễn đạt tự nhiên, giữ nguyên các con số, không thêm quyền lợi nào khác.
 
 Bạn chỉ trả lời bằng JSON hợp lệ, không thêm bất kỳ chữ nào khác ngoài JSON."""
 
@@ -425,6 +426,11 @@ def _draft_job_post_placeholder(job: dict, variant_seed: int = 0) -> str:
     salary_text = _salary_line(attrs.get("salary"))
     if salary_text:
         lines.append(salary_text)
+    # "Phúc lợi" (2026-10-30) — free text typed in /admin/post's "Tin tuyển
+    # dụng" form; side B does not send it, so this is a no-op for synced jobs.
+    benefits = _join_list_or_str(attrs.get("benefits"))
+    if benefits:
+        lines.append(f"Phúc lợi: {benefits}")
 
     missing = [
         label for key, label in _MISSING_INFO_LABELS.items()
@@ -485,6 +491,7 @@ def _job_summary(job: dict) -> dict:
         "visa_type": attrs.get("visaType"),
         "jlpt": attrs.get("jlpt"),
         "salary": attrs.get("salary"),
+        "benefits": attrs.get("benefits"),
     }
 
 
@@ -590,6 +597,15 @@ async def draft_single_post(
 # If that guarantee ever needs to come back (e.g. AI re-enabled at
 # schedule time instead of fire time), this is a working, tested
 # starting point — not a reconstruction from scratch.
+async def draft_ai_variants(job: dict, groups: list["GroupRef"]) -> list[str]:
+    """AI-drafted post per group, STRICT: raises on any failure (no key
+    aside — see ai_provider_configured()) instead of silently falling back
+    to the template like draft_group_post_variants() does. For callers that
+    must tell the user which one they actually got (admin.py's manual job
+    form, 2026-10-30)."""
+    return await _draft_via_ai(job, groups)
+
+
 async def draft_group_post_variants(
     job: dict, groups: list["GroupRef"], ai_enabled: bool = True,
 ) -> list[str]:

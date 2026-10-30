@@ -102,6 +102,12 @@ class ScheduledTask:
     # lại" instead of offering the same failed row for retry again. None
     # for a task composed fresh (not from a report row).
     retry_of_log_id: int | None = None
+    # False = post `content` exactly as written. fire_due_tasks() otherwise
+    # re-drafts a source_kind="job" task with AI right before it fires (when
+    # DataSyncConfig.job_post_ai_enabled is on) — wrong for a job typed by
+    # hand at /admin/post, where the admin already picked "AI" or "template"
+    # for the text (2026-10-30). Old files without the field read as True.
+    ai_redraft: bool = True
 
 
 @dataclass

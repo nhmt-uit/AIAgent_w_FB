@@ -360,7 +360,16 @@ def test_job_summary_only_allowed_fields_and_no_url():
     summary = cs._job_summary(job)
     assert "url" not in summary
     assert "internalId" not in summary
-    assert set(summary.keys()) == {"title", "company", "location", "visa_type", "jlpt", "salary"}
+    assert set(summary.keys()) == {"title", "company", "location", "visa_type", "jlpt", "salary", "benefits"}
+
+
+def test_benefits_line_appears_in_the_template_only_when_given():
+    base = {"title": "Vận hành máy", "attributes": {"location": "Ibaraki"}}
+    assert "Phúc lợi" not in cs._draft_job_post_placeholder(base)  # side-B jobs carry no benefits → unchanged
+    with_benefits = {"title": "Vận hành máy", "attributes": {"benefits": "Trợ cấp nhà, tăng ca 30h/tháng"}}
+    assert "Phúc lợi: Trợ cấp nhà, tăng ca 30h/tháng" in cs._draft_job_post_placeholder(with_benefits)
+    as_list = {"title": "x", "attributes": {"benefits": ["Trợ cấp nhà", "Tăng ca"]}}
+    assert "Phúc lợi: Trợ cấp nhà, Tăng ca" in cs._draft_job_post_placeholder(as_list)
 
 
 # --- Async fallback paths -------------------------------------------------

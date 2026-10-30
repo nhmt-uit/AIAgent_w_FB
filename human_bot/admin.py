@@ -57,7 +57,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 from pathlib import Path
 
-from human_bot import bootstrap_login_sessions, browser_pool, db, schedule_store, screenshots
+from human_bot import bootstrap_login_sessions, browser_pool, content_strategist, db, schedule_store, screenshots
 from human_bot.agent import TaskRequest, run_task
 from human_bot.config import (
     ACCOUNT_AGE_TIERS,
@@ -73,6 +73,7 @@ from human_bot.data_sync import (
     get_all_sync_statuses,
     _format_attr,
     _pick_groups_for_job,
+    _last_scheduled_time_per_group,
     _CANDIDATE_REPLY_TEMPLATES_DEFAULT,
 )
 from human_bot.content_strategist import (
@@ -4165,7 +4166,59 @@ async def post_form(
   </form>
 </div>"""
 
-    active_tab = tab if tab in ("profile", "group", "comment") else "profile"
+    # "📋 Tin tuyển dụng" tab (2026-10-30, owner request): type a job the way
+    # side B would send it (+ "phúc lợi"), pick AI or template, and the
+    # server drafts one post per group, picks the groups and slots, and
+    # schedules everything in one click — for jobs that come from somewhere
+    # other than side B (e.g. a message in a Zalo group).
+    visa_options = "".join(
+        f'<option value="{html.escape(code)}">{html.escape(code.capitalize())}</option>'
+        for code in get_visa_type_names(_VISA_TYPE_NAMES_DEFAULT)
+    )
+    max_group_count = max(1, min(accounts[account_id].rate_limits.max_groups_per_post, max(len(groups), 1)))
+    default_group_count = max_group_count
+    job_card = f"""
+<div class="card">
+  <h2>📋 Tin tuyển dụng — {html.escape(account_labels[account_id])}</h2>
+  <p class="page-desc">Nhập thông tin tin tuyển dụng giống dữ liệu bên B gửi sang. Bấm một trong hai nút: hệ thống soạn mỗi nhóm một bài khác nhau, <b>tự chọn nhóm và xếp giờ</b> theo giới hạn của tài khoản rồi lên lịch luôn (xem/sửa/huỷ ở <a href="/admin/schedule">/admin/schedule</a>). Chỉ cần nhập Tiêu đề; ô nào để trống thì bài tự mời nhắn tin để trao đổi thêm.</p>
+  <form method="post" action="/admin/post/schedule-job">
+    <input type="hidden" name="account_id" value="{html.escape(account_id)}">
+    <div class="field-stack"><div class="field-label">Tiêu đề / vị trí *</div>
+      <div class="field-input"><input type="text" name="title" required maxlength="200" placeholder="VD: Vận hành máy" style="width:100%; box-sizing:border-box;"></div></div>
+    <div class="field-stack" style="margin-top:12px;"><div class="field-label">Công ty</div>
+      <div class="field-input"><input type="text" name="company" maxlength="200" style="width:100%; box-sizing:border-box;"></div></div>
+    <div class="field-stack" style="margin-top:12px;"><div class="field-label">Địa điểm</div>
+      <div class="field-input"><input type="text" name="location" maxlength="200" placeholder="VD: Ibaraki" style="width:100%; box-sizing:border-box;"></div></div>
+    <div style="display:flex; flex-wrap:wrap; gap:16px; margin-top:12px;">
+      <div class="field-stack"><div class="field-label">Visa</div>
+        <div class="field-input"><select name="visa"><option value="">— không rõ —</option>{visa_options}</select></div></div>
+      <div class="field-stack"><div class="field-label">JLPT</div>
+        <div class="field-input"><select name="jlpt"><option value="">— không yêu cầu / không rõ —</option>{"".join(f'<option value="{n}">{n}</option>' for n in ("N1", "N2", "N3", "N4", "N5"))}</select></div></div>
+    </div>
+    <div style="display:flex; flex-wrap:wrap; gap:16px; margin-top:12px; align-items:flex-end;">
+      <div class="field-stack"><div class="field-label">Lương từ</div>
+        <div class="field-input"><input type="number" name="salary_min" min="0" step="any" style="width:120px;"></div></div>
+      <div class="field-stack"><div class="field-label">đến</div>
+        <div class="field-input"><input type="number" name="salary_max" min="0" step="any" style="width:120px;"></div></div>
+      <div class="field-stack"><div class="field-label">Tính theo</div>
+        <div class="field-input"><select name="salary_period">
+          <option value="month">tháng — nhập theo man (万 = 10.000 yên)</option>
+          <option value="year">năm — nhập theo man (万)</option>
+          <option value="hour">giờ — nhập số yên</option>
+        </select></div></div>
+    </div>
+    <div class="field-stack" style="margin-top:12px;"><div class="field-label">Phúc lợi / ghi chú</div>
+      <div class="field-input"><textarea name="benefits" rows="3" maxlength="600" placeholder="VD: Trợ cấp vợ con 2m8, trợ cấp nhà, tăng ca 30h/tháng"></textarea></div></div>
+    <div class="field-stack" style="margin-top:12px;"><div class="field-label">Đăng vào bao nhiêu nhóm (hệ thống tự chọn nhóm, ưu tiên nhóm lâu chưa đăng)</div>
+      <div class="field-input"><input type="number" name="group_count" min="1" max="{max_group_count}" value="{default_group_count}" style="width:100px;"> <span class="muted">tối đa {max_group_count} (giới hạn của tài khoản; đã tham gia {len(groups)} nhóm)</span></div></div>
+    <div class="form-actions" style="margin-top:16px;">
+      <button type="submit" name="mode" value="ai">✨ Tạo bằng AI & lên lịch</button>
+      <button type="submit" name="mode" value="template" class="btn-secondary">📄 Tạo bằng template & lên lịch</button>
+    </div>
+  </form>
+</div>"""
+
+    active_tab = tab if tab in ("profile", "group", "comment", "job") else "profile"
 
     def tab_btn(key: str, label: str) -> str:
         cls = "tab-btn active" if key == active_tab else "tab-btn"
@@ -4186,6 +4239,7 @@ async def post_form(
   <div class="tab-bar">
     {tab_btn("profile", "👤 Tường cá nhân")}
     {tab_btn("group", "👥 Đăng vào nhóm")}
+    {tab_btn("job", "📋 Tin tuyển dụng")}
     {tab_btn("comment", "💬 Bình luận")}
   </div>
 
@@ -4217,6 +4271,10 @@ async def post_form(
 
   <div class="tab-panel" id="tab-group"{panel_attrs("group")}>
     {group_post_card}
+  </div>
+
+  <div class="tab-panel" id="tab-job"{panel_attrs("job")}>
+    {job_card}
   </div>
 
   <div class="tab-panel" id="tab-comment"{panel_attrs("comment")}>
@@ -4328,6 +4386,173 @@ async def post_schedule_groups(request: Request, _: None = Depends(_require_logi
             )
 
     return RedirectResponse(url=f"/admin/post?account_id={account_id}&tab=group&scheduled={scheduled_count}", status_code=303)
+
+
+def _parse_job_number(raw: str, *, comma_is_thousands: bool = False) -> int | float | None:
+    """A non-negative number from the job form; whole numbers come back as
+    int (a float 1400.0 would print as "1400.0" in the post). A comma is a
+    decimal mark for man amounts ("2,5") but a thousands separator for plain
+    yên ("1,400") — the caller says which."""
+    raw = (raw or "").strip()
+    if not raw:
+        return None
+    raw = raw.replace(",", "") if comma_is_thousands else raw.replace(",", ".")
+    try:
+        value = float(raw)
+    except ValueError:
+        raise ValueError(f"Số không hợp lệ: {raw}")
+    if value < 0 or value != value or value == float("inf"):
+        raise ValueError(f"Số không hợp lệ: {raw}")
+    return int(value) if value == int(value) else value
+
+
+def _build_manual_job(form) -> dict:
+    """The job dict (same shape side B sends: title + attributes) from the
+    /admin/post "Tin tuyển dụng" form. Raises ValueError with a message
+    meant for the admin."""
+    title = str(form.get("title", "")).strip()
+    if not title:
+        raise ValueError("Cần nhập Tiêu đề")
+    attrs: dict[str, Any] = {}
+    for key in ("company", "location", "benefits"):
+        value = str(form.get(key, "")).strip()
+        if value:
+            attrs[key] = value
+    visa = str(form.get("visa", "")).strip().lower()
+    if visa:
+        if visa not in get_visa_type_names(_VISA_TYPE_NAMES_DEFAULT):
+            raise ValueError("Loại visa không hợp lệ")
+        attrs["visaType"] = visa
+    jlpt = str(form.get("jlpt", "")).strip().upper()
+    if jlpt:
+        if jlpt not in ("N1", "N2", "N3", "N4", "N5"):
+            raise ValueError("JLPT không hợp lệ")
+        attrs["jlpt"] = jlpt
+    period = str(form.get("salary_period", "month")).strip()
+    if period not in ("month", "year", "hour"):
+        raise ValueError("Kỳ tính lương không hợp lệ")
+    lo = _parse_job_number(str(form.get("salary_min", "")), comma_is_thousands=period == "hour")
+    hi = _parse_job_number(str(form.get("salary_max", "")), comma_is_thousands=period == "hour")
+    if lo or hi:
+        if lo and hi and lo > hi:
+            raise ValueError("Lương \"từ\" không được lớn hơn \"đến\"")
+        # Month/year amounts are typed in man (万 = 10.000 yên) but side B —
+        # and content_strategist._salary_line() — work in plain yên.
+        factor = 10000 if period in ("month", "year") else 1
+
+        def to_yen(v):
+            if not v:
+                return None
+            v = v * factor
+            return int(round(v))
+
+        attrs["salary"] = {
+            "min": to_yen(lo), "max": to_yen(hi),
+            "currency": "JPY", "period": period,
+        }
+    job = content_strategist.sanitize_job({"title": title, "attributes": attrs})
+    if not job.get("title"):  # e.g. typed "unknown"/"n/a" — a sentinel, not a real title
+        raise ValueError("Tiêu đề không hợp lệ")
+    return job
+
+
+@router.post("/post/schedule-job")
+async def post_schedule_job(request: Request, _: None = Depends(_require_login)) -> RedirectResponse:
+    """"📋 Tin tuyển dụng" — a job typed by hand (e.g. copied from a Zalo
+    group message): drafts one post per group (AI or template, by which
+    button was pressed), picks the groups and a slot for each exactly like
+    the side-B pipeline / the "Duyệt & lên lịch" flow do
+    (_pick_groups_for_job + _suggest_reschedule_at), and schedules them all.
+    Tasks are marked ai_redraft=False so fire_due_tasks() posts the text
+    chosen here instead of re-drafting it with AI."""
+    from urllib.parse import quote
+    form = await request.form()
+    account_id = str(form.get("account_id", "")).strip()
+
+    def back(**params: str) -> RedirectResponse:
+        qs = "&".join(f"{k}={quote(str(v), safe='')}" for k, v in params.items())
+        return RedirectResponse(url=f"/admin/post?account_id={quote(account_id, safe='')}&tab=job&{qs}", status_code=303)
+
+    account = get_all_accounts().get(account_id)
+    if account is None:
+        return back(error="Không tìm thấy tài khoản")
+    mode = str(form.get("mode", "")).strip()
+    if mode not in ("ai", "template"):
+        return back(error="Chưa chọn cách tạo bài (AI hay template)")
+    try:
+        job = _build_manual_job(form)
+    except ValueError as exc:
+        return back(error=str(exc))
+
+    joined = get_joined_groups(account_id)
+    if not joined:
+        return back(error="Tài khoản này chưa tham gia nhóm nào — thêm ở /admin/groups trước")
+    # Never more groups per job than the account's own limit (the same one
+    # the side-B pipeline enforces) — a crafted POST can't lift it.
+    limit = max(1, account.rate_limits.max_groups_per_post)
+    try:
+        wanted = int(str(form.get("group_count", "")).strip() or limit)
+    except ValueError:
+        wanted = limit
+    wanted = max(1, min(wanted, limit, len(joined)))
+
+    job_data = {"title": job.get("title"), "attributes": job.get("attributes") or {}, "sponsored_by": None}
+    # Double-submit / refresh guard: the same job already waiting for this
+    # account would be posted twice into the same groups.
+    if any(
+        t.account_id == account_id and str(t.source_id).startswith("manual-") and t.job_data == job_data
+        for t in schedule_store.list_pending()
+    ):
+        return back(error="Tin này đã được lên lịch rồi và còn bài đang chờ đăng — xem ở /admin/schedule")
+
+    groups = _pick_groups_for_job(joined, _last_scheduled_time_per_group(account_id), needed=wanted)
+
+    notes: list[str] = []
+    contents: list[str] | None = None
+    used_ai = False
+    if mode == "ai":
+        if not content_strategist.ai_provider_configured():
+            notes.append("AI chưa có key nên đã dùng template")
+        else:
+            try:
+                contents = await content_strategist.draft_ai_variants(job, groups)
+                used_ai = True
+            except Exception:  # noqa: BLE001 - fall back, but tell the admin
+                logger.exception("post_schedule_job: AI draft failed")
+                notes.append("AI soạn lỗi nên đã dùng template")
+    if contents is None:
+        contents = content_strategist.template_variants(job, groups)
+    how = "AI" if used_ai else "template"
+
+    source_id = f"manual-{secrets.token_hex(4)}"
+    created: list[str] = []
+    try:
+        for group, content in zip(groups, contents):
+            scheduled_at = _suggest_reschedule_at(account, "post_to_group")
+            task = schedule_store.ScheduledTask(
+                task_id=schedule_store.new_task_id(scheduled_at.isoformat()),
+                action="post_to_group",
+                account_id=account_id,
+                scheduled_at=scheduled_at.isoformat(),
+                content=content,
+                target_url=group.url,
+                reasoning=f"manual job form ({how})",
+                source_kind="job",
+                source_id=source_id,
+                job_data=job_data,
+                ai_redraft=False,
+            )
+            schedule_store.add(task)
+            created.append(task.task_id)
+    except Exception:  # noqa: BLE001 - undo the partial batch so a retry can't double-post
+        logger.exception("post_schedule_job: scheduling failed midway")
+        for task_id in created:
+            schedule_store.cancel(task_id)
+        return back(error="Lỗi khi lên lịch — đã hoàn tác, chưa có bài nào được tạo")
+    message = f"Đã tạo {len(created)} bài ({how}) và lên lịch vào {len(created)} nhóm"
+    if notes:
+        message += " — " + "; ".join(notes)
+    return back(posted=message)
 
 
 @router.post("/post/schedule-comment")
@@ -7778,6 +8003,9 @@ async def reports_reschedule_confirm(request: Request, _: None = Depends(_requir
         job_data=parsed_data if source_kind == "job" else None,
         candidate_data=parsed_data if source_kind == "candidate" else None,
         retry_of_log_id=log_id,
+        # A job typed at /admin/post keeps the AI/template text the admin
+        # chose; side-B jobs keep their usual fire-time AI re-draft.
+        ai_redraft=not str(source_id).startswith("manual-"),
     )
     schedule_store.add(task)
     msg = "Đã thêm vào lịch — xem/sửa ở /admin/schedule."

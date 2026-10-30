@@ -2083,7 +2083,7 @@ async def fire_due_tasks(cfg: SchedulingConfig | None = None) -> dict[str, Any]:
                     content = fresh_reply
         elif (
             task.source_kind == "job" and task.action == "post_to_group"
-            and task.job_data and data_sync_cfg.job_post_ai_enabled
+            and task.job_data and data_sync_cfg.job_post_ai_enabled and task.ai_redraft
         ):
             # Same "right before it actually posts" reasoning as the
             # candidate branch above, moved here 2026-09-10 — see
