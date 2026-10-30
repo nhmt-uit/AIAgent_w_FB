@@ -4167,7 +4167,7 @@ async def post_form(
 </div>"""
 
     # "📋 Tin tuyển dụng" tab (2026-10-30, owner request): type a job the way
-    # side B would send it (+ "phúc lợi"), pick AI or template, and the
+    # side B would send it (+ "thông tin thêm"), pick AI or template, and the
     # server drafts one post per group, picks the groups and slots, and
     # schedules everything in one click — for jobs that come from somewhere
     # other than side B (e.g. a message in a Zalo group).
@@ -4207,8 +4207,8 @@ async def post_form(
           <option value="hour">giờ — nhập số yên</option>
         </select></div></div>
     </div>
-    <div class="field-stack" style="margin-top:12px;"><div class="field-label">Phúc lợi / ghi chú</div>
-      <div class="field-input"><textarea name="benefits" rows="3" maxlength="600" placeholder="VD: Trợ cấp vợ con 2m8, trợ cấp nhà, tăng ca 30h/tháng"></textarea></div></div>
+    <div class="field-stack" style="margin-top:12px;"><div class="field-label">Thông tin thêm</div>
+      <div class="field-input"><textarea name="extra_info" rows="4" maxlength="1000" placeholder="VD: Trợ cấp vợ con 2m8, trợ cấp nhà, tăng ca 30h/tháng"></textarea></div></div>
     <div class="field-stack" style="margin-top:12px;"><div class="field-label">Đăng vào bao nhiêu nhóm (hệ thống tự chọn nhóm, ưu tiên nhóm lâu chưa đăng)</div>
       <div class="field-input"><input type="number" name="group_count" min="1" max="{max_group_count}" value="{default_group_count}" style="width:100px;"> <span class="muted">tối đa {max_group_count} (giới hạn của tài khoản; đã tham gia {len(groups)} nhóm)</span></div></div>
     <div class="form-actions" style="margin-top:16px;">
@@ -4414,7 +4414,7 @@ def _build_manual_job(form) -> dict:
     if not title:
         raise ValueError("Cần nhập Tiêu đề")
     attrs: dict[str, Any] = {}
-    for key in ("company", "location", "benefits"):
+    for key in ("company", "location", "extra_info"):
         value = str(form.get(key, "")).strip()
         if value:
             attrs[key] = value

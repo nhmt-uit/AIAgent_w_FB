@@ -44,7 +44,7 @@ def client(isolated_runtime_config, isolated_schedule_dirs, tmp_path, monkeypatc
 FORM = {
     "account_id": "acc-a", "title": "Vận hành máy", "company": "Công ty ABC", "location": "Ibaraki",
     "visa": "tokutei", "jlpt": "N4", "salary_min": "22", "salary_max": "28", "salary_period": "month",
-    "benefits": "Trợ cấp vợ con 2m8, trợ cấp nhà, tăng ca 30h/tháng", "group_count": "3",
+    "extra_info": "Trợ cấp vợ con 2m8, trợ cấp nhà, tăng ca 30h/tháng", "group_count": "3",
 }
 
 
@@ -55,7 +55,7 @@ def _params(resp):
 def test_job_tab_renders_with_both_buttons(client):
     resp = client.get("/admin/post?tab=job")
     assert resp.status_code == 200
-    assert "Tạo bằng AI" in resp.text and "Tạo bằng template" in resp.text and "Phúc lợi" in resp.text
+    assert "Tạo bằng AI" in resp.text and "Tạo bằng template" in resp.text and "Thông tin thêm" in resp.text
 
 
 def test_template_mode_schedules_one_post_per_picked_group(client):
@@ -69,7 +69,7 @@ def test_template_mode_schedules_one_post_per_picked_group(client):
     assert len({t.source_id for t in tasks}) == 1 and tasks[0].source_id.startswith("manual-")
     first = tasks[0].content
     assert "Vận hành máy" in first and "Ibaraki" in first and "Công ty ABC" in first
-    assert "Trợ cấp vợ con 2m8" in first and "tăng ca 30h/tháng" in first  # the benefits survive verbatim
+    assert "Trợ cấp vợ con 2m8" in first and "tăng ca 30h/tháng" in first  # the extra info survives verbatim
     assert "22" in first and "28" in first  # 22-28 man, converted from yên and back
     times = sorted(datetime.fromisoformat(t.scheduled_at) for t in tasks)
     assert times[0] < times[1] < times[2]  # spaced by the account's gap, not all at once
@@ -97,7 +97,7 @@ def test_ai_mode_uses_the_ai_drafts_and_marks_them_as_ai(client, monkeypatch):
     resp = client.post("/admin/post/schedule-job", data={**FORM, "mode": "ai"})
     assert "AI" in _params(resp)["posted"][0] and "template" not in _params(resp)["posted"][0]
     assert sorted(t.content for t in schedule_store.list_pending()) == ["AI bài 0", "AI bài 1", "AI bài 2"]
-    assert seen["n"] == 3 and seen["job"]["attributes"]["benefits"].startswith("Trợ cấp")
+    assert seen["n"] == 3 and seen["job"]["attributes"]["extra_info"].startswith("Trợ cấp")
 
 
 def test_ai_mode_without_a_key_falls_back_to_template_and_says_so(client, monkeypatch):

@@ -360,16 +360,18 @@ def test_job_summary_only_allowed_fields_and_no_url():
     summary = cs._job_summary(job)
     assert "url" not in summary
     assert "internalId" not in summary
-    assert set(summary.keys()) == {"title", "company", "location", "visa_type", "jlpt", "salary", "benefits"}
+    assert set(summary.keys()) == {"title", "company", "location", "visa_type", "jlpt", "salary", "extra_info"}
 
 
-def test_benefits_line_appears_in_the_template_only_when_given():
+def test_extra_info_is_added_verbatim_with_no_label_and_only_when_given():
     base = {"title": "Vận hành máy", "attributes": {"location": "Ibaraki"}}
-    assert "Phúc lợi" not in cs._draft_job_post_placeholder(base)  # side-B jobs carry no benefits → unchanged
-    with_benefits = {"title": "Vận hành máy", "attributes": {"benefits": "Trợ cấp nhà, tăng ca 30h/tháng"}}
-    assert "Phúc lợi: Trợ cấp nhà, tăng ca 30h/tháng" in cs._draft_job_post_placeholder(with_benefits)
-    as_list = {"title": "x", "attributes": {"benefits": ["Trợ cấp nhà", "Tăng ca"]}}
-    assert "Phúc lợi: Trợ cấp nhà, Tăng ca" in cs._draft_job_post_placeholder(as_list)
+    assert "Tăng ca" not in cs._draft_job_post_placeholder(base)  # side-B jobs carry none → unchanged
+    text = "Trợ cấp vợ con 2m8\nTrợ cấp nhà\nTăng ca 30h/tháng"
+    post = cs._draft_job_post_placeholder({"title": "Vận hành máy", "attributes": {"extra_info": f"  {text}  "}})
+    assert text in post  # exact words and line breaks, trimmed only at the ends
+    assert "Phúc lợi" not in post and "Thông tin thêm:" not in post
+    as_list = cs._draft_job_post_placeholder({"title": "x", "attributes": {"extra_info": ["Trợ cấp nhà", "Tăng ca"]}})
+    assert "Trợ cấp nhà, Tăng ca" in as_list
 
 
 # --- Async fallback paths -------------------------------------------------

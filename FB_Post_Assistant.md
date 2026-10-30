@@ -1083,8 +1083,8 @@ Telegram dùng nội dung đã soạn sẵn; muốn sửa chữ vẫn phải và
 
 - **Form nhập tay tin tuyển dụng (30/10).** Có những tin không đến từ bên B — ví dụ admin đăng
   trong nhóm Zalo để thành viên đem đi đăng lại. Trang "Đăng bài" có thêm tab **"Tin tuyển
-  dụng"**: nhập tiêu đề, công ty, địa điểm, visa, JLPT, lương và **phúc lợi** (ví dụ "trợ cấp vợ
-  con 2m8, trợ cấp nhà, tăng ca 30h/tháng"), rồi bấm "Tạo bằng AI" hoặc "Tạo bằng template".
+  dụng"**: nhập tiêu đề, công ty, địa điểm, visa, JLPT, lương và **thông tin thêm** (ví dụ "trợ cấp vợ
+  con 2m8, trợ cấp nhà, tăng ca 30h/tháng", được đưa vào bài nguyên văn), rồi bấm "Tạo bằng AI" hoặc "Tạo bằng template".
   Hệ thống soạn mỗi nhóm một bài khác nhau, tự chọn nhóm (ưu tiên nhóm lâu chưa đăng, tối đa
   bằng giới hạn của tài khoản), xếp giờ đăng và lên lịch luôn. Nếu chọn AI mà AI chưa có key
   hoặc bị lỗi thì dùng template và thông báo rõ. Bài đã chọn kiểu nào thì đăng đúng kiểu đó,

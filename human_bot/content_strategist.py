@@ -105,7 +105,7 @@ Quy tắc bắt buộc:
 8. Nếu dữ liệu KHÔNG có visa hoặc KHÔNG có lương: đừng bỏ trống im lặng không nhắc gì — viết một câu ngắn mời nhắn tin/inbox để trao đổi thêm về đúng phần đang thiếu đó.
 9. Mỗi bài dài tối đa khoảng 500 ký tự — đủ thông tin cụ thể nhưng không lan man, dài dòng.
 10. Câu MỞ ĐẦU và câu KẾT của mỗi bài là phần người đọc chú ý nhất khi lướt Facebook — phải thu hút, có sức gợi, tránh mở đầu/kết câu sáo rỗng rập khuôn.
-11. Phúc lợi (benefits, nếu có trong dữ liệu — ví dụ trợ cấp, tăng ca): nêu đúng nội dung được cung cấp bằng cách diễn đạt tự nhiên, giữ nguyên các con số, không thêm quyền lợi nào khác.
+11. Thông tin thêm (extra_info, nếu có trong dữ liệu): do người đăng tự nhập, có thể nhiều dòng — đưa vào bài NGUYÊN VĂN (giữ đúng từng con số, từ ngữ và thứ tự), không diễn giải lại, không thêm hay bớt gì.
 
 Bạn chỉ trả lời bằng JSON hợp lệ, không thêm bất kỳ chữ nào khác ngoài JSON."""
 
@@ -426,11 +426,15 @@ def _draft_job_post_placeholder(job: dict, variant_seed: int = 0) -> str:
     salary_text = _salary_line(attrs.get("salary"))
     if salary_text:
         lines.append(salary_text)
-    # "Phúc lợi" (2026-10-30) — free text typed in /admin/post's "Tin tuyển
-    # dụng" form; side B does not send it, so this is a no-op for synced jobs.
-    benefits = _join_list_or_str(attrs.get("benefits"))
-    if benefits:
-        lines.append(f"Phúc lợi: {benefits}")
+    # "Thông tin thêm" (2026-10-30) — free text typed in /admin/post's "Tin
+    # tuyển dụng" form (benefits, allowances, overtime...). Kept VERBATIM,
+    # line breaks included, with no label of its own: the admin wrote exactly
+    # what should appear. Side B does not send it, so this is a no-op for
+    # synced jobs.
+    extra_info = attrs.get("extra_info")
+    extra_info = extra_info.strip() if isinstance(extra_info, str) else _join_list_or_str(extra_info)
+    if extra_info:
+        lines.append(extra_info)
 
     missing = [
         label for key, label in _MISSING_INFO_LABELS.items()
@@ -491,7 +495,7 @@ def _job_summary(job: dict) -> dict:
         "visa_type": attrs.get("visaType"),
         "jlpt": attrs.get("jlpt"),
         "salary": attrs.get("salary"),
-        "benefits": attrs.get("benefits"),
+        "extra_info": attrs.get("extra_info"),
     }
 
 

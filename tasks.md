@@ -6528,14 +6528,14 @@ Nguồn: owner copy tin từ nhóm Zalo (admin Zalo đăng, thành viên đem đ
 hoá việc đọc nhóm Zalo (tài khoản cá nhân Zalo chỉ có đường không chính thức, rủi ro khoá nick;
 để sau), nhập tay trước.
 - **Tab mới trong `/admin/post`:** nhập Tiêu đề (bắt buộc), Công ty, Địa điểm, Visa, JLPT, Lương
-  (từ–đến, theo tháng/năm nhập bằng man, theo giờ nhập yên), **Phúc lợi/ghi chú** (trường mới,
-  văn bản tự do, vd "Trợ cấp vợ con 2m8, trợ cấp nhà, tăng ca 30h/tháng") và số nhóm. Hai nút:
+  (từ–đến, theo tháng/năm nhập bằng man, theo giờ nhập yên), **Thông tin thêm** (trường mới,
+  văn bản tự do, nhiều dòng, được đưa vào bài NGUYÊN VĂN, không nhãn — vd "Trợ cấp vợ con 2m8, trợ cấp nhà, tăng ca 30h/tháng") và số nhóm. Hai nút:
   **✨ Tạo bằng AI & lên lịch** / **📄 Tạo bằng template & lên lịch**.
 - **Một cú bấm làm hết:** soạn mỗi nhóm một bài khác nhau → tự chọn nhóm (cùng `_pick_groups_for_job`
   của luồng bên B, ưu tiên nhóm lâu chưa đăng, tối đa `max_groups_per_post` của tài khoản) → xếp
   giờ từng bài bằng `_suggest_reschedule_at` → lên lịch. Xem/sửa/huỷ ở `/admin/schedule`.
 - AI chưa có key hoặc AI lỗi → dùng template và **nói rõ** trong thông báo (không âm thầm).
-- `content_strategist`: template thêm dòng "Phúc lợi: …" (chỉ khi có), prompt AI thêm quy tắc 11;
+- `content_strategist`: template chèn nguyên văn "Thông tin thêm" (chỉ khi có), prompt AI thêm quy tắc 11;
   hàm công khai mới `draft_ai_variants()` (nghiêm ngặt, ném lỗi thay vì lẳng lặng rơi về template).
 - **`ScheduledTask.ai_redraft` (mới, mặc định True):** `fire_due_tasks()` vốn viết lại AI mọi task
   `source_kind="job"` ngay trước khi đăng nếu công tắc AI bật → sẽ đè mất lựa chọn AI/template của
