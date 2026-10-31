@@ -65,8 +65,14 @@ from human_bot.config import (
     AccountStatus,
     GroupRef,
     RateLimits,
+    PAGE_MODE_AUTO,
+    PAGE_MODE_OWN_SESSION,
+    PAGE_MODE_OWNER_SESSION,
+    PAGE_SESSION_MODES,
     get_all_accounts,
+    normalize_name,
     new_group_id,
+    pages_of,
 )
 from human_bot.data_sync import (
     apply_quiet_hours,
@@ -123,6 +129,7 @@ from human_bot.runtime_config import (
     save_media_overrides,
     save_joined_groups,
     save_registered_account,
+    set_page_session_mode,
     delete_registered_account,
     set_account_paused,
     set_account_removed,
@@ -2760,6 +2767,7 @@ async def admin_home(request: Request, _: None = Depends(_require_login)) -> str
         (
             _account_health_card_html(aid, a, sync_statuses, last_success_map)
             for aid, a in accounts.items()
+            if not a.uses_owner_session  # its login/session is the owner's, whose card already covers it
         ),
         key=lambda pair: pair[0],
     )
@@ -3103,7 +3111,7 @@ def _account_id_error(account_id: str, existing: dict) -> str | None:
     return None
 
 
-def _account_modal_html(account_id: str = "", display_name: str = "", error: str | None = None) -> str:
+def _account_modal_html(account_id: str = "", display_name: str = "", error: str | None = None, page_name: str = "", personal_name: str = "", owner_account_id: str = "", page_session_mode: str = "") -> str:
     """Renders the whole #modal-root swap for the "Đăng ký tài khoản mới"
     form — same pattern as _group_modal_html(): opened via GET (button
     below), redisplayed with a validation error on a bad POST without
@@ -3111,6 +3119,10 @@ def _account_modal_html(account_id: str = "", display_name: str = "", error: str
     entirely (_accounts_content_html's oob update) which is what actually
     closes it."""
     err_html = f'<p class="error">⚠️ {html.escape(error)}</p>' if error else ""
+    owner_options = "".join(
+        f'<option value="{html.escape(aid)}"{" selected" if aid == owner_account_id else ""}>{html.escape(a.display_name)} ({html.escape(aid)})</option>'
+        for aid, a in get_all_accounts().items() if not a.page_name
+    )
     tier_options = "".join(
         f'<option value="{tier_key}"{" selected" if tier_key == DEFAULT_ACCOUNT_AGE_TIER else ""}>'
         f'{html.escape(label)} ({rl.posts_per_day} bài/ngày)</option>'
@@ -3129,6 +3141,14 @@ def _account_modal_html(account_id: str = "", display_name: str = "", error: str
       <div class="field-grid">
         <div class="field-stack"><div class="field-label">account_id (khớp với tên đã dùng ở bootstrap_login.py)</div><div class="field-input"><input type="text" name="account_id" value="{html.escape(account_id)}" placeholder="vd: my_page" required pattern="[a-z0-9_]+"></div></div>
         <div class="field-stack"><div class="field-label">Tên hiển thị</div><div class="field-input"><input type="text" name="display_name" value="{html.escape(display_name)}" placeholder="vd: Trang của tôi"></div></div>
+        <div class="field-stack"><div class="field-label">Tên Facebook Page (chỉ điền nếu tài khoản này chạy bằng danh tính một Page — đúng như trong nút "Switch to …"; để trống nếu là tài khoản cá nhân)</div><div class="field-input"><input type="text" name="page_name" value="{html.escape(page_name)}" placeholder="vd: Đơn Kỹ Sư Nhật"></div></div>
+        <div class="field-stack"><div class="field-label">Tên hồ sơ CÁ NHÂN của bạn (bắt buộc nếu điền tên Page ở trên — đúng như nút "Switch to …" hiện ra khi đang ở danh tính Page; dùng để bot chắc chắn đang là Page trước khi đăng)</div><div class="field-input"><input type="text" name="personal_name" value="{html.escape(personal_name)}" placeholder="vd: Tu Nguyen"></div></div>
+        <div class="field-stack"><div class="field-label">Page này thuộc tài khoản cá nhân nào? (bắt buộc nếu điền tên Page — Page được tạo từ một tài khoản cá nhân, liên kết này giúp truy lỗi của Page từ tài khoản đó)</div><div class="field-input"><select name="owner_account_id"><option value="">— chọn —</option>{owner_options}</select></div></div>
+        <div class="field-stack"><div class="field-label">Cách chạy tác vụ của Page</div><div class="field-input"><select name="page_session_mode">
+          <option value="auto"{" selected" if page_session_mode in ("", "auto") else ""}>Ưu tiên phiên riêng của Page; nếu phiên đó lỗi thì dùng phiên của tài khoản cá nhân (khuyên dùng)</option>
+          <option value="own_session"{" selected" if page_session_mode == "own_session" else ""}>Chỉ dùng phiên riêng của Page (file phiên đã ở sẵn danh tính Page)</option>
+          <option value="owner_session"{" selected" if page_session_mode == "owner_session" else ""}>Chỉ dùng phiên của tài khoản cá nhân, chuyển sang Page rồi chuyển lại</option>
+        </select></div></div>
         <div class="field-stack"><div class="field-label">Tuổi tài khoản Facebook (đặt giới hạn tốc độ ban đầu tương ứng)</div><div class="field-input"><select name="age_tier">{tier_options}</select></div></div>
       </div>
       <div class="form-actions">
@@ -3555,12 +3575,47 @@ def _accounts_content_html(saved: bool = False, error: str | None = None, oob: b
             '<span class="badge" style="background:#ecfdf5;color:#059669;">phiên OK</span>'
             if has_session
             else (
+                '<span class="badge" style="background:#fef2f2;color:#dc2626;">chưa có phiên — đăng nhập ở tài khoản cá nhân sở hữu Page này</span>'
+                if a.uses_owner_session
+                else (
                 '<span class="badge" style="background:#fef2f2;color:#dc2626;">chưa có storage_state.json</span> '
                 f'<button type="button" class="btn-small btn-secondary" '
                 f'hx-get="/admin/accounts/bootstrap-login-modal?account_id={html.escape(aid)}" '
                 f'hx-target="#modal-root" hx-swap="innerHTML">🌐 Đăng nhập &amp; lưu phiên</button>'
-            )
+            ))
         )
+        page_tag = ""
+        if a.page_name:
+            owner = accounts.get(a.owner_account_id)
+            owner_txt = (
+                f'<a href="/admin/reports?account_id={html.escape(a.owner_account_id)}">{html.escape(owner.display_name)}</a> '
+                f'({html.escape(a.owner_account_id)})' if owner else "— chưa liên kết —"
+            )
+            mode_labels = {
+                PAGE_MODE_AUTO: "ưu tiên phiên riêng của Page, lỗi thì dùng phiên tài khoản cá nhân",
+                PAGE_MODE_OWN_SESSION: "chỉ phiên riêng của Page",
+                PAGE_MODE_OWNER_SESSION: "chỉ phiên tài khoản cá nhân (chuyển sang Page rồi chuyển lại)",
+            }
+            mode_options = "".join(
+                f'<option value="{m}"{" selected" if m == a.page_session_mode else ""}>{html.escape(label)}</option>'
+                for m, label in mode_labels.items()
+            )
+            page_tag = (
+                f'<div class="row-url">📄 Page <b>{html.escape(a.page_name)}</b> — thuộc tài khoản cá nhân: {owner_txt}'
+                f' · hồ sơ cá nhân: {html.escape(a.personal_name or "— chưa khai báo —")}</div>'
+                f'<div class="row-url">Cách chạy: '
+                f'<form method="post" action="/admin/accounts/page-mode" style="display:inline;">'
+                f'<input type="hidden" name="account_id" value="{html.escape(aid)}">'
+                f'<select name="mode" onchange="this.form.submit()">{mode_options}</select></form></div>'
+            )
+        else:
+            child_pages = pages_of(aid, accounts)
+            if child_pages:
+                items = ", ".join(
+                    f'<a href="/admin/reports?account_id={html.escape(p.account_id)}">{html.escape(p.page_name)}</a> ({html.escape(p.account_id)})'
+                    for p in child_pages
+                )
+                page_tag = f'<div class="row-url">📄 Các Page của tài khoản này: {items}</div>'
         is_paused = a.status == AccountStatus.PAUSED
         status_badge = (
             '<span class="badge" style="background:#fef2f2;color:#dc2626;">⏸ Tạm dừng</span>'
@@ -3651,7 +3706,7 @@ def _accounts_content_html(saved: bool = False, error: str | None = None, oob: b
         age_tier_label = html.escape(_account_age_tier_label(a.rate_limits))
         rows.append(f"""
 <tr>
-  <td>{html.escape(a.display_name)}<div class="row-url">{html.escape(aid)}</div></td>
+  <td>{html.escape(a.display_name)}<div class="row-url">{html.escape(aid)}</div>{page_tag}</td>
   <td>{status_badge}{status_detail}</td>
   <td>{session_badge}</td>
   <td><span class="badge">{age_tier_label}</span></td>
@@ -3755,6 +3810,27 @@ async def accounts_page(
 """, active="accounts", current_user=_build_current_user(request))
 
 
+def _page_account_error(
+    page_name: str, personal_name: str, accounts: dict,
+    owner_account_id: str = "", page_session_mode: str = PAGE_MODE_AUTO,
+) -> str | None:
+    """Validation for registering an account that acts as a Facebook Page."""
+    owner = accounts.get(owner_account_id)
+    if owner is None:
+        return "Chọn tài khoản cá nhân mà Page này thuộc về"
+    if owner.page_name:
+        return "Tài khoản sở hữu phải là tài khoản cá nhân, không phải một Page khác"
+    if page_session_mode not in PAGE_SESSION_MODES:
+        return "Cách chạy không hợp lệ"
+    if not personal_name:
+        return "Tài khoản chạy bằng Page cần khai báo thêm tên hồ sơ cá nhân của bạn (để bot kiểm chắc chắn đang là Page)"
+    if normalize_name(page_name) == normalize_name(personal_name):
+        return "Tên Page và tên hồ sơ cá nhân không được trùng nhau"
+    if any(normalize_name(a.page_name) == normalize_name(page_name) for a in accounts.values() if a.page_name):
+        return "Đã có một tài khoản khác chạy bằng Page này"
+    return None
+
+
 @router.get("/accounts/add-modal", response_class=HTMLResponse)
 async def accounts_add_modal(_: None = Depends(_require_login)) -> str:
     return _account_modal_html()
@@ -3765,13 +3841,27 @@ async def accounts_add(request: Request, _: None = Depends(_require_login)):
     form = await request.form()
     account_id = str(form.get("account_id", "")).strip().lower()
     display_name = str(form.get("display_name", "")).strip()
+    page_name = str(form.get("page_name", "")).strip()[:200]
+    personal_name = str(form.get("personal_name", "")).strip()[:200]
+    owner_account_id = str(form.get("owner_account_id", "")).strip()
+    page_session_mode = str(form.get("page_session_mode", "")).strip() or PAGE_MODE_AUTO
+    if not page_name:
+        # Not a Page: the Page-only fields are meaningless — ignore them rather than
+        # let a stale/crafted value reach save_registered_account().
+        owner_account_id, page_session_mode, personal_name = "", PAGE_MODE_AUTO, ""
     error = _account_id_error(account_id, get_all_accounts())
+    if not error and page_name:
+        error = _page_account_error(page_name, personal_name, get_all_accounts(), owner_account_id, page_session_mode)
     if error:
         if _is_htmx(request):
-            return HTMLResponse(_account_modal_html(account_id=account_id, display_name=display_name, error=error))
+            return HTMLResponse(_account_modal_html(
+                account_id=account_id, display_name=display_name, error=error,
+                page_name=page_name, personal_name=personal_name,
+                owner_account_id=owner_account_id, page_session_mode=page_session_mode,
+            ))
         from urllib.parse import urlencode
         return RedirectResponse(url=f"/admin/accounts?{urlencode({'error': error})}", status_code=303)
-    save_registered_account(account_id, display_name or account_id)
+    save_registered_account(account_id, display_name or account_id, page_name, personal_name, owner_account_id, page_session_mode)
     set_account_removed(account_id, False)  # undo a previous "Xoá", if any
     # Falls back to "under_1_month" (owner decision 2026-09-15) rather
     # than silently applying no override at all (the code-level RateLimits
@@ -3791,6 +3881,26 @@ async def accounts_add(request: Request, _: None = Depends(_require_login)):
         # htmx empties it, closing the modal — plus an out-of-band refresh
         # of #accounts-content so the new account shows up immediately.
         return HTMLResponse(_accounts_content_html(saved=True, oob=True))
+    return RedirectResponse(url="/admin/accounts?saved=1", status_code=303)
+
+
+@router.post("/accounts/page-mode")
+async def accounts_page_mode(request: Request, _: None = Depends(_require_login)):
+    """Switches a Page account between running on its own session and running
+    on its owner's session (switching to the Page and back)."""
+    form = await request.form()
+    account_id = str(form.get("account_id", "")).strip()
+    mode = str(form.get("mode", "")).strip()
+    error = None
+    if mode not in PAGE_SESSION_MODES:
+        error = "Cách chạy không hợp lệ"
+    elif not set_page_session_mode(account_id, mode):
+        error = "Không phải tài khoản Page đã đăng ký"
+    if _is_htmx(request):
+        return HTMLResponse(_accounts_content_html(saved=error is None, error=error))
+    if error:
+        from urllib.parse import urlencode
+        return RedirectResponse(url=f"/admin/accounts?{urlencode({'error': error})}", status_code=303)
     return RedirectResponse(url="/admin/accounts?saved=1", status_code=303)
 
 
@@ -3897,6 +4007,16 @@ async def accounts_delete(request: Request, _: None = Depends(_require_login)):
     project; delete those by hand if truly no longer needed."""
     form = await request.form()
     account_id = str(form.get("account_id", "")).strip()
+    children = pages_of(account_id)
+    if children:
+        error = (
+            "Không xoá được: tài khoản này còn Page đang dùng nó ("
+            + ", ".join(p.account_id for p in children) + ") — xoá các Page trước"
+        )
+        if _is_htmx(request):
+            return HTMLResponse(_accounts_content_html(error=error))
+        from urllib.parse import urlencode
+        return RedirectResponse(url=f"/admin/accounts?{urlencode({'error': error})}", status_code=303)
     delete_registered_account(account_id)
     set_account_removed(account_id, True)
     set_account_paused(account_id, False)  # drop any stale pause override too

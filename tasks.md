@@ -6550,3 +6550,83 @@ hoá việc đọc nhóm Zalo (tài khoản cá nhân Zalo chỉ có đường k
 - Chưa có: đính kèm ảnh (task đã hỗ trợ `media_path`, form chưa có ô), đọc tự động nhóm Zalo.
 - Test: `tests/test_admin_post_job.py` (24) + test benefits trong `test_content_strategist.py`.
 
+### Tài khoản chạy bằng danh tính Facebook Page — `page_donkysu` (2026-10-31)
+
+Quyết định của owner: dùng một Page ("Đơn Kỹ Sư Nhật") đăng/bình luận vào các nhóm của người khác
+(Page đã vào sẵn các nhóm). Phần Zalo-comment bỏ (comment link phiền phức).
+- **Kiểm chứng bằng bản quay + 2 script thật** (`human_bot/smoke_test/check_page_identity.py`,
+  `check_page_comment.py`): danh tính Page **được lưu trong file phiên** (mở lại vẫn là Page, đúng
+  khi dùng `_page_probe_state.json`); đăng bài ở danh tính Page có các bước **y hệt** tài khoản cá
+  nhân; ô bình luận tên `Answer as <Page>` / `Comment as <Page>` và gửi bằng nút "Post comment"
+  (đã đăng thử 1 bình luận thật: POSTED). File phiên thật của tu_iizuki KHÔNG bị đổi sang Page.
+- **Thiết kế:** Page = **một tài khoản riêng** (file phiên, hạn mức, danh sách nhóm, log riêng) dùng chung
+  đăng nhập cá nhân. `AccountConfig.page_name` + `personal_name` (đăng ký ở /admin/accounts, hiện
+  trong danh sách để dễ soát lỗi gõ). Mọi hành động đăng/bình luận/like dùng lại code cũ.
+- **Chốt chặn danh tính, đóng cửa khi nghi ngờ:** trước MỖI hành động của tài khoản Page,
+  `actions.ensure_page_identity()` mở menu tài khoản và chỉ cho chạy khi thấy bằng chứng DƯƠNG:
+  "Switch to <tên cá nhân>" có mặt VÀ "Switch to <tên Page>" không có. Gõ sai tên Page hoặc tên cá
+  nhân → từ chối, không bao giờ đăng nhầm bằng tài khoản cá nhân. Thêm chốt thứ 2 khi bình luận:
+  nhãn ô bình luận phải đúng bằng `Answer/Comment as <Page>` (so sánh bằng nhau, không phải chứa).
+  Từ chối thì: không đăng, KHÔNG tính vào khoảng nghỉ/hạn mức, báo Telegram 1 lần mỗi đợt
+  (lỗi thoáng qua của chính bước kiểm tra — `identity_check_error` — thì từ chối nhưng không báo đỏ).
+- **Tự rà soát (/code-review) — 2 vòng, 19 phát hiện:** quan trọng nhất là bản đầu kiểm tra theo kiểu
+  "không thấy Page trong danh sách = đang là Page" nên MỞ CỬA khi gõ sai tên → đã đổi sang bằng chứng
+  dương như trên. Cũng sửa: kiểm tra từng hành động (không cache theo phiên), chờ menu hiện xong
+  mới đọc, luôn đóng menu, so tên sau chuẩn hoá Unicode, trùng id với tài khoản code-level vẫn giữ
+  danh tính Page, không cho 2 tài khoản cùng 1 Page, bắt mọi lỗi Playwright. Suite 834 pass.
+- **Cách dựng tài khoản (làm tay một lần):** (1) chạy `check_page_identity.py switch` rồi `check` để có
+  `accounts/tu_iizuki/_page_probe_state.json` đang ở Page; (2) `mkdir accounts/page_donkysu && cp
+  accounts/tu_iizuki/_page_probe_state.json accounts/page_donkysu/storage_state.json`; (3) /admin/accounts →
+  Đăng ký: account_id `page_donkysu`, Tên Page `Đơn Kỹ Sư Nhật`, Tên hồ sơ cá nhân = đúng chữ trong nút
+  "Switch to …" khi đang là Page (xem dòng "Identities offered" của script `check`); (4) /admin/groups thêm
+  nhóm cho tài khoản này.
+- **Chưa làm / rủi ro biết trước:** chạy thật `page_donkysu` end-to-end chưa thử; hai danh tính chung 1
+  đăng nhập (token hết hạn bên này có thể ảnh hưởng bên kia; chạy song song chưa kiểm chứng);
+  fingerprint (kích thước cửa sổ) sinh theo id nên khác tu_iizuki dù cùng đăng nhập; sửa tên
+  Page/tên cá nhân sau khi đăng ký phải xoá và đăng ký lại.
+
+#### Page ↔ tài khoản cá nhân + 2 cách chạy (2026-10-31, tiếp)
+
+Yêu cầu của owner: mỗi Page thuộc một tài khoản cá nhân (nó được tạo từ đó) nên phải có liên kết ở
+phần quản lý tài khoản để truy lỗi của Page từ tài khoản cá nhân; và tác vụ của Page chạy được theo 2 cách.
+- **Liên kết:** `AccountConfig.owner_account_id`. /admin/accounts: dòng Page ghi "thuộc tài khoản cá
+  nhân: …" (link sang báo cáo của tài khoản đó), dòng tài khoản cá nhân liệt kê "Các Page của tài khoản
+  này" (link sang báo cáo từng Page). Form đăng ký bắt buộc chọn tài khoản cá nhân sở hữu; không xoá
+  được tài khoản cá nhân còn Page đang dùng; Page không thể sở hữu Page khác.
+- **2 cách chạy** (`page_session_mode`, đổi được sau khi đăng ký ngay trong danh sách):
+  1. `own_session` — phiên riêng của Page (file phiên đã ở sẵn danh tính Page). Mặc định, đã kiểm chứng.
+  2. `owner_session` — dùng phiên của tài khoản cá nhân: chuyển sang Page → kiểm tra bằng chứng dương →
+     thực hiện → chụp ảnh bằng chứng → CHUYỂN VỀ cá nhân → kiểm tra → mới lưu phiên. Page không có
+     file phiên/trình duyệt riêng; hạn mức/nhóm/log vẫn của Page.
+- **An toàn của phiên dùng chung (cách 2) — phần rủi ro nhất:** (a) khoá (`session.lock`) → mỗi trình
+  duyệt chỉ chạy 1 tác vụ một lúc; (b) cờ `identity_dirty`: trong lúc phiên đang ở danh tính Page,
+  `save_state()` từ chối ghi (kể cả khi tắt service/restart) → danh tính Page không bao giờ lọt vào file
+  đăng nhập cá nhân; (c) không xác nhận được đã về cá nhân → đóng phiên KHÔNG lưu + báo Telegram, tác
+  vụ sau mở lại từ file đã lưu; (d) nếu bước chuyển sang Page chưa hề xảy ra (bị từ chối từ đầu) thì
+  bước "chuyển về" chỉ cần xác nhận đang là cá nhân — không đóng phiên/báo động giả; (e) gặp checkpoint:
+  không bấm thêm gì trên tài khoản bị gắn cờ, đóng phiên không lưu, và TẠM DỪNG cả tài khoản cá nhân lẫn
+  Page; (f) chủ đang bị tạm dừng → Page từ chối chạy (cả 2 cách, vì chung đăng nhập).
+- **Tự rà soát /code-review (3 vòng, 29 phát hiện cho cả tính năng Page):** ngoài các mục trên còn sửa:
+  trình duyệt chết không bị tính vào hạn mức, kiểm tra chế độ khi đọc config (sai → cảnh báo + về
+  `own_session`), bỏ trùng lặp mã đọc/bấm menu, tên chuẩn hoá dùng chung ở `config.normalize_name`,
+  "Switch to <Page>" không có vì đã là Page thì không bị coi là từ chối. **Giữ nguyên/đã biết:** mỗi tác vụ
+  Page mở menu tài khoản 1–2 lần (cách 1) hoặc 2–3 lần (cách 2) — thêm lưu lượng trang chủ, đổi lấy an toàn;
+  chỉ `run_task()` điều khiển trang nên khoá chỉ cần ở đó; hai danh tính vẫn chung 1 đăng nhập Facebook.
+  Suite 865 pass. CHƯA thử cách 2 trên Facebook thật.
+
+#### Chế độ "auto": ưu tiên phiên riêng của Page, lỗi thì dùng phiên tài khoản cá nhân (2026-10-31)
+
+Yêu cầu của owner. Chế độ thứ 3 `page_session_mode="auto"`, là **mặc định cho Page đăng ký mới** (đổi được
+trong danh sách bằng ô chọn; `own_session`/`owner_session` vẫn dùng được khi muốn cố định một cách).
+- Thử phiên riêng của Page trước. Chỉ khi nó **không thể BẮT ĐẦU hành động** (chưa đăng nhập/file phiên hỏng,
+  trình duyệt không khởi động được, không xác nhận được đang là Page) mới chạy lại đúng tác vụ đó bằng phiên
+  của tài khoản cá nhân (chuyển sang Page → làm → chuyển về → mới lưu). Báo Telegram: tin đỏ cho biết phiên
+  riêng của Page cần sửa (kèm "bot sẽ thử lại bằng phiên cá nhân") + tin im lặng ghi nhận lần chạy dự phòng.
+- **Không bao giờ chạy dự phòng khi hành động đã bắt đầu** (lỗi giữa lúc đăng/bình luận) vì bài có thể đã lên —
+  thử lần 2 sẽ đăng trùng; cũng không dự phòng sau checkpoint, và không dự phòng khi chủ tài khoản không tồn
+  tại. Tối đa đúng 1 lần dự phòng. Kết quả báo là của lần thử cuối.
+- Mã: `run_task()` tách phần chạy 1 phiên thành `_run_attempt(..., use_owner)`; `AccountConfig.can_fall_back_to_owner`.
+- Review (vòng 4): sửa dự phòng giả khi chủ không tồn tại, lỗi 500 khi gửi tay giá trị chế độ lạ cho tài khoản
+  không phải Page. **Giữ nguyên:** Page bị chặn khi tài khoản cá nhân tạm dừng (chung đăng nhập — cố ý);
+  nhiều lần mở menu mỗi tác vụ; ô kiểm tra bình luận đọc `.first`. Suite 877 pass. Chưa thử dự phòng trên Facebook thật.
+

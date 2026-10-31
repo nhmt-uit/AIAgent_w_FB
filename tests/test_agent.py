@@ -14,6 +14,8 @@ tests/conftest.py's no_real_run_task fixture uses for admin.py's routes.
 """
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 
 from human_bot import agent, daily_limits
@@ -29,6 +31,7 @@ class _FakeSession:
     def __init__(self, is_alive: bool = True):
         self.page = None
         self._is_alive = is_alive
+        self.lock = asyncio.Lock()
 
     async def ensure_started(self) -> None:
         pass

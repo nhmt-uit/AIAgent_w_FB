@@ -398,6 +398,8 @@ async def _telegram_health_check_loop() -> None:
             await _register_telegram_commands()
             last_success_map = db.last_successful_action_per_account()
             for aid, account in get_all_accounts().items():
+                if account.uses_owner_session:
+                    continue  # shares its owner's login file — the owner's own check already covers it
                 # Isolated per-account (2026-10-05 self-review, round 4) —
                 # same pattern _resume_cooldown_maintenance_loop already
                 # uses: one account's bad data must not skip every OTHER
@@ -431,6 +433,7 @@ def _telegram_reply_for(command: str) -> str:
         return "\n\n".join(
             _account_health_telegram_text(aid, a, sync_statuses, last_success_map)
             for aid, a in get_all_accounts().items()
+            if not a.uses_owner_session
         ) or "Chưa có tài khoản nào."
     if command == "lich":
         return telegram_commands.schedule_text()
@@ -820,7 +823,11 @@ async def lifespan(app: FastAPI):
     # _telegram_health_check_loop() retries this on its own 6h cadence
     # (only while still uncached) if this first attempt fails.
     telegram_alerts.spawn(telegram_notify.refresh_bot_username())
-    active_accounts = [a for a in get_all_accounts().values() if a.status == AccountStatus.ACTIVE]
+    # A Page running on its owner's session has no browser of its own to warm up.
+    active_accounts = [
+        a for a in get_all_accounts().values()
+        if a.status == AccountStatus.ACTIVE and not a.uses_owner_session
+    ]
     await warm_up(active_accounts)
     poll_task = asyncio.create_task(_data_sync_poll_loop())
     fire_task = asyncio.create_task(_data_sync_fire_loop())

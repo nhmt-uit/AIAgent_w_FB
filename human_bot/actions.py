@@ -23,9 +23,12 @@ docs/skills/facebook-custom-actions.md for why these are kept separate.
 import re
 from dataclasses import dataclass
 
+from playwright.async_api import Error as PlaywrightError
+from playwright.async_api import Locator
 from playwright.async_api import Page
 from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 
+from human_bot.config import normalize_name
 from human_bot.humanize import (
     human_click,
     human_type,
@@ -71,6 +74,185 @@ async def _check_anomaly_or_raise(page: Page) -> None:
         # which catches AnomalyDetected specifically to do that. Never
         # retry past this point (docs/skills/anomaly-detection.md).
         raise AnomalyDetected(signal)
+
+
+# --- Acting as a Facebook Page (2026-10-31) ------------------------------
+# An account with AccountConfig.page_name set shares the owner's personal
+# login but must only ever act AS the Page. Facebook lists the identities you
+# are NOT currently using as "Switch to <name>" buttons in the account menu.
+# We act only on POSITIVE evidence: the owner's personal profile
+# (AccountConfig.personal_name) is offered as a switch target (so we are not
+# it) AND the Page itself is not offered (so we are it). A typo in EITHER
+# configured name therefore ends in a refusal, never in acting — acting as the
+# wrong identity (posting to the Page's groups from the personal profile) is
+# worse than not acting.
+_SWITCH_TO_RE = re.compile(r"^(Switch to|Chuyển sang)\s+(.+)$", re.IGNORECASE)
+_ACCOUNT_MENU_RE = re.compile(r"^(Account, your profile|Tài khoản)", re.IGNORECASE)
+# "Answer as <name>" / "Comment as <name>" (English, confirmed live) and
+# "... dưới tên <name>" / "... với tư cách <name>" (Vietnamese).
+_COMMENT_AS_RE = re.compile(
+    r"^(?:(?:comment|answer|reply)\s+as|.*?(?:dưới tên|với tư cách))\s+(.+?)\s*$", re.IGNORECASE
+)
+
+
+# Messages that mean "refused for identity reasons — the ACTION was never
+# attempted" (one place, so agent.py and the guards can't drift apart).
+# "identity_check_error" is a transient failure of the check itself (timeout,
+# detached element); the other two are definite: wrong identity, or the menu
+# did not prove the identity.
+IDENTITY_REFUSAL_PREFIXES = ("wrong_identity", "identity_unverified", "identity_check_error")
+IDENTITY_ALERT_PREFIXES = ("wrong_identity", "identity_unverified")  # NOT the transient "identity_check_error"
+
+
+# switch_to_identity() returns this prefix (+ the name) when the wanted identity
+# is simply not offered in the menu — i.e. we are probably already it. One
+# constant, shared by every caller that treats that case as benign.
+NO_SWITCH_BUTTON_PREFIX = "identity_unverified:no_switch_button_for_"
+
+
+def is_identity_refusal(message: str) -> bool:
+    return (message or "").startswith(IDENTITY_REFUSAL_PREFIXES)
+
+
+def needs_identity_alert(message: str) -> bool:
+    return (message or "").startswith(IDENTITY_ALERT_PREFIXES)
+
+
+_norm_name = normalize_name  # kept as a short local alias
+
+
+def classify_identity(offered: list[str], page_name: str, personal_name: str) -> str:
+    """"page" | "personal" | "unknown" from the names in the account menu's
+    "Switch to <name>" buttons. See the block comment above."""
+    if not offered or not page_name.strip() or not personal_name.strip():
+        return "unknown"
+    names = {_norm_name(n) for n in offered}
+    if _norm_name(page_name) in names:
+        return "personal"
+    if _norm_name(personal_name) in names:
+        return "page"
+    return "unknown"
+
+
+def comment_box_identity_problem(label: str | None, expected_page_name: str) -> str | None:
+    """None when the comment box's accessible name ("Answer as <Page>" /
+    "Comment as <Page>") names EXACTLY the expected Page (not merely contains
+    it), else a failure message."""
+    m = _COMMENT_AS_RE.match((label or "").strip())
+    if m and _norm_name(m.group(1)) == _norm_name(expected_page_name):
+        return None
+    return f"wrong_identity:comment_box_label={(label or '')[:80]!r}"
+
+
+async def _menu_switch_buttons(page: Page, pacing, mouse) -> list[tuple[str, "Locator"]]:
+    """facebook.com → account menu → every "Switch to <name>" button as
+    (name, button). The ONE copy of this sequence (reading the menu and
+    clicking in it must not drift apart). The caller closes the menu."""
+    await page.goto("https://www.facebook.com/", wait_until="domcontentloaded")
+    await pause_after_page_load(pacing)
+    await _check_anomaly_or_raise(page)
+    await human_click(page, page.get_by_role("button", name=_ACCOUNT_MENU_RE).first, mouse)
+    await pause_between_ui_steps(pacing)
+    switch_buttons = page.get_by_role("button", name=_SWITCH_TO_RE)
+    # .all() alone does not wait — give the menu time to render first.
+    await switch_buttons.first.wait_for(state="visible", timeout=8000)
+    found: list[tuple[str, Locator]] = []
+    for button in await switch_buttons.all():
+        label = (await button.get_attribute("aria-label", timeout=3000)) or (await button.inner_text(timeout=3000)) or ""
+        m = _SWITCH_TO_RE.match(label.strip())
+        if m:
+            found.append((m.group(2).strip(), button))
+    return found
+
+
+async def _close_menu(page: Page) -> None:
+    try:
+        await page.keyboard.press("Escape")  # never leave the menu open for the next task
+    except PlaywrightError:
+        pass
+
+
+async def _read_switch_targets(page: Page) -> list[str] | str:
+    """Names offered as "Switch to <name>" (= the identities NOT currently in
+    use), or a failure message ("identity_check_error:<ErrorName>", transient)."""
+    pacing = get_pacing_config()
+    mouse = get_mouse_config()
+    try:
+        return [name for name, _button in await _menu_switch_buttons(page, pacing, mouse)]
+    except PlaywrightError as e:  # includes timeouts and a detached/closed target
+        return f"identity_check_error:{type(e).__name__}"
+    finally:
+        await _close_menu(page)
+
+
+async def ensure_page_identity(page: Page, page_name: str, personal_name: str) -> str | None:
+    """None when the session is verified to be acting as `page_name`;
+    otherwise a failure message ("wrong_identity:..." / "identity_unverified:..."
+    / "identity_check_error:...") and the caller must NOT act."""
+    if not personal_name.strip():
+        return "identity_unverified:personal_name_not_configured"
+    offered = await _read_switch_targets(page)
+    if isinstance(offered, str):
+        return offered
+    verdict = classify_identity(offered, page_name, personal_name)
+    if verdict == "page":
+        return None
+    if verdict == "personal":
+        return f"wrong_identity:session_is_the_personal_profile (expected Page '{page_name}')"
+    return "identity_unverified:account_menu_does_not_show_the_expected_identities"
+
+
+async def ensure_personal_identity(page: Page, page_name: str, personal_name: str) -> str | None:
+    """The mirror check: None when the session is verified to be the PERSONAL
+    profile (the Page is offered as a switch target). Used to confirm a Page
+    task running inside the owner's session really switched back."""
+    if not personal_name.strip():
+        return "identity_unverified:personal_name_not_configured"
+    offered = await _read_switch_targets(page)
+    if isinstance(offered, str):
+        return offered
+    if classify_identity(offered, page_name, personal_name) == "personal":
+        return None
+    return "identity_unverified:session_is_not_confirmed_as_the_personal_profile"
+
+
+async def switch_to_identity(page: Page, target_name: str) -> str | None:
+    """Clicks "Switch to <target_name>" in the account menu (exact name, after
+    normalisation) and waits for Facebook to reload as that identity. None when
+    the click happened — callers still verify the result with
+    ensure_page_identity()/ensure_personal_identity(). Otherwise a failure
+    message; "identity_unverified:no_switch_button_for_…" specifically means
+    that identity is not offered (i.e. we are probably already it)."""
+    pacing = get_pacing_config()
+    mouse = get_mouse_config()
+    clicked = False
+    try:
+        for name, button in await _menu_switch_buttons(page, pacing, mouse):
+            if _norm_name(name) == _norm_name(target_name):
+                await human_click(page, button, mouse)
+                clicked = True  # the click closes the menu and reloads the page
+                await page.wait_for_load_state("domcontentloaded")
+                await pause_after_page_load(pacing)
+                return None
+        return f"{NO_SWITCH_BUTTON_PREFIX}{target_name!r}"
+    except PlaywrightError as e:
+        return f"identity_check_error:{type(e).__name__}"
+    finally:
+        if not clicked:
+            await _close_menu(page)
+
+
+async def restore_personal_identity(page: Page, page_name: str, personal_name: str) -> str | None:
+    """Puts a SHARED owner session back on the personal profile after a Page
+    task, and verifies it. None = confirmed personal. Safe when the switch to
+    the Page never happened (session already personal): the switch-back
+    button is then simply absent and the verification alone decides — so a
+    task that was refused before switching never produces a false "could not
+    restore" alarm."""
+    problem = await switch_to_identity(page, personal_name)
+    if problem is not None and not problem.startswith(NO_SWITCH_BUTTON_PREFIX):
+        return problem
+    return await ensure_personal_identity(page, page_name, personal_name)
 
 
 async def _close_chat_popups(page: Page, mouse, pacing) -> None:
@@ -807,6 +989,7 @@ async def comment_on_group_post(
     page: Page,
     post_url: str,
     content: str,
+    expected_page_name: str = "",
 ) -> ActionResult:
     """
     Recorded via Playwright Codegen against account "tu_iizuki" (English
@@ -903,6 +1086,18 @@ async def comment_on_group_post(
             "textbox",
             name=re.compile("comment|answer|bình luận|câu trả lời", re.IGNORECASE),
         )
+        if expected_page_name:
+            # Second, per-comment identity guard for a Page account (2026-10-31):
+            # the comment box is labelled "Answer as <Page>" / "Comment as
+            # <Page>" (confirmed live), so it names the identity that would
+            # actually post. Refuse if it is not the expected Page.
+            try:
+                label = await comment_box.first.get_attribute("aria-label", timeout=5000)
+            except PlaywrightError as e:
+                return ActionResult(success=False, message=f"identity_check_error:{type(e).__name__}")
+            problem = comment_box_identity_problem(label, expected_page_name)
+            if problem:
+                return ActionResult(success=False, message=problem)
         await human_click(page, comment_box, mouse)
         await human_type(page, content, config=get_human_typing_config())
 

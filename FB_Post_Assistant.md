@@ -1091,6 +1091,33 @@ Telegram dùng nội dung đã soạn sẵn; muốn sửa chữ vẫn phải và
   không bị AI viết lại lần nữa lúc đăng. Việc tự động đọc nhóm Zalo để lấy tin về được để lại
   sau (chỉ có đường không chính thức, có rủi ro bị khoá tài khoản Zalo).
 
+- **Chạy bằng danh tính Facebook Page (31/10).** Owner muốn dùng Page "Đơn Kỹ Sư Nhật" để đăng và
+  bình luận vào các nhóm của người khác (Page đã tham gia sẵn). Đã kiểm chứng bằng bản quay và hai
+  script thật: danh tính Page lưu được trong file phiên; các bước đăng bài giống hệt tài khoản cá nhân;
+  ô bình luận có tên "Answer as <Page>" và gửi bằng nút "Post comment" (đã đăng thử một bình luận thật
+  thành công). Vì vậy Page được coi như **một tài khoản riêng** trong hệ thống (hạn mức, danh sách
+  nhóm, nhật ký riêng), dùng chung đăng nhập cá nhân. **Điểm an toàn quan trọng nhất:** trước mỗi lần
+  đăng, bot mở menu tài khoản để chắc chắn đang là Page, và từ chối nếu không chắc (kể cả khi gõ
+  sai tên) để không bao giờ đăng nhầm bằng tài khoản cá nhân; từ chối thì báo Telegram. Còn chưa chạy
+  thử trọn vẹn một tin thật qua tài khoản Page, và hai danh tính dùng chung đăng nhập nên có rủi ro
+  liên đới (một bên bị Facebook đánh dấu có thể ảnh hưởng bên kia).
+- **Page gắn với tài khoản cá nhân + hai cách chạy (31/10).** Mỗi Page được tạo từ một tài khoản cá
+  nhân, nên ở trang quản lý tài khoản giờ có liên kết hai chiều: dòng của Page ghi nó thuộc tài khoản
+  cá nhân nào, dòng của tài khoản cá nhân liệt kê các Page của nó, kèm link sang báo cáo — để khi Page có
+  lỗi vẫn truy ngược được. Tác vụ của Page chạy được theo hai cách, đổi được ngay trong danh sách:
+  **(1) phiên riêng của Page** (mặc định, đã kiểm chứng), hoặc **(2) mượn phiên của tài khoản cá nhân,
+  chuyển sang đúng Page, làm xong chuyển về cá nhân**. Cách (2) tiện vì không cần giữ file phiên thứ hai,
+  nhưng rủi ro hơn vì hai danh tính dùng chung một trình duyệt, nên có nhiều lớp bảo vệ: mỗi lúc chỉ chạy
+  một tác vụ, không bao giờ lưu phiên khi đang ở danh tính Page, chỉ lưu sau khi đã xác nhận quay về tài
+  khoản cá nhân (không xác nhận được thì bỏ phiên và báo Telegram), và nếu tài khoản cá nhân bị Facebook
+  chặn (checkpoint) thì các Page của nó cũng tạm dừng. Cách (2) chưa được thử trên Facebook thật.
+- **Ưu tiên phiên của Page, lỗi thì tự dùng phiên tài khoản cá nhân (31/10).** Chế độ mặc định cho Page mới:
+  thử phiên riêng của Page trước; nếu phiên đó không dùng được ngay từ đầu (chưa đăng nhập, trình duyệt lỗi,
+  không xác nhận được đang là Page) thì chạy lại đúng tác vụ đó bằng phiên của tài khoản cá nhân (chuyển sang
+  Page rồi chuyển về). Chỉ chuyển cách khi **chưa hề đăng/bình luận**; nếu lỗi xảy ra giữa lúc đang đăng thì
+  không thử lại bằng cách khác, vì bài có thể đã lên và sẽ bị đăng trùng. Khi phải dự phòng, owner nhận cảnh báo
+  Telegram để biết phiên riêng của Page cần sửa lại. Chưa thử trên Facebook thật.
+
 Cố tình không đề xuất: soạn/đăng bài thật từ Telegram (rủi ro tin nhắn bị chuyển
 tiếp, tăng bề mặt rủi ro) và hỏi đáp ngôn ngữ tự nhiên qua AI (tốn chi phí, dễ
 trả lời sai số liệu).

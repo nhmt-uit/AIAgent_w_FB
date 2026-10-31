@@ -18,7 +18,7 @@ from typing import Awaitable, Callable
 from human_bot import actions, daily_limits, db, media, screenshots, telegram_notify
 from human_bot.actions import ActionResult, _group_id_from_url
 from human_bot.browser_pool import get_session
-from human_bot.config import AccountStatus, get_account
+from human_bot.config import get_all_accounts, AccountStatus, get_account
 from human_bot.runtime_config import get_joined_groups, get_media_config, set_account_paused
 from human_bot.safety import AnomalyDetected, RateLimiter
 from playwright.async_api import Page
@@ -46,6 +46,11 @@ class TaskRequest:
     # action.
     audience: str = "public"
     reasoning: str = ""
+    # Filled in by run_task() itself from the account (never by callers): the
+    # Page this task must act as, "" for a personal account. Lets the
+    # per-action identity guards in actions.py read it without re-resolving
+    # the account.
+    expected_page_name: str = ""
     # Where this task originated — recorded alongside every action in
     # human_bot/db.py's action_log so /admin/reports can tell manual clicks
     # apart from automated ones. "api" is the default because the most
@@ -87,6 +92,11 @@ class TaskResult:
     timestamp: str
 
 
+# Page accounts whose "wrong identity" alert was already sent (in-memory) —
+# one loud Telegram message per episode, not one per refused task.
+_wrong_identity_alerted: set[str] = set()
+
+
 # Maps a Task JSON `action` value to: (rate-limit bucket, the actions.py
 # function to call). Keep this in sync with
 # docs/skills/facebook-custom-actions.md and docs/agents/content-strategist.md.
@@ -108,7 +118,10 @@ _ACTION_DISPATCH: dict[str, tuple[str, Callable[[Page, TaskRequest], Awaitable[A
     ),
     "comment_on_group_post": (
         "comment",
-        lambda page, req: actions.comment_on_group_post(page, req.target_url, req.content),
+        lambda page, req: actions.comment_on_group_post(
+            page, req.target_url, req.content,
+            expected_page_name=req.expected_page_name,
+        ),
     ),
     "like_post": (
         "like",
@@ -228,6 +241,228 @@ async def _notify_telegram_for_attempt(
             )
 
 
+def _owner_session_usable(account) -> bool:
+    """A Page's owner exists and is a personal account — a fallback to the
+    owner's session can only succeed if so (a retry would fail identically)."""
+    owner = get_all_accounts().get(account.owner_account_id)
+    return owner is not None and not owner.page_name
+
+
+@dataclass
+class _Attempt:
+    success: bool
+    message: str
+    screenshot_path: str | None
+    anomaly_paused: bool
+    action_started: bool
+
+
+async def _run_attempt(
+    request: TaskRequest, account, action_fn, rate_limit_bucket: str, limiter: RateLimiter, use_owner: bool,
+) -> _Attempt:
+    """ONE attempt at a task on ONE browser session: the account's own
+    (`use_owner=False`) or, for a Page, its owner's with a switch to the Page
+    and back (`use_owner=True`). run_task() calls this once, or twice when a
+    Page in "auto" mode falls back (see PAGE_MODE_AUTO)."""
+    success = False
+    message = ""
+    session = None
+    lock_held = False
+    switched_identity = False  # owner-session mode: this task changed the SHARED session's identity
+    screenshot_path = None
+    anomaly_paused = False  # suppresses the redundant per-attempt report below — see its use site
+    action_started = False  # True once the real action was invoked (no fallback to another session after that)
+    try:
+        # Which browser session runs this task: normally the account's own; a
+        # Page configured as "owner_session" borrows its owning personal
+        # account's session (switching to the Page for the task and back).
+        session_account = account
+        if use_owner:
+            session_account = get_all_accounts().get(account.owner_account_id)
+        if session_account is None or (use_owner and session_account.page_name):
+            message = f"page_owner_missing:{account.owner_account_id}"
+        else:
+            session = get_session(session_account)
+            # One task at a time per browser page: the owner's session is shared
+            # by the personal account and its Pages.
+            await session.lock.acquire()
+            lock_held = True
+            await session.ensure_started()
+            identity_problem = None
+            if account.page_name:
+                # A Page account must only ever act AS the Page — verified before
+                # EVERY action (not cached per browser session: Facebook can flip
+                # the active identity mid-session) and refused otherwise (see
+                # actions.ensure_page_identity()).
+                request = replace(request, expected_page_name=account.page_name)
+                if use_owner:
+                    switched_identity = True  # set first: even a half-done switch must be undone below
+                    session.identity_dirty = True  # nothing may persist this session until it is verified personal again
+                    identity_problem = await actions.switch_to_identity(session.page, account.page_name)
+                    if identity_problem is not None and identity_problem.startswith(actions.NO_SWITCH_BUTTON_PREFIX):
+                        # "Switch to <Page>" is not offered: either we are ALREADY the
+                        # Page (fine — verified positively just below) or the name is
+                        # wrong (the verification refuses). Not a refusal by itself.
+                        identity_problem = None
+                if identity_problem is None:
+                    identity_problem = await actions.ensure_page_identity(
+                        session.page, account.page_name, account.personal_name,
+                    )
+            if identity_problem is not None:
+                success, message = False, identity_problem
+            else:
+                action_started = True
+                result = await action_fn(session.page, request)
+                success = result.success
+                message = result.message
+            # Loud alert, once per episode — also covers the per-comment label
+            # guard inside comment_on_group_post (same "wrong_identity" family).
+            if account.page_name:
+                alert_key = f"{account.account_id}:{'owner' if use_owner else 'own'}"
+                if actions.needs_identity_alert(message):
+                    if alert_key not in _wrong_identity_alerted:
+                        what_next = (
+                            "Bot sẽ thử lại bằng phiên của tài khoản cá nhân."
+                            if account.can_fall_back_to_owner and not use_owner and _owner_session_usable(account)
+                            else "Bot đã từ chối đăng. Cần chuyển lại sang Page và lưu phiên."
+                        )
+                        await telegram_notify.send_message(
+                            f"🔴 {account.account_id}: phiên đăng nhập KHÔNG xác nhận được là danh tính Page "
+                            f"'{account.page_name}' — {what_next}\n{message}",
+                            silent=False,
+                        )
+                        _wrong_identity_alerted.add(alert_key)
+                elif success:
+                    _wrong_identity_alerted.discard(alert_key)
+    except AnomalyDetected as e:
+        # This is what makes docs/skills/anomaly-detection.md's "never
+        # retry past this point" actually true, instead of just aborting
+        # this one attempt and letting the account get tried again next
+        # time as if nothing happened. Persisted via runtime_config.json
+        # so it survives a service restart too — stays paused until a
+        # human reviews and resumes it at /admin/accounts.
+        message = str(e)
+        anomaly_paused = True
+        try:
+            set_account_paused(request.account_id, True, reason=message)
+            if account.page_name and account.owner_account_id:
+                # A Page shares its owner's Facebook login: a checkpoint here
+                # is a checkpoint on the personal account too.
+                set_account_paused(account.owner_account_id, True, reason=f"{message} (via Page {request.account_id})")
+        except Exception:  # noqa: BLE001 — the task must still return a result even if this write fails
+            pass
+        # Loud (not silent) Telegram alert — this is exactly the moment
+        # the account transitions to paused, so it naturally fires once,
+        # no dedup bookkeeping needed (2026-10-05, alert type 1/5).
+        await telegram_notify.send_message(
+            f"🔴 Tài khoản {request.account_id} đã bị TẠM DỪNG\nLý do: {message}",
+            silent=False,
+        )
+    except Exception as e:  # noqa: BLE001 — surfaced to caller as a failed TaskResult
+        message = f"error:{e}"
+    finally:
+        try:
+            # Evidence screenshot — success or failure — taken here, not inside
+            # each actions.py function, for the same "one choke point" reason as
+            # db.log_action() above: session.page is whatever state the action
+            # left it in (the browser page persists; nothing closes it), so this
+            # is close enough to the actual moment of success/failure without
+            # needing every action function to know about screenshots at all.
+            # Taken BEFORE an owner-session Page task switches back, so it shows
+            # the post/comment, not the facebook.com home it returns to. None
+            # when there's no page to shoot from (an early-exit failure above —
+            # paused account, unsupported action, rate limited — none of which
+            # ever opened a browser).
+            if session is not None and session.page is not None:
+                screenshot_path = await screenshots.capture(session.page, request.account_id, request.action, success)
+
+            # Whether the browser was still up when the attempt ended — decided
+            # BEFORE any switch-back/close below can change it (see the
+            # rate-limit comment further down).
+            session_alive_after_attempt = session is not None and session.is_alive()
+
+            # Owner-session mode: put the SHARED session back on the personal
+            # profile, verified, before anything is saved. A session left on the
+            # Page identity would make the next PERSONAL task act as the Page,
+            # and saving it would write the Page identity into the personal
+            # login file. If it can't be confirmed, the session is discarded
+            # unsaved (the next task starts clean from the last good file).
+            # After a checkpoint (AnomalyDetected) no further clicking is done on
+            # the flagged login: the session is just closed unsaved.
+            restored = True
+            if switched_identity and session is not None:
+                restored = False
+                restore_problem = None
+                if anomaly_paused:
+                    restore_problem = "skipped_after_anomaly"
+                elif session_alive_after_attempt:
+                    try:
+                        restore_problem = await actions.restore_personal_identity(
+                            session.page, account.page_name, account.personal_name,
+                        )
+                    except Exception as e:  # noqa: BLE001 — treated as "not restored" below
+                        restore_problem = f"error:{type(e).__name__}"
+                else:
+                    restore_problem = "browser_not_alive"
+                if restore_problem is None:
+                    restored = True
+                    session.identity_dirty = False
+                else:
+                    await session.close(save=False)  # also clears identity_dirty
+                    if not anomaly_paused and session_alive_after_attempt:
+                        # Only worth a loud alert when the browser was fine yet the
+                        # switch-back could not be proven; a crashed browser or a
+                        # checkpoint already has its own signal.
+                        await telegram_notify.send_message(
+                            f"🔴 {account.owner_account_id}: sau tác vụ của Page {account.account_id} không xác nhận được "
+                            f"đã chuyển về hồ sơ cá nhân ({restore_problem}) — đã đóng phiên mà KHÔNG lưu; "
+                            f"tác vụ kế tiếp sẽ mở lại từ phiên đã lưu.",
+                            silent=False,
+                        )
+
+            # Save the login session (cookies/localStorage) right after every
+            # task, not only when the service shuts down cleanly. This is what
+            # protects against losing a session on Ctrl+C / crash / kill -9 —
+            # see human_bot/browser_pool.py's save_state() for why a
+            # shutdown-only save is not reliable enough on its own.
+            if session is not None and restored:
+                await session.save_state()
+            # Only charge this attempt against the account's rate-limit gap
+            # (docs/skills/rate-limiting-pacing.md) when it plausibly sent real
+            # traffic to Facebook. `success` covers the obvious case. Otherwise,
+            # check whether the browser session SURVIVED the failure
+            # (session.is_alive(), human_bot/browser_pool.py) — every action in
+            # actions.py starts with page.goto(...) and never deliberately
+            # closes the page/context/browser on error, so if the session is
+            # still alive right after a failed attempt, that failure happened
+            # DURING a real page load/interaction (selector not found, FB
+            # rejected it, a timeout mid-navigation, ...) — genuine contact was
+            # made, so it counts exactly like before.
+            #
+            # If the session is NOT alive, the failure was an infra problem —
+            # ensure_started() never got a working browser at all, or (the
+            # 2026-09-09 incident) the browser/page died out from under us
+            # between the liveness check and the actual page.goto(), raising
+            # "Target page, context or browser has been closed" before a
+            # single byte reached Facebook's servers. Charging the account's
+            # rate-limit gap for that would throttle it for something it never
+            # actually did — so this case is deliberately NOT recorded here.
+            # (Computed before the switch-back step above, so closing the
+            # session there can't make a crashed browser look like it survived.)
+            session_survived = session_alive_after_attempt
+            # A refusal by the identity check made no attempt at the ACTION, so
+            # it must not start the account's rate-limit gap (and throttle the
+            # first real post after the owner fixes the session).
+            identity_refused = actions.is_identity_refusal(message) or message.startswith("page_owner_missing")
+            if success or (session_survived and not identity_refused):
+                limiter.record(rate_limit_bucket, success)
+        finally:
+            if lock_held and session is not None:
+                session.lock.release()
+
+    return _Attempt(success, message, screenshot_path, anomaly_paused, action_started)
+
+
 async def run_task(request: TaskRequest) -> TaskResult:
     account = get_account(request.account_id)
 
@@ -240,6 +475,20 @@ async def run_task(request: TaskRequest) -> TaskResult:
             screenshot_path=None,
             timestamp=datetime.now(timezone.utc).isoformat(),
         )
+
+    if account.page_name:
+        # A Page shares its owner's Facebook login: if the owner is paused
+        # (e.g. a checkpoint), the Page must not keep driving that login.
+        owner = get_all_accounts().get(account.owner_account_id)
+        if owner is not None and owner.status != AccountStatus.ACTIVE:
+            message = f"account_paused:{owner.account_id} (owner of Page {request.account_id})"
+            _log_result(request, False, message)
+            return TaskResult(
+                success=False,
+                message=message,
+                screenshot_path=None,
+                timestamp=datetime.now(timezone.utc).isoformat(),
+            )
 
     if request.action not in _ACTION_DISPATCH:
         message = f"unsupported_action:{request.action}"
@@ -284,82 +533,28 @@ async def run_task(request: TaskRequest) -> TaskResult:
             timestamp=datetime.now(timezone.utc).isoformat(),
         )
 
-    success = False
-    message = ""
-    session = None
-    anomaly_paused = False  # suppresses the redundant per-attempt report below — see its use site
-    try:
-        session = get_session(account)
-        await session.ensure_started()
-        result = await action_fn(session.page, request)
-        success = result.success
-        message = result.message
-    except AnomalyDetected as e:
-        # This is what makes docs/skills/anomaly-detection.md's "never
-        # retry past this point" actually true, instead of just aborting
-        # this one attempt and letting the account get tried again next
-        # time as if nothing happened. Persisted via runtime_config.json
-        # so it survives a service restart too — stays paused until a
-        # human reviews and resumes it at /admin/accounts.
-        message = str(e)
-        anomaly_paused = True
-        try:
-            set_account_paused(request.account_id, True, reason=message)
-        except Exception:  # noqa: BLE001 — the task must still return a result even if this write fails
-            pass
-        # Loud (not silent) Telegram alert — this is exactly the moment
-        # the account transitions to paused, so it naturally fires once,
-        # no dedup bookkeeping needed (2026-10-05, alert type 1/5).
+    # Which session first: an owner-session Page goes straight to its owner's;
+    # everything else (incl. an "auto" Page) starts with the account's own.
+    attempt = await _run_attempt(request, account, action_fn, rate_limit_bucket, limiter, use_owner=account.uses_owner_session)
+    if (
+        account.can_fall_back_to_owner
+        and not attempt.success
+        and not attempt.action_started
+        and not attempt.anomaly_paused
+        and _owner_session_usable(account)
+    ):
+        # The Page's own session could not even START the action (logged out,
+        # browser failure, identity not confirmed) — nothing was posted, so it
+        # is safe to try the same task through the owner's session. Never done
+        # after the action began: a second try could double-post.
         await telegram_notify.send_message(
-            f"🔴 Tài khoản {request.account_id} đã bị TẠM DỪNG\nLý do: {message}",
-            silent=False,
+            f"↪️ Page {account.account_id}: phiên riêng không dùng được ({attempt.message}) — "
+            f"thử lại bằng phiên của tài khoản cá nhân {account.owner_account_id}.",
+            silent=True,
         )
-    except Exception as e:  # noqa: BLE001 — surfaced to caller as a failed TaskResult
-        message = f"error:{e}"
-    finally:
-        # Save the login session (cookies/localStorage) right after every
-        # task, not only when the service shuts down cleanly. This is what
-        # protects against losing a session on Ctrl+C / crash / kill -9 —
-        # see human_bot/browser_pool.py's save_state() for why a
-        # shutdown-only save is not reliable enough on its own.
-        if session is not None:
-            await session.save_state()
-        # Only charge this attempt against the account's rate-limit gap
-        # (docs/skills/rate-limiting-pacing.md) when it plausibly sent real
-        # traffic to Facebook. `success` covers the obvious case. Otherwise,
-        # check whether the browser session SURVIVED the failure
-        # (session.is_alive(), human_bot/browser_pool.py) — every action in
-        # actions.py starts with page.goto(...) and never deliberately
-        # closes the page/context/browser on error, so if the session is
-        # still alive right after a failed attempt, that failure happened
-        # DURING a real page load/interaction (selector not found, FB
-        # rejected it, a timeout mid-navigation, ...) — genuine contact was
-        # made, so it counts exactly like before.
-        #
-        # If the session is NOT alive, the failure was an infra problem —
-        # ensure_started() never got a working browser at all, or (the
-        # 2026-09-09 incident) the browser/page died out from under us
-        # between the liveness check and the actual page.goto(), raising
-        # "Target page, context or browser has been closed" before a
-        # single byte reached Facebook's servers. Charging the account's
-        # rate-limit gap for that would throttle it for something it never
-        # actually did — so this case is deliberately NOT recorded here.
-        session_survived = session is not None and session.is_alive()
-        if success or session_survived:
-            limiter.record(rate_limit_bucket, success)
-
-    # Evidence screenshot — success or failure — taken here, not inside
-    # each actions.py function, for the same "one choke point" reason as
-    # db.log_action() above: session.page is whatever state the action
-    # left it in (the browser page persists; nothing closes it), so this
-    # is close enough to the actual moment of success/failure without
-    # needing every action function to know about screenshots at all.
-    # None when there's no page to shoot from (an early-exit failure
-    # above — paused account, unsupported action, rate limited — none of
-    # which ever opened a browser).
-    screenshot_path = None
-    if session is not None and session.page is not None:
-        screenshot_path = await screenshots.capture(session.page, request.account_id, request.action, success)
+        attempt = await _run_attempt(request, account, action_fn, rate_limit_bucket, limiter, use_owner=True)
+    success, message = attempt.success, attempt.message
+    screenshot_path, anomaly_paused = attempt.screenshot_path, attempt.anomaly_paused
 
     _log_result(request, success, message, screenshot_path)
     # Skip the per-attempt report when AnomalyDetected already sent its own

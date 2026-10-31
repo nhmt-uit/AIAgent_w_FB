@@ -17,6 +17,7 @@ processes, this needs to move to a model where exactly one process owns
 each account's browser (a browser can't safely be driven by two processes
 at once).
 """
+import asyncio
 import os
 
 from playwright.async_api import Browser, BrowserContext, Page, Playwright, async_playwright
@@ -42,6 +43,16 @@ class AccountSession:
         self.browser: Browser | None = None
         self.context: BrowserContext | None = None
         self.page: Page | None = None
+        # Serialises tasks on this ONE browser page (2026-10-31): the owner's
+        # session is now shared by the personal account and its Pages (a Page
+        # task switches identity on it and back), so two tasks must never
+        # drive it at once.
+        self.lock = asyncio.Lock()
+        # True while a Page task has switched this (shared) session to the
+        # Page identity and not yet switched it back. save_state() refuses
+        # while set, so no path — a shutdown, restart_session(), a stale-page
+        # close — can write the Page identity into the personal login file.
+        self.identity_dirty = False
 
     def is_alive(self) -> bool:
         """True only if there's a page/context/browser AND it's actually
@@ -129,7 +140,7 @@ class AccountSession:
         shutdown finishes saving state (see close() below). Best-effort: a
         failed save here must never crash the caller.
         """
-        if self.context is None:
+        if self.context is None or self.identity_dirty:
             return
         try:
             await self.context.storage_state(path=str(self.account.storage_state_path))
@@ -139,14 +150,15 @@ class AccountSession:
                 f"'{self.account.account_id}': {e}"
             )
 
-    async def close(self) -> None:
+    async def close(self, save: bool = True) -> None:
         # NOTE on the Ctrl+C traceback some operators see here: SIGINT goes
         # to the whole process group, including Playwright's driver
         # subprocess, which can already be dead by the time this runs. Each
         # step below is wrapped so a broken pipe during shutdown never
         # blocks the others or crashes uvicorn's shutdown sequence — this
         # is a best-effort "clean up if we still can", not a guarantee.
-        await self.save_state()
+        if save:  # False = the session may be in a wrong state; never write it to disk
+            await self.save_state()
         if self.browser is not None:
             try:
                 await self.browser.close()
@@ -161,6 +173,7 @@ class AccountSession:
         self.context = None
         self.browser = None
         self._playwright = None
+        self.identity_dirty = False  # the browser is gone; the next one starts from the saved file
 
 
 def get_session(account: AccountConfig) -> AccountSession:

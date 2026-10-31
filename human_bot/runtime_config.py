@@ -751,6 +751,9 @@ def reset_visa_type_names() -> None:
 # and /admin/accounts blocks that case up front.
 
 _ACCOUNTS_KEY = "accounts"
+# Mirrors human_bot/config.py's PAGE_SESSION_MODES (that module imports this
+# one lazily, so it can't be imported from here at module level).
+_PAGE_SESSION_MODES = ("own_session", "owner_session", "auto")
 
 
 def get_registered_accounts() -> list[dict[str, str]]:
@@ -763,18 +766,69 @@ def get_registered_accounts() -> list[dict[str, str]]:
         if isinstance(item, dict) and str(item.get("account_id", "")).strip():
             account_id = str(item["account_id"]).strip()
             display_name = str(item.get("display_name", "")).strip() or account_id
-            result.append({"account_id": account_id, "display_name": display_name})
+            mode = str(item.get("page_session_mode", "") or "own_session").strip()
+            if mode not in _PAGE_SESSION_MODES:
+                logger.warning(
+                    "runtime_config: account %r has unknown page_session_mode %r — using 'own_session'", account_id, mode,
+                )
+                mode = "own_session"
+            result.append({
+                "account_id": account_id, "display_name": display_name,
+                "page_name": str(item.get("page_name", "") or "").strip(),
+                "personal_name": str(item.get("personal_name", "") or "").strip(),
+                "owner_account_id": str(item.get("owner_account_id", "") or "").strip(),
+                "page_session_mode": mode,
+            })
     return result
 
 
-def save_registered_account(account_id: str, display_name: str) -> None:
+def save_registered_account(
+    account_id: str, display_name: str, page_name: str = "", personal_name: str = "",
+    owner_account_id: str = "", page_session_mode: str = "auto",
+) -> None:
+    """Raises ValueError for an unknown `page_session_mode`.
+
+    `page_name` (2026-10-31): set for an account that acts as a Facebook
+    PAGE rather than a personal profile — its exact name as it appears in
+    "Switch to <name>"; `personal_name` is the owner's own profile name, the
+    positive proof of being the Page. human_bot/actions.py's
+    ensure_page_identity() refuses to act unless the session really is that
+    Page."""
+    if page_session_mode not in _PAGE_SESSION_MODES:
+        raise ValueError(f"unknown page_session_mode: {page_session_mode!r}")
     accounts = [a for a in get_registered_accounts() if a["account_id"] != account_id]
-    accounts.append({"account_id": account_id, "display_name": display_name.strip() or account_id})
+    entry = {"account_id": account_id, "display_name": display_name.strip() or account_id}
+    if page_name.strip():
+        entry["page_name"] = page_name.strip()
+        entry["personal_name"] = personal_name.strip()
+        entry["owner_account_id"] = owner_account_id.strip()
+        entry["page_session_mode"] = page_session_mode
+    accounts.append(entry)
     data = _read_all()
     data[_ACCOUNTS_KEY] = accounts
     RUNTIME_CONFIG_PATH.write_text(
         json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8"
     )
+
+
+def set_page_session_mode(account_id: str, mode: str) -> bool:
+    """Switches a registered Page account between "own_session" and
+    "owner_session" (see config.AccountConfig.page_session_mode). False if
+    the account is not a registered Page account."""
+    if mode not in _PAGE_SESSION_MODES:
+        raise ValueError(f"unknown page_session_mode: {mode!r}")
+    data = _read_all()
+    raw = data.get(_ACCOUNTS_KEY, [])
+    changed = False
+    if isinstance(raw, list):
+        for item in raw:
+            if isinstance(item, dict) and item.get("account_id") == account_id and item.get("page_name"):
+                item["page_session_mode"] = mode
+                changed = True
+    if changed:
+        data[_ACCOUNTS_KEY] = raw
+        RUNTIME_CONFIG_PATH.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+    return changed
 
 
 def delete_registered_account(account_id: str) -> None:

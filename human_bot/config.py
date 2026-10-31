@@ -6,6 +6,8 @@ for the reasoning behind these defaults.
 """
 from __future__ import annotations
 
+import unicodedata
+
 import uuid
 from collections.abc import Iterable
 from dataclasses import dataclass, field, replace
@@ -167,6 +169,22 @@ COOLDOWN_WEEK2_STEP_UP_TIER: dict[str, str | None] = {
 }
 
 
+def normalize_name(name: str) -> str:
+    """A Facebook profile/Page name compared loosely: Unicode NFC, case-folded,
+    whitespace collapsed. Shared by the runtime identity check and the admin's
+    duplicate-Page validation so the two can never disagree."""
+    return " ".join(unicodedata.normalize("NFC", name or "").casefold().split())
+
+
+PAGE_MODE_OWN_SESSION = "own_session"
+PAGE_MODE_OWNER_SESSION = "owner_session"
+# Default for new Page accounts: try the Page's own session first and fall
+# back to the owner's session only when the own one could not even START the
+# action (never after an action was attempted — that could double-post).
+PAGE_MODE_AUTO = "auto"
+PAGE_SESSION_MODES = (PAGE_MODE_OWN_SESSION, PAGE_MODE_OWNER_SESSION, PAGE_MODE_AUTO)
+
+
 @dataclass
 class AccountConfig:
     account_id: str
@@ -193,10 +211,48 @@ class AccountConfig:
     # layered on top below in get_all_accounts() — see that function's
     # docstring.
     sponsored_only: bool = False
+    # Non-empty = this account acts as a Facebook PAGE (the Page's exact name,
+    # as in "Switch to <name>"), sharing the owner's personal login but with
+    # its own storage_state, limits, groups and log (2026-10-31). Every action
+    # first verifies the session really IS that Page and refuses otherwise —
+    # see human_bot/actions.py's ensure_page_identity().
+    page_name: str = ""
+    # The owner's PERSONAL profile name (as in the "Switch to <name>" button
+    # shown while acting as the Page). Required for a Page account: the
+    # identity check treats "personal name offered + Page name not offered"
+    # as the only proof of being the Page.
+    personal_name: str = ""
+    # The PERSONAL account this Page belongs to (a Page is created from, and
+    # is only reachable through, a personal profile). Lets the admin UI show
+    # the link both ways and trace a Page's problems from its owner.
+    owner_account_id: str = ""
+    # How a Page account's tasks run:
+    #  - "own_session"  : its own browser + its own storage_state (an already
+    #                     switched-to-Page copy of the owner's login);
+    #  - "owner_session": the OWNER's browser session, switching to the Page
+    #                     for the task and back to the personal profile
+    #                     afterwards (no storage_state of its own);
+    #  - "auto"         : "own_session" first; if that cannot start the action
+    #                     (logged out, browser failure, identity not
+    #                     confirmed) then "owner_session" for the same task.
+    page_session_mode: str = PAGE_MODE_OWN_SESSION
+
+    @property
+    def uses_owner_session(self) -> bool:
+        return bool(self.page_name) and self.page_session_mode == PAGE_MODE_OWNER_SESSION and bool(self.owner_account_id)
+
+    @property
+    def can_fall_back_to_owner(self) -> bool:
+        return bool(self.page_name) and self.page_session_mode == PAGE_MODE_AUTO and bool(self.owner_account_id)
+
+    @property
+    def session_account_id(self) -> str:
+        """Whose browser session / login file this account's tasks use."""
+        return self.owner_account_id if self.uses_owner_session else self.account_id
 
     @property
     def storage_state_path(self) -> Path:
-        return ACCOUNTS_DIR / self.account_id / "storage_state.json"
+        return ACCOUNTS_DIR / self.session_account_id / "storage_state.json"
 
     @property
     def action_log_path(self) -> Path:
@@ -256,9 +312,23 @@ def get_all_accounts() -> dict[str, AccountConfig]:
 
     result = dict(ACCOUNTS)
     for entry in get_registered_accounts():
-        if entry["account_id"] not in result:
+        if entry["account_id"] in result:
+            # A code-level entry wins on id collision — but never silently
+            # DROP a registered Page identity (that would run the account with
+            # no identity guard, the unsafe direction).
+            if entry.get("page_name") and not result[entry["account_id"]].page_name:
+                result[entry["account_id"]] = replace(
+                    result[entry["account_id"]],
+                    page_name=entry["page_name"], personal_name=entry.get("personal_name", ""),
+                    owner_account_id=entry.get("owner_account_id", ""),
+                    page_session_mode=entry.get("page_session_mode", PAGE_MODE_OWN_SESSION),
+                )
+        else:
             result[entry["account_id"]] = AccountConfig(
-                account_id=entry["account_id"], display_name=entry["display_name"]
+                account_id=entry["account_id"], display_name=entry["display_name"],
+                page_name=entry.get("page_name", ""), personal_name=entry.get("personal_name", ""),
+                owner_account_id=entry.get("owner_account_id", ""),
+                page_session_mode=entry.get("page_session_mode", PAGE_MODE_OWN_SESSION),
             )
     for aid in get_removed_account_ids():
         result.pop(aid, None)
@@ -289,6 +359,12 @@ def get_all_accounts() -> dict[str, AccountConfig]:
                 # account already has — no cooldown preset defines it.
             ))
     return result
+
+
+def pages_of(owner_account_id: str, accounts: dict[str, "AccountConfig"] | None = None) -> list["AccountConfig"]:
+    """The Page accounts that belong to a personal account."""
+    accounts = get_all_accounts() if accounts is None else accounts
+    return [a for a in accounts.values() if a.page_name and a.owner_account_id == owner_account_id]
 
 
 def get_account(account_id: str) -> AccountConfig:
