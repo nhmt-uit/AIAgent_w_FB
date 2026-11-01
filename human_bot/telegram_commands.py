@@ -20,7 +20,7 @@ from __future__ import annotations
 import re
 from datetime import datetime, timedelta, timezone
 
-from human_bot import daily_limits, db, schedule_store
+from human_bot import daily_limits, db, overview, schedule_store
 from human_bot.config import get_all_accounts
 from human_bot.telegram_alerts import jst_hhmm
 
@@ -118,17 +118,12 @@ def _boundary_hhmm() -> str:
     return (daily_limits.business_day_start(datetime.now(timezone.utc)) + _JST).strftime("%H:%M")
 
 
-def _day_bounds(now: datetime) -> tuple[datetime, datetime]:
-    start = daily_limits.business_day_start(now)
-    return start, start + timedelta(days=1)
+# "today" and time parsing are defined once, in human_bot/overview.py (also used by the admin home page)
+_day_bounds = overview.day_bounds
 
 
 def _parse(iso: str) -> datetime | None:
-    try:
-        dt = datetime.fromisoformat(iso.replace("Z", "+00:00"))
-    except ValueError:
-        return None
-    return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+    return overview.parse_iso(iso)
 
 
 _ACTION_LABEL = {
@@ -186,16 +181,7 @@ def schedule_text(now: datetime | None = None) -> str:
     the ones still upcoming — otherwise "sắp đăng" would hide that
     something is stuck."""
     now = now or datetime.now(timezone.utc)
-    _start, end = _day_bounds(now)
-    today, later, stuck = [], 0, 0
-    for t in schedule_store.list_pending():
-        when = _parse(t.scheduled_at)
-        if when is not None and when >= end:
-            later += 1
-            continue
-        today.append(t)
-        if when is None or when <= now:
-            stuck += 1
+    today, stuck, later = overview.split_pending(now)
     later_line = f"📆 Các ngày sau: {later} bài."
     accounts = get_all_accounts()
     if not today:
@@ -265,15 +251,8 @@ def _queue_footer(now: datetime) -> str:
     same way /schedule does, so the two never disagree: tasks overdue but still pending are
     included and called out. Only what needs attention gets a line, each with the command that
     deals with it."""
-    _start, end = _day_bounds(now)
-    left, stuck = 0, 0
-    for t in schedule_store.list_pending():
-        when = _parse(t.scheduled_at)
-        if when is not None and when >= end:
-            continue
-        left += 1
-        if when is None or when <= now:
-            stuck += 1
+    queue = overview.queue_counts(now)  # the same numbers the admin home page shows
+    left, stuck = queue.left_today, queue.due
     from human_bot import telegram_failures  # local import — it imports modules that import this one
     missed, errors, reviews = len(schedule_store.list_missed()), telegram_failures.open_failure_count(), len(schedule_store.list_needs_review())
     lines = ["Tình hình hiện tại:", f"📅 Chờ đăng hôm nay: {left}" + (f" (⏰ {stuck} đã quá giờ chưa chạy)" if stuck else "")]

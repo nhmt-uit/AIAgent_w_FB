@@ -62,22 +62,20 @@ def client(isolated_runtime_config, isolated_accounts_dir, isolated_db, isolated
 
 
 def _card_html(resp_text: str, display_name: str) -> str:
-    """Isolates one account's health-card snippet — anchored on the
-    `<h3>`'s exact markup (not a bare display_name match, which also
-    matches the top pause-warning banner's own mention of the same name
-    when the account is paused) so assertions don't accidentally match
-    the banner OR the always-present hardcoded "tu_iizuki" account's own
-    (unrelated) card."""
-    anchor = f">{display_name} <span"
+    """Isolates one account's health row on the home page — anchored on the row's own name markup (not a
+    bare display_name match, which also matches the "Cần chú ý" list that names the same account) and cut
+    at the next account's row, so assertions never pick up another account's lines (the always-present
+    hardcoded "tu_iizuki" account renders its own, unrelated "chưa có.../không đọc được..." lines)."""
+    anchor = f'<span class="health-name">{display_name} <span'
     start = resp_text.index(anchor)
-    next_card = resp_text.find('<div class="card"', start)
-    return resp_text[start:next_card if next_card != -1 else None]
+    next_row = resp_text.find('<details class="health-row', start)
+    return resp_text[start:next_row if next_row != -1 else None]
 
 
 def test_admin_home_renders_ok(client):
     resp = client.get("/admin")
     assert resp.status_code == 200
-    assert "Bảng điều khiển" in resp.text
+    assert "Hôm nay" in resp.text and "Bảng điều khiển" not in resp.text
 
 
 def test_admin_home_shows_active_account_with_no_history_as_neutral(client):

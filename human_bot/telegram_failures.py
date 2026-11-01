@@ -592,7 +592,9 @@ def _apply_reply_locked(ticket: dict[str, Any], new_text: str, actor: str) -> Re
 
 # --- listing (/error) ----------------------------------------------------------------------------------
 
-def _ticket_for_failed_task(task: schedule_store.ScheduledTask, index: dict[str, dict[str, Any]]) -> dict[str, Any]:
+def _ticket_for_failed_task(
+    task: schedule_store.ScheduledTask, index: dict[str, dict[str, Any]], *, create: bool = True,
+) -> dict[str, Any]:
     existing = index.get(task.task_id)
     if existing is not None:
         failed = schedule_store.failed_at(task.task_id)
@@ -610,6 +612,8 @@ def _ticket_for_failed_task(task: schedule_store.ScheduledTask, index: dict[str,
     )
     if failed is not None:
         fields["failed_at"] = failed.isoformat()
+    if not create:  # read-only caller (the admin home page counts, it does not file anything): a stand-in, never stored
+        return {"id": "", "status": failure_tickets.OPEN, **fields}
     ticket = failure_tickets.create(**fields)
     index[task.task_id] = ticket
     return ticket
@@ -619,14 +623,21 @@ def open_failures(now: datetime | None = None) -> list[dict[str, Any]]:
     """Failures from the last LIST_WINDOW_HOURS still waiting for a decision:
     open tickets + failed task files that have no ticket yet (made on the fly).
     Newest first."""
+    return _failure_candidates(now, create=True)
+
+
+def _failure_candidates(now: datetime | None, *, create: bool) -> list[dict[str, Any]]:
+    """open_failures() — or, with create=False, the same LIST for COUNTING only: it writes nothing (no ticket
+    filed, no stale ticket dismissed), so the entries for a failed task that has no ticket yet are stand-ins with
+    an empty id. They must never leave this module: only open_failure_count() takes this path."""
     now = now or datetime.now(timezone.utc)
     since = now - timedelta(hours=LIST_WINDOW_HOURS)
     index = failure_tickets.task_index()  # ONE read of the ticket store for the whole listing
     out: dict[str, dict[str, Any]] = {}
     for task in schedule_store.list_failed(since=since):
-        ticket = _ticket_for_failed_task(task, index)
+        ticket = _ticket_for_failed_task(task, index, create=create)
         if ticket.get("status") == failure_tickets.OPEN:
-            out[ticket["id"]] = ticket
+            out[ticket["id"] or f"task:{task.task_id}"] = ticket
     for ticket in failure_tickets.list_open(since=since):
         tid = ticket.get("task_id")
         if tid and schedule_store.get_failed(tid) is None:
@@ -634,19 +645,22 @@ def open_failures(now: datetime | None = None) -> list[dict[str, Any]]:
             # a moment before the scheduler moves the task into failed/) — only treat the ticket
             # as stale once it is not brand new.
             fresh = (_parse(ticket.get("created_at")) or now) > now - timedelta(minutes=2)
-            if not fresh:  # re-queued/cancelled elsewhere (e.g. in the admin) — the ticket is stale
+            if not fresh and create:  # re-queued/cancelled elsewhere (e.g. in the admin) — the ticket is stale
                 failure_tickets.update(ticket["id"], status=failure_tickets.DISMISSED, resolved_by="hệ thống")
             continue  # fresh: in flight — neither listed nor dismissed yet
         out.setdefault(ticket["id"], ticket)
     return sorted(out.values(), key=lambda t: t.get("failed_at") or t.get("created_at") or "", reverse=True)
 
 
-def open_failure_count() -> int:
+def open_failure_count(*, create: bool = True, default: int | None = 0) -> int | None:
+    """How many failures wait for a decision. `create=False` is the read-only variant (a page view must file
+    nothing). A footer must never break its message, so a failure here gives `default` (0) — a dashboard that
+    wants to show "unknown" passes default=None."""
     try:
-        return len(open_failures())
+        return len(_failure_candidates(None, create=create))
     except Exception:  # noqa: BLE001 — a count in a footer must never break the message
         logger.exception("open_failure_count failed")
-        return 0
+        return default
 
 
 def build_list(

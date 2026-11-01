@@ -6888,3 +6888,32 @@ trên thanh menu (đổi cách làm việc, không chỉ diện mạo) sẽ hỏ
   thay vì 2 bản có thể lệch; bài comment không còn hiện đuôi URL vô nghĩa ("bài trong <tên nhóm>" hoặc "bài viết …123456"); nút Copy hoạt động cả khi `navigator.clipboard` không có (mở qua http) và báo khi thất bại;
   `_menu_form` có tham số `close_menu` rõ ràng.
 - Test: `tests/test_admin_ui_polish.py` (mới) + `tests/test_admin_schedule_ui.py` (mới, 23 test) + cập nhật chữ trong `test_admin_schedule.py`, `test_account_off.py`, `test_telegram_alerts.py`. Suite 1198 pass.
+
+### Giao diện các màn hình còn lại — đợt 2: trang chủ "Hôm nay" (2026-11-02)
+
+Bước (3) trong thứ tự đã thống nhất. **Chưa commit** (chờ owner).
+- **Vấn đề của trang cũ:** tiêu đề "Bảng điều khiển", 6 thẻ link to chiếm gần nửa màn hình mà chỉ là lối tắt tới thanh menu đã có, còn thứ owner cần mở ra là xem —
+  "hôm nay có gì đang sai / sắp đăng gì" — thì nằm rải rác dưới cùng.
+- **Trang mới = trả lời "hôm nay ổn không?" trong một màn hình:** tiêu đề **Hôm nay** + nhãn ngày LÀM VIỆC (`day_start + 9h`, tức ngày 02:00→02:00 JST mà các con số mô tả — không phải ngày lịch,
+  nên 01:00 sáng ngày 3 vẫn ghi "Thứ hai 02/11 · ngày làm việc"); hàng 5 ô số bấm được, mỗi ô dẫn tới đúng màn hình chứa việc cần làm: **Chờ đăng hôm nay** → Lịch đăng (phụ: "đã đến giờ N · ngày sau M"),
+  **Kết quả hôm nay** → Báo cáo ("N lượt thành công · thất bại": đếm mọi loại lượt chạy, không chỉ bài đăng, nên không dùng nhãn "Đã đăng"), **Quá hạn** → Lịch đăng/Quá hạn, **Chờ duyệt** → Lịch đăng/Chờ duyệt,
+  **Lỗi chưa xử lý** (xử lý bằng `/error` trên Telegram — admin chưa có màn hình xử lý lỗi, xem "Có thể làm tiếp"). Ô nào có việc thì viền vàng; hover vẫn viền chàm (thứ tự CSS có test).
+- **Thẻ "Cần chú ý"** gom MỌI thứ cần người xử lý thành một danh sách: tự động đăng đang tắt (kèm "Bật ở Cấu hình"), từng tài khoản/Page có vấn đề (tạm dừng xếp trước, rồi theo mức độ, rồi theo tên).
+  Page chạy chung phiên đăng nhập của chủ cũng được liệt kê khi bị tạm dừng (banner "tạm dừng" cũ từng phủ trường hợp này, bản mới phải giữ). Page đã tạm dừng chỉ ghi MỘT dòng ("Tạm dừng — lý do"), không thêm dòng "cấu hình chưa đủ".
+  Không có gì cần chú ý thì thẻ biến mất.
+- **Thẻ "Sắp đăng"** 4 bài gần nhất (giờ theo múi giờ người xem, tên nhóm không phải URL) + "Xem tất cả (N) →". **Thẻ tài khoản** là danh sách dòng gập: chấm màu + tên + một câu tóm tắt, mở ra mới thấy chi tiết từng tín hiệu.
+- **Cách làm đáng nhớ:**
+  - `human_bot/overview.py` (mới): MỘT định nghĩa "hôm nay" (`day_bounds`, `parse_iso` coi giờ không múi giờ là UTC, `split_pending`, `queue_counts`, `today`) dùng chung cho trang chủ VÀ lệnh Telegram
+    (`/schedule`, chân trang `/report`). Test khẳng định `telegram_commands._day_bounds is overview.day_bounds` và con số của hai nơi khớp nhau — trước đây mỗi nơi tự tính một kiểu.
+  - **Đọc số lỗi không được ghi:** `open_failures()` tạo phiếu (ticket) cho lỗi chưa có phiếu và bỏ phiếu cũ — OK khi người dùng gõ `/error`, KHÔNG OK khi chỉ MỞ trang chủ (GET có tác dụng phụ, mỗi lần F5 lại ghi file).
+    Nên có `open_failure_count(create=False, default=None)` → `_failure_candidates(now, create=False)` trả phiếu giả `id=""` và không dọn phiếu cũ. Đếm hỏng (file phiếu lỗi) → ô hiện **"?"** + "không đọc được" + viền vàng,
+    thay vì số 0 yên tâm giả; chân trang Telegram vẫn dùng `default=0`.
+  - Đọc hàng chờ đúng 1 lần mỗi lần dựng trang (`list_pending` truyền xuống), và mỗi tài khoản gọi `_account_health_signals` đúng 1 lần (`_account_health_card_html` trả về `(mức độ, html)` để cùng một kết quả
+    vừa quyết định thứ tự vừa vẽ dòng) — test đếm số lần gọi.
+  - `_account_attention_reason(a, accounts)` là một chỗ duy nhất nói "tài khoản này có vấn đề gì" cho cả trang Tài khoản (`_acct_row_html`) lẫn trang chủ.
+- **Rà soát /code-review (2 vòng)**: vòng 1 — GET ghi phiếu (nói trên), ngày lịch thay vì ngày làm việc, nhãn "Đã đăng hôm nay" sai nghĩa, hover ô vàng mất viền chàm; vòng 2 — Page dùng phiên của chủ bị tạm dừng mà không hiện ở "Cần chú ý",
+  Page tạm dừng bị nêu hai lần, `list_pending`/`_account_health_signals` đọc nhiều lần, đếm lỗi hỏng im lặng ra 0.
+- Test: `tests/test_admin_home_today.py` (mới, 29 test) + chỉnh `tests/test_admin_home.py` (neo lại hàm `_card_html` theo cấu trúc dòng mới, tiêu đề). Suite 1227 pass.
+- Đã chạy thật trên trình duyệt (dữ liệu mẫu) desktop + 390px. Rủi ro đã biết, KHÔNG sửa trong đợt này: test cũ `test_schedule_text_flags_tasks_whose_time_already_passed` có thể chập chờn quanh 02:00 JST
+  (đã nói với owner, chưa được yêu cầu sửa).
+- **Có thể làm tiếp (chưa làm, chưa hỏi):** màn hình "Lỗi" trong admin (danh sách bài lỗi + Lên lịch lại/Bỏ qua) để ô "Lỗi chưa xử lý" có nơi dẫn tới; hiện chỉ trỏ sang Telegram.

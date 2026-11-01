@@ -1125,6 +1125,44 @@ _PAGE_STYLE = """
     .sched-actions .row-menu-pop { left: 0; right: auto; }
     .sched-edit { padding-left: 16px; }
   }
+  /* Home "Hôm nay" (2026-11-02) */
+  .home-head { @apply flex flex-wrap items-start justify-between gap-3; }
+  .home-quick { @apply flex flex-wrap gap-2 pt-1; }
+  .stat-row { @apply grid gap-3 mb-5; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); }
+  @media (max-width: 599px) {
+    .home-head { margin-bottom: 1rem; }                                   /* the quick links wrap under the title; keep them off the tiles */
+    .stat-row > a.stat:last-child:nth-child(odd) { grid-column: 1 / -1; } /* no orphan tile in a 2-column grid */
+  }
+  a.stat { @apply flex flex-col gap-1 bg-white border border-gray-200 rounded-2xl px-4 py-3.5 shadow-sm no-underline text-gray-900; }
+  a.stat.stat-attn { @apply bg-amber-50 border-amber-300; }
+  a.stat:hover, a.stat.stat-attn:hover { @apply border-indigo-400; }
+  .stat-label { @apply text-xs font-semibold text-gray-500; }
+  .stat-num { @apply text-2xl font-bold leading-tight; }
+  .stat-num .ok { @apply text-emerald-600; }
+  .stat-num .bad { @apply text-red-600; }
+  .stat-sub { @apply text-[11px] text-gray-500; }
+  .home-attn { @apply border-amber-200 bg-amber-50/50; }
+  .attn-list { @apply list-none p-0 m-0; }
+  .attn-list li { @apply flex flex-wrap items-center justify-between gap-2 py-2 border-t border-amber-100 text-sm; }
+  .attn-list li:first-child { @apply border-t-0; }
+  .attn-text { @apply min-w-0; }
+  .upnext-row { @apply flex flex-wrap items-center gap-x-3 gap-y-1 py-2 border-t border-gray-100 text-sm; }
+  .upnext-list > :first-child { @apply border-t-0; }
+  .upnext-time { @apply text-xs font-semibold text-gray-600 w-40 shrink-0; }
+  .home-more { @apply mt-2 text-sm; }
+  .home-manage { @apply ml-auto text-sm font-medium; }
+  .health-list { @apply flex flex-col; }
+  details.health-row { @apply border-t border-gray-100 first:border-t-0; }
+  details.health-row > summary { @apply flex flex-wrap items-center gap-x-3 gap-y-1 py-2.5 cursor-pointer list-none text-sm; }
+  details.health-row > summary::-webkit-details-marker { display: none; }
+  .health-dot { @apply w-2.5 h-2.5 rounded-full shrink-0 bg-gray-300; }
+  .health-green .health-dot { @apply bg-emerald-500; }
+  .health-amber .health-dot { @apply bg-amber-500; }
+  .health-red .health-dot { @apply bg-red-500; }
+  .health-name { @apply font-semibold text-gray-900; }
+  .health-sum { @apply text-gray-500 text-[13px] min-w-0; }
+  .health-rows { @apply pb-3 pl-6 flex flex-col gap-1 text-[13px]; }
+  .home-foot { @apply mt-6 text-xs; }
   .tg-list { @apply mt-1; }
   .tg-row { @apply flex items-center justify-between gap-3 py-3 border-t border-gray-100; }
   .tg-list > .tg-row:first-child { @apply border-t-0; }
@@ -1155,11 +1193,6 @@ _PAGE_STYLE = """
 
   .account-list { @apply list-none p-0 m-0 flex flex-wrap gap-2; }
   .account-list li { @apply bg-indigo-50 text-indigo-600 text-sm font-semibold px-3 py-1.5 rounded-full; }
-
-  .home-links { @apply grid grid-cols-1 sm:grid-cols-2 gap-4 mt-2; }
-  .home-link-card { @apply block bg-white border border-gray-200 rounded-2xl px-5 py-[18px] shadow-sm hover:border-indigo-600 hover:no-underline transition-colors; }
-  .home-link-card .title { @apply font-bold text-[15px] text-gray-900 mb-1; }
-  .home-link-card .desc { @apply text-gray-500 text-[13px]; }
 
   .queue-item { @apply border border-gray-200 rounded-2xl px-4 py-[14px] mb-3 bg-white; }
   .queue-item .queue-filename { @apply text-xs text-gray-500 mb-1.5; }
@@ -2915,33 +2948,44 @@ def _account_health_signals(
     return severity, rows
 
 
+def _health_summary_text(severity: int, rows: list[tuple[str, str]]) -> str:
+    """The one line an account gets on the home page: when all is well, its state and the last success; when
+    not, ONLY the lines that need a person (🔴 then 🟡). Plain text — raw ISO timestamps are still in it."""
+    if severity >= 2:
+        picked = [rows[0][1]] if rows else []
+        picked += [text for _icon, text in rows if text.startswith("Thành công gần nhất")]
+        return " · ".join(picked)
+    return " · ".join(text for wanted in ("🔴", "🟡") for icon, text in rows if icon == wanted)
+
+
 def _account_health_card_html(
     aid: str, account, sync_statuses: dict, last_success_map: dict[str, str],
 ) -> tuple[int, str]:
-    """HTML rendering of _account_health_signals() for /admin's home
-    page — every line pairs an icon with a text label (never color
-    alone), the "5-second rule" only works if a glance is enough, and
-    color alone isn't accessible/printable-safe. Runs each row through
-    _localize_iso_timestamps_html() (not a plain html.escape()) so any
-    raw ISO timestamp _account_health_signals() left in `text` renders
-    as the viewer's own browser-local time, same as every other date on
-    this admin page — also handles the escaping for the surrounding
-    text itself."""
     severity, rows = _account_health_signals(aid, account, sync_statuses, last_success_map)
-    # ⚪ only ever marks "no data yet" (never mở session/đồng bộ/đăng thành
-    # công nào) — dim those via the same "muted" class the pre-refactor
-    # version used, restored 2026-10-05 after this refactor dropped it.
+    return severity, _account_health_row_html(aid, account, severity, rows)
+
+
+def _account_health_row_html(aid: str, account, severity: int, rows: list[tuple[str, str]]) -> str:
+    """HTML rendering of _account_health_signals() for /admin's home page (2026-11-02 redesign: one line per
+    account — coloured dot, name, and the short summary — with the five signals behind a click, instead of a
+    card of six emoji lines each). Every signal still pairs an icon with a text label (never color alone), and
+    each row goes through _localize_iso_timestamps_html() (not a plain html.escape()) so any raw ISO timestamp
+    renders as the viewer's own browser-local time, like every other date on this admin page."""
+    # ⚪ only ever marks "no data yet" (never mở session/đồng bộ/đăng thành công nào) — dim those.
     muted_attr = ' class="muted"'
     rows_html = "".join(
         f"<div{muted_attr if icon == '⚪' else ''}>{icon} {_localize_iso_timestamps_html(text)}</div>"
         for icon, text in rows
     )
+    tone = "gray" if account.status == AccountStatus.DISABLED else ("red", "amber", "green")[max(0, min(severity, 2))]
     card_html = f"""
-<div class="card">
-  <h3 style="margin:0 0 8px;">{html.escape(account.display_name)} <span class="row-url">({html.escape(aid)})</span></h3>
-  <div style="display:flex; flex-direction:column; gap:4px; font-size:14px;">{rows_html}</div>
-</div>"""
-    return severity, card_html
+<details class="health-row health-{tone}">
+  <summary><span class="health-dot"></span>
+    <span class="health-name">{html.escape(account.display_name)} <span class="row-url">({html.escape(aid)})</span></span>
+    <span class="health-sum">{_localize_iso_timestamps_html(_health_summary_text(severity, rows))}</span></summary>
+  <div class="health-rows">{rows_html}</div>
+</details>"""
+    return card_html
 
 
 def _account_health_telegram_text(aid: str, account, sync_statuses: dict, last_success_map: dict[str, str]) -> str:
@@ -2955,72 +2999,123 @@ def _account_health_telegram_text(aid: str, account, sync_statuses: dict, last_s
     return f"{'📄' if getattr(account, 'page_name', '') else '👤'} {account.display_name} ({aid})\n{lines}"
 
 
+_WEEKDAYS_VI = ("Thứ hai", "Thứ ba", "Thứ tư", "Thứ năm", "Thứ sáu", "Thứ bảy", "Chủ nhật")
+
+
+def _stat_tile(label: str, value_html: str, href: str, sub: str = "", attention: bool = False) -> str:
+    return (
+        f'<a class="stat{" stat-attn" if attention else ""}" href="{href}">'
+        f'<span class="stat-label">{label}</span><span class="stat-num">{value_html}</span>'
+        f'{f"<span class=stat-sub>{sub}</span>" if sub else ""}</a>'
+    )
+
+
 @router.get("", response_class=HTMLResponse)
 async def admin_home(request: Request, _: None = Depends(_require_login)) -> str:
+    """"Hôm nay" (2026-11-02): what is going on today and what needs a person — five numbers that are links,
+    the problems first, the next posts, then one line per account. The numbers come from human_bot/overview.py,
+    the same code Telegram's /report uses."""
+    from human_bot import overview, telegram_failures  # local imports: telegram_failures imports this module
+
     accounts = get_all_accounts()
     sync_statuses = get_all_sync_statuses()
     last_success_map = db.last_successful_action_per_account()
-    health_cards = sorted(
-        (
-            _account_health_card_html(aid, a, sync_statuses, last_success_map)
-            for aid, a in accounts.items()
-            if not a.uses_owner_session  # its login/session is the owner's, whose card already covers it
-        ),
-        key=lambda pair: pair[0],
+    now = datetime.now(timezone.utc)
+    pending = schedule_store.list_pending()  # read ONCE: the numbers and the "Sắp đăng" rows both use it
+    today = overview.today(now, list(accounts), pending)
+    failures = telegram_failures.open_failure_count(create=False, default=None)  # read-only: a page view files nothing
+
+    # --- the five numbers
+    q = today.queue
+    failures_tile = (
+        _stat_tile("Lỗi chưa xử lý", str(failures), "/admin/reports", "xử lý: gõ /error trên Telegram" if failures else "", attention=bool(failures))
+        if failures is not None
+        else _stat_tile("Lỗi chưa xử lý", "?", "/admin/reports", "không đọc được — xem nhật ký của service", attention=True)
     )
-    accounts_html = "".join(c for _sev, c in health_cards) or '<span class="muted">Chưa có tài khoản nào</span>'
+    tiles = "".join([
+        _stat_tile("Chờ đăng hôm nay", str(q.left_today), "/admin/schedule",
+                   f"⏰ {q.due} đã đến giờ" if q.due else (f"{q.later} bài các ngày sau" if q.later else ""), attention=bool(q.due)),
+        _stat_tile("Kết quả hôm nay", f'<span class="ok">✅ {today.ok}</span> <span class="bad">❌ {today.failed}</span>',
+                   "/admin/reports", "lượt thành công · thất bại"),
+        _stat_tile("Quá hạn", str(today.missed), "/admin/schedule?tab=missed", "chờ bạn xếp lại" if today.missed else "", attention=bool(today.missed)),
+        _stat_tile("Chờ duyệt", str(today.reviews), "/admin/schedule?tab=needs_review", "tin tuyển dụng" if today.reviews else "", attention=bool(today.reviews)),
+        failures_tile,
+    ])
 
-    # Surfaced here, not just at /admin/accounts, because the whole point
-    # of auto-pause (human_bot/agent.py's run_task(), on
-    # human_bot/safety.py's AnomalyDetected) is that a human notices
-    # promptly — burying it one click deep defeats that (raised in the
-    # admin UI review that asked for this).
-    paused = [a for a in accounts.values() if a.status == AccountStatus.PAUSED]
-    if paused:
-        names = ", ".join(html.escape(a.display_name) for a in paused)
-        pause_warning = f"""
-<div class="error" style="margin-bottom:20px;">
-  ⚠️ {len(paused)} tài khoản đang <strong>Tạm dừng</strong>: {names} — human_bot sẽ không đăng/comment/like gì cho các tài khoản này.
-  <a href="/admin/accounts" style="margin-left:6px;">Xem / kích hoạt lại →</a>
-</div>"""
-    else:
-        pause_warning = ""
+    # --- problems (what the numbers above do not already say) and one line per account
+    attention_items: list[str] = []
+    if not get_scheduling_config().auto_fire_enabled:
+        attention_items.append(
+            '<li><span class="attn-text">⚠️ Tự động đăng đang <b>tắt</b> — bài đến giờ phải bấm “🚀 Đăng ngay” thủ công.</span>'
+            '<a class="btn btn-secondary btn-small" href="/admin/config">Bật ở Cấu hình</a></li>'
+        )
+    problem_accounts: list[tuple[tuple, str]] = []  # (sort key, html): paused first, then worst health, then by name
+    health_rows: list[tuple[tuple, str]] = []
+    for aid, a in accounts.items():
+        paused = a.status == AccountStatus.PAUSED
+        reason = _account_attention_reason(a, accounts)
+        if a.uses_owner_session:
+            # No session of its own, so no health row (the owner's covers the login) — but being paused, or a
+            # configuration that cannot run, is the Page's own business and must not go unseen.
+            severity, problems = (0 if reason else 2), ([("🔴", reason)] if reason else [])
+        else:
+            severity, rows = _account_health_signals(aid, a, sync_statuses, last_success_map)  # ONCE per account
+            health_rows.append(((0 if paused else 1, severity, a.display_name.lower()), _account_health_row_html(aid, a, severity, rows)))
+            problems = [(icon, text) for wanted in ("🔴", "🟡") for icon, text in rows if icon == wanted] if severity < 2 else []
+            if reason and a.page_name and not paused:  # a Page's configuration problem is not one of the five signals
+                problems.append(("🔴", reason))
+        if problems:
+            text = " · ".join(_localize_iso_timestamps_html(t) for _i, t in problems)
+            problem_accounts.append(((0 if paused else 1, severity, a.display_name.lower()), (
+                f'<li><span class="attn-text">{problems[0][0]} <b>{html.escape(a.display_name)}</b>: {text}</span>'
+                '<a class="btn btn-secondary btn-small" href="/admin/accounts">Mở tài khoản</a></li>'
+            )))
+    health_rows.sort(key=lambda r: r[0])  # paused first, then worst health, then by name
+    attention_items.extend(item for _order, item in sorted(problem_accounts, key=lambda r: r[0]))
+    attention_html = (
+        f'<div class="card home-attn"><h2>⚠️ Cần chú ý <span class="badge">{len(attention_items)}</span></h2>'
+        f'<ul class="attn-list">{"".join(attention_items)}</ul></div>'
+    ) if attention_items else ""
 
+    # --- next posts
+    name_lookup = _group_name_lookup()
+    next_rows = "".join(
+        f'<div class="upnext-row"><span class="upnext-time">{_local_dt_html(t.scheduled_at)}</span>'
+        f'<span class="upnext-main">{_action_badge_html(t.action)}{_sponsor_badge_html(t)} {_sched_target_html(t, name_lookup)} '
+        f'<span class="sched-acct">{html.escape(_account_label(t.account_id, accounts))}</span></span></div>'
+        for t in pending[:4]
+    )
+    more = f'<a href="/admin/schedule">Xem tất cả ({len(pending)}) →</a>' if len(pending) > 4 else '<a href="/admin/schedule">Mở Lịch đăng →</a>'
+    empty_upnext = "<p class=muted>Chưa có bài nào chờ đăng — bấm “＋ Tin tuyển dụng” hoặc “＋ Đăng bài” ở trên.</p>"
+    upnext_html = (
+        f'<div class="card"><h2>📅 Sắp đăng</h2>'
+        f'{f"<div class=upnext-list>{next_rows}</div>" if next_rows else empty_upnext}'
+        f'<div class="home-more">{more}</div></div>'
+    )
+
+    accounts_html = "".join(r[1] for r in health_rows) or '<p class="muted">Chưa có tài khoản nào</p>'
+    # the date of the BUSINESS day the numbers describe (it starts 02:00 JST), not the JST calendar date
+    day_jst = today.day_start + timedelta(hours=9)
+    today_label = f"{_WEEKDAYS_VI[day_jst.weekday()]} {day_jst.strftime('%d/%m')}"
     return _layout(f"""
-<h1>Bảng điều khiển</h1>
-<p class="page-desc">Trang quản trị nội bộ. Không public trang này ra internet — nó có quyền đăng bài thật lên Facebook.</p>
-{pause_warning}
-<h2 style="margin-bottom:8px;">👤 Sức khoẻ tài khoản <span class="badge">{len(accounts)}</span></h2>
-<div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(340px, 1fr)); gap:12px; margin-bottom:12px;">
-{accounts_html}
+<div class="home-head">
+  <div>
+    <h1>Hôm nay</h1>
+    <p class="page-desc">{today_label} · ngày làm việc tính từ 02:00 đến 02:00 hôm sau, giờ Nhật.</p>
+  </div>
+  <div class="home-quick">
+    <a class="btn btn-small" href="/admin/post?tab=job">＋ Tin tuyển dụng</a>
+    <a class="btn btn-secondary btn-small" href="/admin/post?tab=group">＋ Đăng bài</a>
+  </div>
 </div>
-
-<div class="home-links">
-  <a class="home-link-card" href="/admin/accounts">
-    <div class="title">👤 Tài khoản</div>
-    <div class="desc">Đăng ký tài khoản mới sau khi chạy bootstrap_login.py, tạm dừng/kích hoạt lại, xoá — không cần sửa code.</div>
-  </a>
-  <a class="home-link-card" href="/admin/config">
-    <div class="title">⚙️ Cấu hình</div>
-    <div class="desc">Tốc độ gõ, khoảng chờ, di chuyển chuột (tab "Cấu hình hành vi") và chu kỳ/ngưỡng lọc của bộ đồng bộ bên B (tab "Đồng bộ dữ liệu") — áp dụng ngay, không cần khởi động lại.</div>
-  </a>
-  <a class="home-link-card" href="/admin/post">
-    <div class="title">📝 Đăng bài</div>
-    <div class="desc">Soạn nội dung, lên lịch đăng tường cá nhân hoặc nhiều nhóm cùng lúc, quản lý hàng đợi nội dung.</div>
-  </a>
-  <a class="home-link-card" href="/admin/groups">
-    <div class="title">👥 Nhóm đã tham gia</div>
-    <div class="desc">Danh sách URL nhóm Facebook mỗi tài khoản đã tham gia — bộ đồng bộ bên B dùng để broadcast bài đăng nhóm.</div>
-  </a>
-  <a class="home-link-card" href="/admin/schedule">
-    <div class="title">🔄 Lịch đăng</div>
-    <div class="desc">Xem, sửa, huỷ mọi bài đang chờ đăng — dù lên lịch thủ công ở /admin/post hay tự động từ bộ đồng bộ bên B.</div>
-  </a>
-  <a class="home-link-card" href="/admin/reports">
-    <div class="title">📊 Báo cáo</div>
-    <div class="desc">Tài khoản nào đăng bao nhiêu bài mỗi tuần, đăng vào nhóm nào, tỉ lệ thành công/thất bại.</div>
-  </a>
+<div class="stat-row">{tiles}</div>
+{attention_html}
+{upnext_html}
+<div class="card">
+  <h2>👤 Tài khoản <span class="badge">{len(health_rows)}</span> <a class="home-manage" href="/admin/accounts">Quản lý →</a></h2>
+  <div class="health-list">{accounts_html}</div>
 </div>
+<p class="muted home-foot">🔒 Trang quản trị nội bộ — đừng đưa ra internet: nó có quyền đăng bài thật lên Facebook.</p>
 """, active="home", current_user=_build_current_user(request))
 
 
@@ -3890,6 +3985,22 @@ def _page_session_note(a, accounts: dict) -> tuple[str, bool]:
     return _session_note("bad", "chưa có phiên riêng"), True
 
 
+def _account_attention_reason(a, accounts: dict) -> str | None:
+    """Why a person has to look at this account's SET-UP (None = nothing to do): paused, not logged in, a Page that
+    cannot run. The accounts list counts exactly these ("N cần chú ý"); the home page adds the runtime health
+    signals (browser died, silent for days, sync errors...) on top. An account switched off on purpose never
+    needs attention."""
+    if a.status == AccountStatus.DISABLED:
+        return None
+    if a.status == AccountStatus.PAUSED:
+        return "đang tạm dừng"
+    if a.page_name:
+        return "Page chưa cấu hình đủ hoặc chưa chạy được" if _page_session_note(a, accounts)[1] else None
+    if not a.storage_state_path.exists():
+        return "chưa đăng nhập"
+    return None
+
+
 def _page_howto_html(aid: str, a) -> str:
     """How to create the Page's OWN session — only while it is missing and the mode could use one."""
     if a.storage_state_path.exists() or a.page_session_mode == PAGE_MODE_OWNER_SESSION or not a.owner_account_id:
@@ -3953,7 +4064,6 @@ def _acct_row_html(aid: str, a, accounts: dict, registered_ids: set, *, child: b
     menu for the rest). Returns (html, needs attention)."""
     esc = html.escape
     is_page = bool(a.page_name)
-    attention = False
 
     # --- who
     title_tip = f"Xem báo cáo của {a.display_name}"
@@ -3970,7 +4080,6 @@ def _acct_row_html(aid: str, a, accounts: dict, registered_ids: set, *, child: b
         meta = f'<div class="acct-meta">{_page_mode_picker_html(aid, a)}</div>'
         if warn:
             meta += f'<div class="acct-meta warn">{esc(" · ".join(warn))}</div>'
-            attention = True
     who = (
         f'<div class="acct-title">{"📄 " if is_page else ""}'
         f'<a class="acct-name" href="/admin/reports?account_id={esc(aid)}" title="{esc(title_tip)}">{esc(a.display_name)}</a>'
@@ -3982,18 +4091,14 @@ def _acct_row_html(aid: str, a, accounts: dict, registered_ids: set, *, child: b
     howto = ""
     needs_login = False
     if is_page:
-        note, page_attn = _page_session_note(a, accounts)
-        attention = attention or page_attn
+        note, _page_attn = _page_session_note(a, accounts)
         howto = _page_howto_html(aid, a)
     elif a.storage_state_path.exists():
         note = _session_note("ok", "phiên đăng nhập OK")
     else:
         note = _session_note("bad", "chưa đăng nhập")
         needs_login = True
-    if a.status == AccountStatus.PAUSED or (needs_login and a.status == AccountStatus.ACTIVE):
-        attention = True
-    if a.status == AccountStatus.DISABLED:
-        attention = False  # switched off on purpose: nothing for anybody to look at
+    attention = _account_attention_reason(a, accounts) is not None  # one definition, shared with the home page
     session_line = f'<div class="acct-note">{note}</div>'
 
     # --- what to do

@@ -1145,6 +1145,11 @@ Telegram dùng nội dung đã soạn sẵn; muốn sửa chữ vẫn phải và
   không thử lại hàng loạt vì sẽ cùng hỏng lại — thử từng lỗi ở `/error`.
   Tin báo đỏ **"N lần thất bại LIÊN TIẾP"** nay có nút **"Tắt"** (một chạm, bật lại là chạy ngay), **"Tạm dừng"**
   (hỏi xác nhận, vì kích hoạt lại phải hạ nhiệt) và **"Đã biết"**; tin tự đổi theo trạng thái thật của tài khoản.
+- **Trang chủ "Hôm nay" (02/11).** Trang đầu tiên của trang quản trị nay trả lời một câu: *hôm nay ổn không?* Thay sáu thẻ lối tắt to bằng **năm ô số bấm được** — chờ đăng hôm nay, kết quả hôm nay
+  (thành công · thất bại), quá hạn, chờ duyệt, lỗi chưa xử lý — ô nào có việc thì viền vàng, bấm vào là tới đúng màn hình cần xử lý. Dưới đó là thẻ **"Cần chú ý"** gom mọi vấn đề thành một danh sách
+  (tự động đăng đang tắt, tài khoản hoặc Page bị tạm dừng / chưa đăng nhập / cấu hình thiếu; thứ nào gấp xếp trước và thẻ tự ẩn khi không có gì), thẻ **"Sắp đăng"** bốn bài gần nhất và danh sách tài khoản
+  gập gọn (chấm màu + một câu tóm tắt, mở ra mới thấy chi tiết). "Hôm nay" tính theo **ngày làm việc 02:00→02:00 giờ Nhật** và con số ở đây khớp với lệnh `/schedule` và `/report` trên Telegram (cùng một
+  cách tính). Mở trang chủ chỉ **đọc**, không ghi gì: số "lỗi chưa xử lý" được đếm mà không tạo phiếu lỗi; nếu không đọc được thì ô hiện dấu "?" thay vì số 0 làm yên lòng sai.
 - **Lịch đăng gọn hơn (02/11).** Mỗi bài chờ đăng giờ là **một dòng** (trước đây là một thẻ cao gần 250px với tám nút), gom theo ngày ("Hôm nay", "Ngày mai"): giờ, loại việc, **tên nhóm**
   (không còn hiện đường dẫn dài), tài khoản và hai dòng nội dung. Nút **Đăng ngay** chỉ nổi bật khi bài đã đến giờ; **Sửa** mở khung sửa ngay dưới dòng; đổi giờ với bài khác, copy đường
   dẫn và huỷ nằm trong menu "⋯". Tab **Quá hạn** lấy **Lên lịch lại** làm nút chính và nói rõ lý do bài bị lỡ; tab **Chờ duyệt** cho xem nhanh tiêu đề, độ tin cậy và bài mẫu rồi duyệt hoặc bỏ qua.
