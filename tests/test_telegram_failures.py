@@ -597,7 +597,8 @@ def test_an_open_ticket_whose_failed_file_vanished_is_dropped_but_not_while_in_f
 def test_an_empty_list_says_so(env):
     assert "Không có lỗi" in telegram_failures.empty_list_item().text
     from human_bot import telegram_commands
-    assert "Lỗi chưa xử lý: 0" in telegram_commands._queue_footer(datetime.now(timezone.utc))
+    footer = telegram_commands._queue_footer(datetime.now(timezone.utc))
+    assert "Không có bài lỡ giờ, lỗi hay tin nào đang chờ xử lý" in footer and "/error" not in footer     # nothing to point at
 
 
 # --- db ------------------------------------------------------------------------------------------------------------------

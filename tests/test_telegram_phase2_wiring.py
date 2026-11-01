@@ -241,7 +241,7 @@ async def test_the_bot_menu_registers_the_english_names(monkeypatch):
 
     monkeypatch.setattr(telegram_notify, "set_my_commands", fake_set)
     await telegram_notify.set_my_commands(telegram_commands.COMMANDS)
-    assert registered == [["schedule", "overdue", "error", "review", "report", "health", "pause", "resume", "help"]]
+    assert registered == [["schedule", "report", "health", "error", "overdue", "review", "pause", "resume", "help"]]
 
 
 # --- review fixes (2026-11-01) ------------------------------------------------------------------------------------------------

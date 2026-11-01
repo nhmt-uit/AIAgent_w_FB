@@ -1145,6 +1145,11 @@ Telegram dùng nội dung đã soạn sẵn; muốn sửa chữ vẫn phải và
   không thử lại hàng loạt vì sẽ cùng hỏng lại — thử từng lỗi ở `/error`.
   Tin báo đỏ **"N lần thất bại LIÊN TIẾP"** nay có nút **"Tắt"** (một chạm, bật lại là chạy ngay), **"Tạm dừng"**
   (hỏi xác nhận, vì kích hoạt lại phải hạ nhiệt) và **"Đã biết"**; tin tự đổi theo trạng thái thật của tài khoản.
+- **Phản hồi của bot dễ đọc hơn (01/11).** Tin trả lời các lệnh nay dùng chữ thường ngày thay cho tên nội bộ (ví dụ "Đăng bài"
+  thay vì `post_to_group`), ghi rõ giờ Nhật (JST), chia mục có biểu tượng và nói thẳng bước tiếp theo. `/help` chia thành
+  "Xem nhanh", "Xử lý (có nút bấm)" và "Tự động đăng", kèm mẹo trả lời tin lỗi để đăng lại bằng nội dung mới. `/report` và bản
+  tóm tắt 6 giờ sáng chỉ nêu những việc đang cần xử lý, mỗi việc kèm lệnh để xử lý (ví dụ "Lỗi chưa xử lý: 2 → /error"). Tin
+  nhắn bot không hiểu được trả lời bằng một câu thân thiện cùng danh sách lệnh. Chỉ đổi cách trình bày, hành vi các nút không đổi.
 - **Đổi tên lệnh Telegram sang tiếng Anh (01/11).** `/schedule` (lịch), `/overdue` (quá hạn), `/error` (lỗi),
   `/review` (chờ duyệt), `/report` (báo cáo), `/health` (sức khoẻ), `/pause` và `/resume` (tạm dừng / bật lại tự động
   đăng), `/help`. Tên tiếng Việt cũ vẫn chạy nhưng không còn hiện trong menu của bot.

@@ -2797,7 +2797,7 @@ def _account_health_telegram_text(aid: str, account, sync_statuses: dict, last_s
     browser-local-time JS _account_health_card_html() uses instead."""
     _severity, rows = _account_health_signals(aid, account, sync_statuses, last_success_map)
     lines = "\n".join(f"{icon} {_ISO_DT_RE.sub(lambda m: _fmt_jst(m.group(0)), text)}" for icon, text in rows)
-    return f"{account.display_name} ({aid})\n{lines}"
+    return f"{'📄' if getattr(account, 'page_name', '') else '👤'} {account.display_name} ({aid})\n{lines}"
 
 
 @router.get("", response_class=HTMLResponse)

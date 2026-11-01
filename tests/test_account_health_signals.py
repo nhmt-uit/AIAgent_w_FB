@@ -133,4 +133,4 @@ def test_telegram_text_includes_display_name_and_account_id(
 ):
     account = _account(aid="acc-x", name="Tài khoản X")
     text = admin._account_health_telegram_text("acc-x", account, {}, {})
-    assert text.startswith("Tài khoản X (acc-x)")
+    assert text.startswith("👤 Tài khoản X (acc-x)")

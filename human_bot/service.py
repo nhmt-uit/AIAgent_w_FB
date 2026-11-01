@@ -430,18 +430,21 @@ def _telegram_reply_for(command: str) -> str:
     if command == "health":
         sync_statuses = data_sync.get_all_sync_statuses()
         last_success_map = db.last_successful_action_per_account()
-        return "\n\n".join(
+        blocks = [
             _account_health_telegram_text(aid, a, sync_statuses, last_success_map)
             for aid, a in get_all_accounts().items()
             if not a.uses_owner_session
-        ) or "Chưa có tài khoản nào."
+        ]
+        if not blocks:
+            return "Chưa có tài khoản nào."
+        return "🩺 Tình trạng các tài khoản\n\n" + "\n\n".join(blocks)
     if command == "schedule":
         return telegram_commands.schedule_text()
     if command == "report":
         return telegram_commands.report_text()
     if command in _TELEGRAM_BUTTON_ONLY_COMMANDS:
         return ""  # the reply is the interactive message(s) from telegram_actions.build_items()
-    return telegram_commands.help_text()
+    return telegram_commands.static_reply(command) or telegram_commands.help_text()
 
 
 # Commands whose whole answer is the button messages (no summary text first).
@@ -473,7 +476,7 @@ async def _send_failure_list(chat_id: str) -> None:
             await asyncio.to_thread(failure_tickets.add_message, ticket["id"], ref["chat_id"], ref["message_id"], ref["photo"])
     if overflow:
         await telegram_notify.send_message_to(
-            chat_id, f"…còn {overflow} lỗi nữa — xử lý các lỗi trên rồi gõ lại /error.", silent=True,
+            chat_id, f"…còn {overflow} lỗi nữa. Xử lý các lỗi trên rồi gõ lại /error để xem tiếp.", silent=True,
         )
 
 
@@ -725,12 +728,12 @@ async def _telegram_listen_loop() -> None:
                             replied_to_anything = True
                             continue
                     if not telegram_commands.is_known_command(command):
-                        command = "help"
+                        command = None  # plain text / "/something" we do not know → the friendly help (static_reply)
                     if command in _TELEGRAM_BUTTON_ONLY_COMMANDS and chat.get("type", "private") != "private":
                         # Buttons only work in a private chat (see _handle_telegram_callback) —
                         # don't post a list of dead buttons / task previews into a group.
                         await telegram_notify.send_message_to(
-                            chat_id, "Các nút thao tác chỉ dùng được trong chat riêng với bot.", silent=True,
+                            chat_id, "🔒 Các nút thao tác chỉ dùng được trong chat riêng với bot — hãy nhắn riêng cho bot nhé.", silent=True,
                         )
                         replied_to_anything = True
                         continue

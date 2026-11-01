@@ -39,8 +39,14 @@ def test_the_old_vietnamese_names_still_work_but_are_not_advertised(old, new):
 
 def test_every_command_name_is_english():
     assert [c for c, _d in telegram_commands.COMMANDS] == [
-        "schedule", "overdue", "error", "review", "report", "health", "pause", "resume", "help",
+        "schedule", "report", "health", "error", "overdue", "review", "pause", "resume", "help",
     ]
+
+
+def test_help_is_grouped_explains_the_tip_and_the_time_zone():
+    text = telegram_commands.help_text()
+    assert "XEM NHANH" in text and "XỬ LÝ" in text and "TỰ ĐỘNG ĐĂNG" in text and "trả lời (reply)" in text and "JST" in text
+    assert telegram_commands.help_text("Xin chào").startswith("Xin chào\n\nCác lệnh bạn có thể dùng:")
 
 
 def test_help_text_lists_every_command():
@@ -67,7 +73,8 @@ def _add(store, when, account_id="acc-a", action="post_to_group"):
 
 
 def test_schedule_text_when_empty(isolated_schedule_dirs, isolated_runtime_config):
-    assert "không còn task" in telegram_commands.schedule_text()
+    text = telegram_commands.schedule_text()
+    assert "không còn bài nào chờ đăng" in text and "Các ngày sau: 0 bài" in text
 
 
 def test_schedule_text_splits_today_from_later_days(isolated_schedule_dirs, isolated_runtime_config):
@@ -76,7 +83,18 @@ def test_schedule_text_splits_today_from_later_days(isolated_schedule_dirs, isol
     _add(isolated_schedule_dirs, end_of_day - timedelta(minutes=30))
     _add(isolated_schedule_dirs, end_of_day + timedelta(hours=5))
     text = telegram_commands.schedule_text(now)
-    assert "hôm nay (1)" in text and "Các ngày sau: 1 task" in text
+    assert "Bài sắp đăng hôm nay: 1 bài (giờ JST)" in text and "Các ngày sau: 1 bài" in text
+
+
+def test_schedule_text_reads_in_plain_words(isolated_schedule_dirs, isolated_runtime_config, monkeypatch):
+    now = datetime(2026, 11, 1, 5, 0, tzinfo=timezone.utc)                               # 14:00 JST on the 1st
+    _add(isolated_schedule_dirs, now + timedelta(hours=6))                               # 20:00 JST, same day
+    _add(isolated_schedule_dirs, now + timedelta(hours=11, minutes=30), action="comment_on_group_post")   # 01:30 JST on the 2nd, still this business day
+    monkeypatch.setattr(telegram_commands, "target_label", lambda t: "Nhóm Thợ Hàn")
+    text = telegram_commands.schedule_text(now)
+    assert "• 20:00 · Đăng bài · acc-a\n   ↳ Nhóm Thợ Hàn" in text                       # no raw "post_to_group", no date for today
+    assert "• 02/11 01:30 · Bình luận · acc-a" in text                                  # another calendar date is spelled out
+    assert "post_to_group" not in text and "comment_on_group_post" not in text
 
 
 def test_schedule_text_flags_tasks_whose_time_already_passed(isolated_schedule_dirs, isolated_runtime_config):
@@ -84,7 +102,7 @@ def test_schedule_text_flags_tasks_whose_time_already_passed(isolated_schedule_d
     _add(isolated_schedule_dirs, now - timedelta(minutes=10))
     _add(isolated_schedule_dirs, now + timedelta(minutes=10))
     text = telegram_commands.schedule_text(now)
-    assert "hôm nay (2)" in text and "⏰ 1 task đã đến giờ nhưng chưa chạy" in text
+    assert "hôm nay: 2 bài" in text and "⏰ 1 bài đã đến giờ nhưng chưa chạy" in text and "/resume" in text   # says what to check
     assert text.count("• ⏰") == 1  # only the past-due line carries the marker
 
 
@@ -95,20 +113,23 @@ def test_schedule_text_caps_the_list(isolated_schedule_dirs, isolated_runtime_co
         _add(isolated_schedule_dirs, start + timedelta(hours=2, minutes=i))
     text = telegram_commands.schedule_text(now)
     assert text.count("•") == telegram_commands._MAX_LINES
-    assert "…và 5 task khác" in text
+    assert "…và 5 bài khác" in text
     assert len(text) < 4096
 
 
-def test_missed_text_when_empty(isolated_schedule_dirs):
-    assert "Không có task nào quá hạn" in telegram_commands.missed_text()
-
-
-def test_missed_text_shows_reason_tag_and_days(isolated_schedule_dirs):
+def test_the_reason_a_task_was_parked_reads_in_plain_words(isolated_schedule_dirs):
     store = isolated_schedule_dirs
-    task = _add(store, datetime.now(timezone.utc) - timedelta(days=2))
-    store.mark_missed(task.task_id, "Mất mạng: không kết nối được internet")
-    text = telegram_commands.missed_text()
-    assert "1 task quá hạn" in text and "mất mạng" in text and "quá 2 ngày" in text
+    reasons = {
+        "Mất mạng: không kết nối được internet": "mất mạng",
+        "Service đang tắt, bỏ qua khi khởi động": "service tắt",
+        "Tài khoản a đang được tắt khi đến giờ đăng (x). Cần admin duyệt lại": "tài khoản bị tắt",
+        "Tài khoản a đang tạm dừng khi đến giờ đăng (x). Cần admin duyệt lại": "tài khoản tạm dừng",
+        "gì đó khác": "khác",
+    }
+    for reason, tag in reasons.items():
+        task = _add(store, datetime.now(timezone.utc) - timedelta(days=2))
+        store.mark_missed(task.task_id, reason)
+        assert telegram_commands.missed_reason_tag(task.task_id) == tag
 
 
 # --- /report and the daily summary ---------------------------------------------
@@ -133,7 +154,8 @@ def test_report_and_summary_use_the_right_windows(isolated_schedule_dirs, isolat
     today_start = daily_limits.business_day_start(now)
 
     report = telegram_commands.report_text(now)
-    assert "✅ 2 · ❌ 1" in report and "post_to_group 2✅/1❌" in report
+    assert "Kết quả: ✅ 2 thành công · ❌ 1 thất bại" in report and "Đăng bài ✅2 ❌1" in report and "post_to_group" not in report
+    assert "📊 Báo cáo hôm nay (từ 02:00 JST đến giờ)" in report and "Tình hình hiện tại:" in report
     assert calls[-1] == (today_start.isoformat(), None)
 
     summary = telegram_commands.daily_summary_text(now)
@@ -293,3 +315,102 @@ def test_notify_config_changed_is_safe_from_a_worker_thread(monkeypatch):
         asyncio.run(scenario())
     finally:
         runtime_config.set_notify_loop(None)
+
+
+# --- readable replies (2026-11-01) ---------------------------------------------------------------------------------
+
+class _Named:
+    def __init__(self, name, page=""):
+        self.display_name, self.page_name = name, page
+
+
+def test_the_queue_footer_names_only_what_needs_attention_and_the_command_for_it(isolated_schedule_dirs, isolated_runtime_config, monkeypatch):
+    from human_bot import telegram_failures
+    monkeypatch.setattr(telegram_commands.schedule_store, "list_missed", lambda: [object(), object()])
+    monkeypatch.setattr(telegram_commands.schedule_store, "list_needs_review", lambda: [object()])
+    monkeypatch.setattr(telegram_failures, "open_failure_count", lambda: 3)
+    footer = telegram_commands._queue_footer(datetime.now(timezone.utc))
+    assert "Tình hình hiện tại:" in footer and "⚠️ Bài lỡ giờ: 2 → /overdue" in footer
+    assert "❌ Lỗi chưa xử lý: 3 → /error" in footer and "🔍 Tin chờ duyệt: 1 → /review" in footer
+    assert "Không có bài lỡ giờ" not in footer
+
+
+def test_the_report_shows_idle_accounts_in_one_line_and_uses_display_names(isolated_schedule_dirs, isolated_runtime_config, monkeypatch):
+    accounts = {"a1": _Named("Anna"), "a2": _Named("Bao"), "p1": _Named("Đơn Kỹ Sư", page="Đơn Kỹ Sư Nhật")}
+    monkeypatch.setattr(telegram_commands, "get_all_accounts", lambda: accounts)
+    monkeypatch.setattr(telegram_commands.db, "summary_stats", lambda aid, s, u: (
+        {"total": 2, "succeeded": 1, "failed": 1} if aid == "a1" else {"total": 0, "succeeded": 0, "failed": 0}))
+    monkeypatch.setattr(telegram_commands.db, "action_type_counts", lambda a, s, u: [
+        {"action": "post_to_group", "success": 1, "total": 1}, {"action": "comment_on_group_post", "success": 0, "total": 1},
+    ])
+    text = telegram_commands.report_text(datetime(2026, 11, 1, 5, 0, tzinfo=timezone.utc))
+    assert "• Anna: ✅ 1 · ❌ 1\n   ↳ Đăng bài ✅1 · Bình luận ❌1" in text
+    assert "• Chưa có lượt nào: Bao, 📄 Đơn Kỹ Sư" in text and "a2" not in text
+    monkeypatch.setattr(telegram_commands.db, "summary_stats", lambda aid, s, u: {"total": 0, "succeeded": 0, "failed": 0})
+    assert telegram_commands._activity_block(datetime(2026, 11, 1, tzinfo=timezone.utc), None).startswith("Chưa có lượt đăng/bình luận nào.")
+
+
+def test_action_and_account_names_fall_back_to_what_they_were_given(monkeypatch):
+    assert telegram_commands.action_label("post_to_group") == "Đăng bài" and telegram_commands.action_label("brand_new") == "brand_new"
+    assert telegram_commands.action_label(None) == "?"
+    monkeypatch.setattr(telegram_commands, "get_all_accounts", lambda: {"p": _Named("Trang", page="Trang X"), "n": _Named("")})
+    assert telegram_commands.account_name("p") == "📄 Trang" and telegram_commands.account_name("n") == "n" and telegram_commands.account_name("zz") == "zz"
+
+
+def test_short_when_leaves_out_the_date_for_today_only():
+    now = datetime(2026, 11, 1, 5, 0, tzinfo=timezone.utc)                          # 14:00 JST on the 1st
+    assert telegram_commands.short_when("2026-11-01T11:00:00+00:00", now) == "20:00"
+    assert telegram_commands.short_when("2026-11-01T16:30:00+00:00", now) == "02/11 01:30"   # 01:30 JST on the 2nd
+    assert telegram_commands.short_when(None, now) == "?" and telegram_commands.short_when("garbage", now) == "?"
+
+
+async def test_a_message_the_bot_does_not_understand_and_start_get_a_friendly_first_line(monkeypatch):
+    import human_bot.service as svc
+    assert svc._telegram_reply_for(None).startswith("🤔 Mình chưa hiểu tin nhắn này.\n\nCác lệnh bạn có thể dùng:")
+    assert svc._telegram_reply_for("whatever").startswith("🤔 Mình chưa hiểu")
+    assert svc._telegram_reply_for("start").startswith("👋 Xin chào!") and "/schedule" in svc._telegram_reply_for("start")
+    assert svc._telegram_reply_for("help").startswith("Các lệnh bạn có thể dùng:")
+
+
+def test_the_health_reply_has_a_heading_and_marks_pages(isolated_runtime_config, isolated_accounts_dir, isolated_db):
+    import human_bot.service as svc
+    text = svc._telegram_reply_for("health")
+    assert text.startswith("🩺 Tình trạng các tài khoản\n\n") and "👤 " in text
+
+
+def test_help_and_the_bot_menu_come_from_one_list():
+    text = telegram_commands.help_text()
+    for name, short, long, _group in telegram_commands._SPEC:
+        assert f"/{name} — {long}" in text and (name, short) in telegram_commands.COMMANDS
+    assert len(telegram_commands.COMMANDS) == len(telegram_commands._SPEC)
+    assert "tính từ 02:00 đến 02:00 hôm sau" in text                                # read from the daily-cap definition, not typed twice
+    assert telegram_commands._boundary_hhmm() == "02:00"
+
+
+def test_static_replies(monkeypatch):
+    assert telegram_commands.static_reply("help").startswith("Các lệnh bạn có thể dùng:")
+    assert telegram_commands.static_reply("start").startswith("👋 Xin chào!")
+    assert telegram_commands.static_reply(None).startswith("🤔") and telegram_commands.static_reply("nope").startswith("🤔")
+    assert telegram_commands.static_reply("schedule") is None                          # live data — built elsewhere
+
+
+def test_a_quiet_day_says_so_once(isolated_schedule_dirs, isolated_runtime_config, monkeypatch):
+    monkeypatch.setattr(telegram_commands, "get_all_accounts", lambda: {"a1": _Named("Anna"), "a2": _Named("Bao")})
+    monkeypatch.setattr(telegram_commands.db, "summary_stats", lambda aid, s, u: {"total": 0, "succeeded": 0, "failed": 0})
+    block = telegram_commands._activity_block(datetime(2026, 11, 1, tzinfo=timezone.utc), None)
+    assert block == "Chưa có lượt đăng/bình luận nào."                                  # no second line repeating the same fact
+
+
+def test_naming_many_accounts_reads_the_registry_once(isolated_schedule_dirs, isolated_runtime_config, monkeypatch):
+    calls = []
+
+    def registry():
+        calls.append(1)
+        return {"acc-a": _Named("Anna")}
+
+    monkeypatch.setattr(telegram_commands, "get_all_accounts", registry)
+    now = datetime.now(timezone.utc)
+    for i in range(4):
+        _add(isolated_schedule_dirs, now + timedelta(minutes=10 + i))
+    telegram_commands.schedule_text(now)
+    assert len(calls) == 1

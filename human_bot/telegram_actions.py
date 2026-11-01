@@ -28,7 +28,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from human_bot import admin, schedule_store, telegram_commands
@@ -41,6 +41,7 @@ logger = logging.getLogger("human_bot.telegram_actions")
 MAX_ITEMS = 5  # messages per command — each is its own message with its own buttons
 
 Keyboard = list[list[dict[str, str]]]
+_JST = timedelta(hours=9)
 
 
 @dataclass
@@ -100,17 +101,30 @@ def _preview(text: str | None, limit: int = 220) -> str:
     return text if len(text) <= limit else text[:limit] + "…"
 
 
-def _missed_item(task) -> Item:
+def _lateness(scheduled_at: str, now: datetime) -> str:
+    """"hôm nay" / "hôm qua" / "3 ngày trước" by JST calendar date, so it always agrees with the date printed beside it."""
+    when = telegram_commands._parse(scheduled_at)
+    if when is None:
+        return "?"
+    days = ((now + _JST).date() - (when + _JST).date()).days
+    return "hôm nay" if days <= 0 else "hôm qua" if days == 1 else f"{days} ngày trước"
+
+
+def _missed_item(task, now: datetime | None = None, accounts: dict | None = None) -> Item:
+    now = now or datetime.now(timezone.utc)
     text = (
-        f"⚠️ Task quá hạn · {jst_hhmm(task.scheduled_at)} JST · {telegram_commands.missed_reason_tag(task.task_id)}\n"
-        f"{task.account_id} · {task.action}\n"
-        f"Nhóm: {telegram_commands.target_label(task)}\n"
-        f"Nội dung: {_preview(task.content) or '(không có)'}"
+        "⚠️ Bài lỡ giờ đăng\n"
+        f"🕐 Hẹn lúc {jst_hhmm(task.scheduled_at)} JST ({_lateness(task.scheduled_at, now)})\n"
+        f"❓ Lý do: {telegram_commands.missed_reason_tag(task.task_id)}\n"
+        f"👤 Tài khoản: {telegram_commands.account_name(task.account_id, accounts)}\n"
+        f"🔖 Việc: {telegram_commands.action_label(task.action)}\n"
+        f"📍 Nhóm: {telegram_commands.target_label(task)}\n"
+        f"📝 Nội dung: {_preview(task.content) or '(không có)'}"
     )
     return Item(text, _main_keyboard("mt", task.task_id))
 
 
-def _review_item(review) -> Item:
+def _review_item(review, accounts: dict | None = None) -> Item:
     title = ((review.job_data or {}).get("title") or "(không có tiêu đề)")
     try:
         confidence = f"{float(review.confidence):.2f}"
@@ -118,9 +132,11 @@ def _review_item(review) -> Item:
         confidence = "không rõ"
     first = review.contents[0] if review.contents else ""
     text = (
-        f"🔍 Job chờ duyệt — {_preview(str(title), 100)}\n"
-        f"Dự kiến đăng: {review.account_id} · {len(review.groups)} nhóm · độ tin cậy {confidence}\n"
-        f"Nội dung mẫu: {_preview(first, 300) or '(trống)'}"
+        f"🔍 Tin tuyển dụng chờ duyệt\n"
+        f"📌 Tiêu đề: {_preview(str(title), 100)}\n"
+        f"👤 Sẽ đăng bằng: {telegram_commands.account_name(review.account_id, accounts)} · {len(review.groups)} nhóm\n"
+        f"📊 Độ tin cậy của AI: {confidence} (thang 0–1, càng cao càng chắc)\n"
+        f"📝 Bài mẫu: {_preview(first, 300) or '(trống)'}"
     )
     return Item(text, _main_keyboard("rv", review.review_id))
 
@@ -129,17 +145,20 @@ def _autofire_item(command: str) -> Item:
     on = get_scheduling_config().auto_fire_enabled
     if command == "pause":
         if not on:
-            return Item("⏸ Tự động đăng đang TẮT sẵn rồi. Dùng /resume để bật lại.")
+            return Item("⏸ Tự động đăng đang TẮT sẵn rồi.\nGõ /resume để bật lại.")
         return Item(
-            "Tự động đăng đang BẬT. Tạm dừng sẽ giữ MỌI task đến giờ ở lại hàng chờ "
-            "(không đăng) cho tới khi bật lại — nút \"Đăng ngay\" thủ công ở /admin vẫn dùng được.",
+            "⏯ Tự động đăng đang BẬT.\n\n"
+            "Nếu tạm dừng: các bài đến giờ sẽ nằm lại hàng chờ, KHÔNG tự đăng, cho tới khi bạn bật lại "
+            "(nút \"Đăng ngay\" thủ công ở /admin vẫn dùng được).\n\n"
+            "Bạn muốn tạm dừng?",
             _main_keyboard("af", "off"),
         )
     if on:
-        return Item("▶️ Tự động đăng đang BẬT sẵn rồi. Dùng /pause để tạm dừng.")
+        return Item("▶️ Tự động đăng đang BẬT sẵn rồi.\nGõ /pause nếu muốn tạm dừng.")
     return Item(
-        "Tự động đăng đang TẮT. Bật lại thì các task đã đến giờ trong hàng chờ sẽ được đăng ngay "
-        "(theo giới hạn tốc độ của từng tài khoản).",
+        "⏸ Tự động đăng đang TẮT.\n\n"
+        "Nếu bật lại: các bài đã đến giờ trong hàng chờ sẽ được đăng ngay (theo giới hạn tốc độ của từng tài khoản).\n\n"
+        "Bạn muốn bật lại?",
         _main_keyboard("af", "on"),
     )
 
@@ -150,18 +169,37 @@ def build_items(command: str) -> list[Item]:
     if command == "overdue":
         missed = schedule_store.list_missed()
         if not missed:
-            return [Item("✅ Không có task nào quá hạn.")]
-        items = [_missed_item(t) for t in missed[:MAX_ITEMS]]
+            return [Item("✅ Không có bài nào lỡ giờ đăng.")]
+        shown = missed[:MAX_ITEMS]
+        items = []
+        if len(missed) > 1:
+            items.append(Item(
+                f"⚠️ Có {len(missed)} bài lỡ giờ đăng (hiện {len(shown)} bài, mỗi bài một tin bên dưới).\n"
+                "🔄 Lên lịch lại: hệ thống tự chọn giờ trống gần nhất · 🗑 Huỷ: bỏ hẳn bài đó."
+            ))
+        accounts = get_all_accounts()
+        items.extend(_missed_item(t, accounts=accounts) for t in shown)
         if len(missed) > MAX_ITEMS:
-            items.append(Item(f"…còn {len(missed) - MAX_ITEMS} task quá hạn nữa — xử lý xong các task trên rồi gõ lại /overdue, hoặc vào /admin/schedule."))
+            items.append(Item(
+                f"…còn {len(missed) - MAX_ITEMS} bài lỡ giờ nữa.\n"
+                "Xử lý các bài trên rồi gõ lại /overdue để xem tiếp, hoặc vào /admin/schedule → tab \"Task quá hạn\"."
+            ))
         return items
     if command == "review":
         reviews = schedule_store.list_needs_review()
         if not reviews:
-            return [Item("✅ Không có job nào đang chờ duyệt.")]
-        items = [_review_item(r) for r in reviews[:MAX_ITEMS]]
+            return [Item("✅ Không có tin tuyển dụng nào đang chờ duyệt.")]
+        shown = reviews[:MAX_ITEMS]
+        items = []
+        if len(reviews) > 1:
+            items.append(Item(
+                f"🔍 Có {len(reviews)} tin tuyển dụng chờ duyệt (hiện {len(shown)} tin, mỗi tin một tin nhắn bên dưới).\n"
+                "✅ Duyệt: tạo bài đăng vào các nhóm · 🗑 Bỏ qua: không đăng tin này."
+            ))
+        accounts = get_all_accounts()
+        items.extend(_review_item(r, accounts) for r in shown)
         if len(reviews) > MAX_ITEMS:
-            items.append(Item(f"…còn {len(reviews) - MAX_ITEMS} job chờ duyệt nữa (xem ở /admin/schedule, tab \"Chờ duyệt\")."))
+            items.append(Item(f"…còn {len(reviews) - MAX_ITEMS} tin chờ duyệt nữa (xem ở /admin/schedule, tab \"Chờ duyệt\")."))
         return items
     if command in ("pause", "resume"):
         return [_autofire_item(command)]
@@ -173,7 +211,7 @@ def build_items(command: str) -> list[Item]:
 def _gone(original: str, what: str) -> CallbackResult:
     return CallbackResult(
         toast="Đã được xử lý rồi",
-        text=f"{original}\n\nℹ️ {what} đã được xử lý ở nơi khác.",
+        text=f"{original}\n\nℹ️ {what} đã được xử lý ở nơi khác (trang admin hoặc người khác).",
         keyboard=[],
     )
 
@@ -188,30 +226,30 @@ def _confirm_step(verb: str, ident: str, original: str) -> CallbackResult:
     if verb == "rs":
         task = schedule_store.get_missed(ident)
         if task is None:
-            return _gone(original, "Task này")
+            return _gone(original, "Bài này")
         account = get_all_accounts().get(task.account_id)
         if account is None:
-            return CallbackResult(toast="Không tìm thấy tài khoản của task này")
+            return CallbackResult(toast="Không tìm thấy tài khoản của bài này")
         suggested = admin._suggest_reschedule_at(account, task.action)
         label = f"Lên lịch lại (khoảng {jst_hhmm(suggested.isoformat())})"
     elif verb == "cm":
         if schedule_store.get_missed(ident) is None:
-            return _gone(original, "Task này")
-        label = "Huỷ task"
+            return _gone(original, "Bài này")
+        label = "Huỷ bài"
     elif verb == "ap":
         review = schedule_store.get_needs_review(ident)
         if review is None:
-            return _gone(original, "Job này")
-        label = f"Duyệt (tạo {len(review.groups)} task)"
+            return _gone(original, "Tin này")
+        label = f"Duyệt (tạo {len(review.groups)} bài đăng)"
     elif verb == "rj":
         if schedule_store.get_needs_review(ident) is None:
-            return _gone(original, "Job này")
-        label = "Bỏ qua job"
+            return _gone(original, "Tin này")
+        label = "Bỏ qua tin"
     elif verb == "af":
         label = "Tạm dừng" if ident == "off" else "Bật lại"
     else:
         return CallbackResult(toast="Nút không hợp lệ")
-    return CallbackResult(keyboard=_confirm_keyboard(verb, ident, label))
+    return CallbackResult(toast="Bấm Xác nhận để hoàn tất (hoặc Quay lại)", keyboard=_confirm_keyboard(verb, ident, label))
 
 
 def _execute(verb: str, ident: str, original: str, actor: str) -> CallbackResult:
@@ -220,33 +258,33 @@ def _execute(verb: str, ident: str, original: str, actor: str) -> CallbackResult
     if verb == "rs":
         task = schedule_store.get_missed(ident)
         if task is None:
-            return _gone(original, "Task này")
+            return _gone(original, "Bài này")
         account = get_all_accounts().get(task.account_id)
         if account is None:
-            return CallbackResult(toast="Không tìm thấy tài khoản của task này", keyboard=_main_keyboard("mt", ident))
+            return CallbackResult(toast="Không tìm thấy tài khoản của bài này", keyboard=_main_keyboard("mt", ident))
         suggested = admin._suggest_reschedule_at(account, task.action)
         restored = schedule_store.restore_to_pending(ident, scheduled_at=suggested.isoformat())
         if restored is None:
-            return _gone(original, "Task này")
+            return _gone(original, "Bài này")
         return _resolved(
             original, f"✅ Đã lên lịch lại lúc {jst_hhmm(suggested.isoformat())} JST — bởi {actor}", "Đã lên lịch lại",
         )
     if verb == "cm":
         if not schedule_store.cancel_missed(ident):
-            return _gone(original, "Task này")
-        return _resolved(original, f"🗑 Đã huỷ task — bởi {actor}", "Đã huỷ")
+            return _gone(original, "Bài này")
+        return _resolved(original, f"🗑 Đã huỷ bài — bởi {actor}", "Đã huỷ")
     if verb == "ap":
         err, created = admin.approve_needs_review_core(ident, "", None)
         if err in admin.REVIEW_ALREADY_HANDLED_ERRS:
-            return _gone(original, "Job này")
+            return _gone(original, "Tin này")
         if err:
             # Not consumed (the core restores the review) — keep the buttons usable.
             return CallbackResult(toast=err[:190], keyboard=_main_keyboard("rv", ident))
-        return _resolved(original, f"✅ Đã duyệt — tạo {created} task chờ đăng, bởi {actor}", "Đã duyệt")
+        return _resolved(original, f"✅ Đã duyệt — tạo {created} bài chờ đăng, bởi {actor}", "Đã duyệt")
     if verb == "rj":
         if not schedule_store.reject_needs_review(ident):
-            return _gone(original, "Job này")
-        return _resolved(original, f"🗑 Đã bỏ qua job — bởi {actor}", "Đã bỏ qua")
+            return _gone(original, "Tin này")
+        return _resolved(original, f"🗑 Đã bỏ qua tin — bởi {actor}", "Đã bỏ qua")
     if verb == "af":
         want_on = ident == "on"
         if get_scheduling_config().auto_fire_enabled == want_on:

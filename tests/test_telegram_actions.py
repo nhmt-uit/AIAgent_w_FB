@@ -65,29 +65,40 @@ def _datas(keyboard):
 def test_quahan_items_have_reschedule_and_cancel_buttons(accounts):
     task = _missed()
     [item] = telegram_actions.build_items("overdue")
-    assert "Task quá hạn" in item.text and "mất mạng" in item.text and "nội dung" in item.text
+    assert "Bài lỡ giờ đăng" in item.text and "Lý do: mất mạng" in item.text and "nội dung" in item.text
+    assert "Việc: Bình luận" in item.text and "(hôm nay)" in item.text and "post_to" not in item.text and "comment_on" not in item.text
     assert _datas(item.keyboard) == [f"rs|{task.task_id}", f"cm|{task.task_id}"]
+
+
+def test_the_lateness_label_agrees_with_the_printed_date():
+    now = datetime(2026, 11, 1, 1, 0, tzinfo=timezone.utc)                                  # 10:00 JST on the 1st
+    late_last_night = (now - timedelta(hours=11)).isoformat()                                # 23:00 JST on the 31st — only 11 hours ago
+    assert telegram_actions._lateness(late_last_night, now) == "hôm qua"
+    assert telegram_actions._lateness((now - timedelta(hours=1)).isoformat(), now) == "hôm nay"
+    assert telegram_actions._lateness((now - timedelta(days=3)).isoformat(), now) == "3 ngày trước"
+    assert telegram_actions._lateness("garbage", now) == "?"
 
 
 def test_quahan_items_are_capped(accounts):
     for _ in range(telegram_actions.MAX_ITEMS + 3):
         _missed()
     items = telegram_actions.build_items("overdue")
-    assert len(items) == telegram_actions.MAX_ITEMS + 1  # the buttons, then a "còn N task nữa" note
-    assert items[-1].keyboard is None and "còn 3 task quá hạn nữa" in items[-1].text
-    assert all(i.keyboard for i in items[:-1])
+    assert len(items) == telegram_actions.MAX_ITEMS + 2  # an intro, the cards, then a "còn N bài nữa" note
+    assert items[0].keyboard is None and f"Có {telegram_actions.MAX_ITEMS + 3} bài lỡ giờ đăng" in items[0].text and "Lên lịch lại" in items[0].text
+    assert items[-1].keyboard is None and "còn 3 bài lỡ giờ nữa" in items[-1].text and "/overdue" in items[-1].text
+    assert all(i.keyboard for i in items[1:-1])
 
 
 def test_quahan_with_nothing_overdue_says_so(accounts):
     [item] = telegram_actions.build_items("overdue")
-    assert "Không có task nào quá hạn" in item.text and item.keyboard is None
+    assert "Không có bài nào lỡ giờ đăng" in item.text and item.keyboard is None
 
 
 def test_choduyet_items_and_empty_state(accounts):
-    assert "Không có job" in telegram_actions.build_items("review")[0].text
+    assert "Không có tin tuyển dụng nào đang chờ duyệt" in telegram_actions.build_items("review")[0].text
     review = _review()
     [item] = telegram_actions.build_items("review")
-    assert "Thợ hàn" in item.text and "0.50" in item.text
+    assert "Thợ hàn" in item.text and "0.50" in item.text and "thang 0–1" in item.text and "Tin tuyển dụng chờ duyệt" in item.text
     assert _datas(item.keyboard) == [f"ap|{review.review_id}", f"rj|{review.review_id}"]
 
 
@@ -164,9 +175,9 @@ def test_cancel_missed_moves_it_to_cancelled(accounts):
 def test_approve_review_creates_tasks_through_the_same_core_as_admin(accounts):
     review = _review(contents=("bài 1", "bài 2"))
     confirm = telegram_actions.handle_callback(f"ap|{review.review_id}", "orig", "Tu")
-    assert "tạo 2 task" in confirm.keyboard[0][0]["text"]
+    assert "tạo 2 bài đăng" in confirm.keyboard[0][0]["text"] and confirm.toast
     result = telegram_actions.handle_callback(f"ap!|{review.review_id}", "orig", "Tu")
-    assert "tạo 2 task" in result.text and result.keyboard == []
+    assert "tạo 2 bài chờ đăng" in result.text and result.keyboard == []
     assert schedule_store.get_needs_review(review.review_id) is None
     pending = schedule_store.list_pending()
     assert [t.content for t in pending] == ["bài 1", "bài 2"] and all(t.action == "post_to_group" for t in pending)

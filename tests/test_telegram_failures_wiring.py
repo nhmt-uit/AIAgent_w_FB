@@ -335,7 +335,7 @@ async def test_loi_is_listed_in_the_menu_and_refused_in_a_group(env, monkeypatch
     add_telegram_recipient("12345", "Tu")
     group = {"update_id": 1, "message": {"chat": {"id": "12345", "type": "group"}, "text": "/error"}}
     sent = await _run_batch(monkeypatch, [group])
-    assert sent == ["Các nút thao tác chỉ dùng được trong chat riêng với bot."]
+    assert len(sent) == 1 and "chỉ dùng được trong chat riêng với bot" in sent[0] and "nhắn riêng" in sent[0]
 
 
 async def test_pressing_a_button_on_a_photo_card_edits_the_caption_and_syncs_the_other_copy(env, monkeypatch, isolated_runtime_config):  # noqa: F811
