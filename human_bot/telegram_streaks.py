@@ -143,7 +143,7 @@ def _handle_locked(rest: str, actor: str) -> CallbackResult:
             return _result(ticket, "Tài khoản không còn ở trạng thái hoạt động — bảng nút đã được làm mới")
         return CallbackResult(
             alert=True,
-            toast=f"Tạm dừng {aid} vì nghi Facebook hạn chế? Khi kích hoạt lại, tài khoản chạy giới hạn thấp vài ngày (hạ nhiệt). Chỉ muốn nghỉ thì dùng Tắt. Xác nhận?",
+            toast=f"Tạm dừng {aid[:30]} vì nghi Facebook hạn chế? Kích hoạt lại sẽ phải chạy giới hạn thấp vài ngày (hạ nhiệt). Chỉ nghỉ thì dùng Tắt. Xác nhận?",
             keyboard=[[_btn("✅ Xác nhận tạm dừng", f"fa|pc|{ticket['id']}"), _btn("↩ Quay lại", f"fa|bk|{ticket['id']}")]],
         )
     if verb == "pc":

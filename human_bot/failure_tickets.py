@@ -55,9 +55,13 @@ _lock = threading.RLock()
 def _load() -> dict[str, dict[str, Any]]:
     try:
         text = STORE_PATH.read_text(encoding="utf-8")
+    except UnicodeDecodeError:
+        text = None  # damaged bytes: handled like damaged JSON below
     except OSError:
         return {}
     try:
+        if text is None:
+            raise ValueError("not valid UTF-8")
         data = json.loads(text)
         if isinstance(data, dict):
             return data
@@ -82,7 +86,7 @@ def _save(tickets: dict[str, dict[str, Any]]) -> bool:
             json.dump(tickets, f, ensure_ascii=False)
         os.replace(tmp, STORE_PATH)
         return True
-    except OSError:
+    except (OSError, TypeError, ValueError):  # TypeError/ValueError: a field that cannot be written as JSON
         logger.exception("failure_tickets: could not save")
         if tmp:
             try:
@@ -151,6 +155,8 @@ def batches_containing(ticket_ids: "str | list[str] | set[str]") -> list[dict[st
 
 
 def update(ticket_id: str, **fields: Any) -> dict[str, Any] | None:
+    """Merges `fields` into the ticket. None if there is no such ticket OR the change could not be
+    written to disk — never a ticket whose new state exists only in memory."""
     with _lock:
         tickets = _load()
         ticket = tickets.get(ticket_id)
@@ -158,8 +164,7 @@ def update(ticket_id: str, **fields: Any) -> dict[str, Any] | None:
             return None
         ticket.update(fields)
         ticket["updated_at"] = datetime.now(timezone.utc).isoformat()
-        _save(tickets)
-        return ticket
+        return ticket if _save(tickets) else None
 
 
 def add_message(ticket_id: str, chat_id: str, message_id: int, photo: bool = False) -> None:

@@ -6750,3 +6750,36 @@ Owner đã thử giai đoạn 1 với bot thật ("ổn"), yêu cầu làm giai 
 - Test: `tests/test_telegram_batches.py`, `test_telegram_streaks.py`, `test_telegram_phase2_wiring.py` (+ `test_telegram_commands.py`
   cho tên cũ). Suite 1093 pass. **CHƯA thử giai đoạn 2 với bot thật.** Giai đoạn 3 (tự thử lại lỗi hạ tầng, tắt cảnh
   báo tạm, ngắt nhóm hỏng liên tục) chưa làm.
+
+### Telegram: phản hồi lệnh rõ ràng, dễ đọc hơn (2026-11-01)
+
+Owner yêu cầu: "các phản hồi khi gửi lệnh qua telegram cần rõ ràng hơn, dễ đọc và dễ hiểu hơn". Đã xem thử từng phản hồi bằng
+dữ liệu thật (đọc, không ghi) trước khi sửa. Chỉ đổi cách trình bày — không đổi hành vi của lệnh / nút.
+- **Bỏ tên nội bộ:** `post_to_group` → "Đăng bài", `comment_on_group_post` → "Bình luận"... (`telegram_commands.action_label`);
+  tài khoản hiện bằng tên hiển thị (📄 cho Page) thay vì id (`account_name`); "task/job" → "bài / tin tuyển dụng".
+- **Giờ:** có nhãn JST; giờ trong ngày chỉ hiện `20:01`, ngày khác mới kèm `02/11` (`short_when`); thẻ "lỡ giờ" ghi "hôm nay / hôm qua /
+  N ngày trước" theo NGÀY LỊCH (review phát hiện nhãn tính theo 24 giờ lệch với ngày in bên cạnh).
+- **/help:** chia nhóm (Xem nhanh / Xử lý có nút bấm / Tự động đăng), có mẹo "trả lời tin lỗi bằng nội dung mới" và giải thích giờ JST
+  + mốc 02:00 — dựng từ MỘT bảng (`_SPEC`) dùng chung với menu "/" của bot nên không lệch nhau. Tin nhắn bot không hiểu → "🤔 Mình chưa
+  hiểu tin nhắn này." + danh sách lệnh; `/start` → lời chào (`static_reply`, không còn chuỗi giả "help_unknown").
+- **/schedule:** 2 dòng/bài (giờ · việc · tài khoản, rồi `↳ nhóm`), tiêu đề đếm số bài, câu giải thích bài "đã đến giờ nhưng chưa chạy".
+- **/report và tóm tắt 06:00:** "Kết quả: ✅ N thành công · ❌ M thất bại", mỗi tài khoản 1 mục kèm việc đã làm, tài khoản chưa có
+  lượt gộp vào 1 dòng, phần "Tình hình hiện tại" CHỈ nêu cái cần xử lý kèm lệnh xử lý (`⚠️ Bài lỡ giờ: 2 → /overdue`, `❌ Lỗi chưa xử lý: 3
+  → /error`, `🔍 Tin chờ duyệt: 1 → /review`) hoặc "✅ Không có ... nào đang chờ xử lý".
+- **/overdue, /review:** thẻ nhiều dòng có biểu tượng (🕐 hẹn lúc, ❓ lý do, 👤 tài khoản, 🔖 việc, 📍 nhóm, 📝 nội dung); khi có ≥ 2
+  thì mở đầu bằng 1 tin giải thích nút làm gì; lý do bị tắt/tạm dừng tài khoản nay hiện đúng ("tài khoản bị tắt / tạm dừng") thay vì
+  "khác"; bấm nút lần 1 có gợi ý "Bấm Xác nhận để hoàn tất"; bỏ hàm `missed_text` không còn dùng.
+- **/pause, /resume, /health:** câu hỏi cuối rõ ràng ("Bạn muốn tạm dừng?"), /health có tiêu đề, trang có 📄; thông báo từ chối trong
+  nhóm chat nói rõ "hãy nhắn riêng cho bot".
+- **Rà soát /code-review (8 phát hiện, sửa 8):** nhãn "hôm nay" lệch ngày; mỗi tên tài khoản đọc lại toàn bộ cấu hình (nay đọc 1 lần
+  mỗi lệnh); /health không đánh dấu Page; dòng "chưa có lượt" lặp ý; /help viết tay lệch với menu; chuỗi giả `help_unknown`; câu giải
+  thích "chưa chạy" nói như đã biết nguyên nhân; chú giải màu của /health có thể lệch icon thật (bỏ chú giải).
+- **Review độc lập lần 3 lên các file giai đoạn 2 (9 phát hiện, sửa 9):** hai lỗi đến cùng lúc có thể ghi 1 thành viên 2 lần vào thẻ
+  gộp (rồi "Lên lịch lại tất cả" xếp bài 2 lần) → bỏ trùng + `members_of` đọc mỗi thành viên 1 lần; lỗi thứ 4 đến khi thẻ còn đang gửi
+  làm gửi THẺ THỨ HAI → `announce` chạy từng cái một và đọc lại thẻ trước khi quyết định gửi hay sửa; mỗi lần gõ `/error` đẻ thêm
+  một thẻ tổng hợp → dùng lại thẻ đang mở (chỉ xoá thẻ nếu chưa ai giữ); `_refresh_status` làm vỡ câu trả lời khi thẻ bị dọn giữa chừng;
+  kho phiếu: `update` nay trả `None` khi KHÔNG ghi được đĩa (trước đây báo thành công), file hỏng byte (UnicodeDecodeError) và field
+  không ghi được JSON không còn làm sập / để lại file `.tmp`, `_requeue` nói thật "đã lên lịch nhưng không ghi được phiếu, đừng bấm lại";
+  cửa sổ gộp không lùi về trước; popup quá 200 ký tự được rút gọn có chủ ý; `send_ticket` thật sự cô lập từng người nhận.
+- Test: cập nhật các test cũ theo chữ mới + test mới trong `tests/test_telegram_commands.py`, `test_telegram_actions.py`,
+  `test_telegram_batches.py`, `test_telegram_failures.py`, `test_telegram_streaks.py`. Suite 1117 pass. Chưa commit.

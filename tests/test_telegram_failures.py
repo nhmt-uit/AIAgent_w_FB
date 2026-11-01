@@ -688,3 +688,19 @@ def test_the_duplicate_check_ignores_unrelated_posts_when_the_content_is_empty(i
     assert db.success_logged_after("a", "u", "", before) is None                         # empty content never matches by itself
     assert db.success_logged_after("a", "u", None, before) is None
     assert db.success_logged_after("a", "u", "", before, source_id="other", source_kind="job") is not None   # but the same job does
+
+
+def test_a_store_with_undecodable_bytes_is_set_aside_like_a_corrupt_one():
+    failure_tickets.STORE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    failure_tickets.STORE_PATH.write_bytes(b"\xff\xfe\x00garbage\xff")
+    assert failure_tickets.list_open() == []
+    assert failure_tickets.create(account_id="a")["id"]
+    assert list(failure_tickets.STORE_PATH.parent.glob("_telegram_tickets.json.corrupt-*"))
+
+
+def test_a_field_that_cannot_be_written_fails_cleanly_without_leaving_a_temp_file():
+    import pathlib
+    with pytest.raises(RuntimeError):
+        failure_tickets.create(account_id="a", weird=pathlib.Path("/x"))                         # not JSON-serialisable
+    assert not list(failure_tickets.STORE_PATH.parent.glob("*.tmp"))
+    assert failure_tickets.create(account_id="a")["id"]                                           # and the store still works

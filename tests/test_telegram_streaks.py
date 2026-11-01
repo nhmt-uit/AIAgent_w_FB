@@ -177,3 +177,23 @@ async def test_an_alert_that_was_delivered_but_not_remembered_is_not_sent_twice(
     monkeypatch.setattr(failure_tickets, "add_message", broken)
     await telegram_streaks.send_alert(ACC, "post_to_group", 3, "boom")
     assert plain == []                                                                  # the card reached the recipients
+
+
+async def test_one_recipient_failing_does_not_lose_the_references_of_the_others(isolated_runtime_config, monkeypatch):
+    from human_bot.runtime_config import add_telegram_recipient
+    add_telegram_recipient("111", "A")
+    add_telegram_recipient("222", "B")
+    monkeypatch.setattr(telegram_notify, "is_configured", lambda: True)
+
+    async def send_to(chat_id, text, keyboard=None, *, photo_path=None, silent=True):
+        if chat_id == "222":
+            raise RuntimeError("boom")
+        return {"chat_id": chat_id, "message_id": 7, "photo": False}
+
+    monkeypatch.setattr(telegram_notify, "send_ticket_to", send_to)
+    refs = await telegram_notify.send_ticket("x", None)
+    assert refs == [{"chat_id": "111", "message_id": 7, "photo": False}]
+
+
+def test_the_pause_question_fits_a_telegram_popup(alert):
+    assert len(_press("ps", alert).toast) <= 200

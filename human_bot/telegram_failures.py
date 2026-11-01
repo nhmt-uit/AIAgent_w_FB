@@ -348,6 +348,8 @@ def _requeue(ticket: dict[str, Any], actor: str, *, new_content: str | None = No
             "prev_task_fields": prev_task_fields,
         },
     )
+    if updated is None:  # the task IS queued now; only the ticket could not be saved (disk full?)
+        return None, "Đã lên lịch lại nhưng không ghi được phiếu lỗi (ổ đĩa đầy?) — kiểm tra /admin/schedule và đừng bấm lại."
     return updated, None
 
 
@@ -393,6 +395,8 @@ def _undo(ticket: dict[str, Any], actor: str) -> CallbackResult:
     else:
         schedule_store.cancel(task_id)
     updated = failure_tickets.update(ticket["id"], status=failure_tickets.OPEN, resched=None, resolved_by=None)
+    if updated is None:  # the task is back where it was; only the ticket could not be saved
+        return _result(ticket, "Đã hoàn tác nhưng không ghi được phiếu lỗi — kiểm tra ổ đĩa", keyboard=[])
     return _result(updated, f"Đã hoàn tác — bởi {actor}")
 
 
@@ -404,6 +408,8 @@ def _dismiss(ticket: dict[str, Any], actor: str, *, posted: bool) -> CallbackRes
     updated = failure_tickets.update(
         ticket["id"], status=failure_tickets.POSTED if posted else failure_tickets.DISMISSED, resolved_by=actor,
     )
+    if updated is None:
+        return _result(ticket, "Không ghi được phiếu lỗi — kiểm tra ổ đĩa", keyboard=[])
     return _result(updated, "Đã ghi nhận" if posted else "Đã bỏ qua")
 
 

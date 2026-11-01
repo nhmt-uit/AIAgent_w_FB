@@ -335,7 +335,11 @@ async def send_ticket(
         return []
     refs = []
     for recipient in get_telegram_recipients():
-        ref = await send_ticket_to(recipient["chat_id"], text, keyboard, photo_path=photo_path, silent=silent)
+        try:
+            ref = await send_ticket_to(recipient["chat_id"], text, keyboard, photo_path=photo_path, silent=silent)
+        except Exception:  # noqa: BLE001 — one recipient failing must not lose the references of those already reached
+            logger.exception("telegram_notify: send_ticket to %s failed", recipient.get("chat_id"))
+            continue
         if ref:
             refs.append(ref)
     return refs

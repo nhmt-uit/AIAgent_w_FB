@@ -521,3 +521,90 @@ def test_replying_to_a_streak_alert_says_what_it_is(env):
     alert = telegram_streaks.create_ticket("acc-a", "post_to_group", 3, SLOW)
     outcome = telegram_failures.apply_reply(alert, "x", "Tu")
     assert outcome.ticket_id is None and "cảnh báo lỗi liên tiếp" in outcome.message
+
+
+# --- review round 3 (2026-11-01) ------------------------------------------------------------------------------------------------
+
+def test_a_failure_that_landed_together_with_the_one_that_started_the_burst_is_not_counted_twice(env, later_slot):
+    _fail(); _fail(); t3, (burst, _n) = _fail()
+    again, is_new = telegram_batches.attach(t3)                                       # its own attach() arrives after another thread already grouped it
+    assert not is_new and again["id"] == burst["id"] and again["members"].count(t3["id"]) == 1 and len(again["members"]) == 3
+    failure_tickets.update(burst["id"], members=burst["members"] + [t3["id"]])         # ...and even a stored duplicate is read once
+    assert len(telegram_batches.members_of(failure_tickets.get(burst["id"]))) == 3
+    r = _press("ra", burst)
+    assert r.toast == "Đã lên lịch lại 3 lỗi" and len(schedule_store.list_pending()) == 3
+
+
+def test_the_burst_window_never_moves_backwards(env):
+    _fail(); _fail(); _t3, (burst, _n) = _fail()
+    latest = telegram_batches._parse(failure_tickets.get(burst["id"])["last_member_at"])
+    late = _ticket_for(_failed_task(age_hours=0.2))                                     # a failure recorded late, with an older failed_at
+    failure_tickets.update(late["id"], failed_at=(latest - timedelta(minutes=5)).isoformat())
+    joined, _new = telegram_batches.attach(failure_tickets.get(late["id"]))
+    assert telegram_batches._parse(joined["last_member_at"]) >= latest
+
+
+async def test_a_failure_joining_while_the_card_is_still_being_sent_edits_it_instead_of_sending_another(env, monkeypatch):
+    import asyncio
+    _fail(); _fail(); _t3, (burst, _n) = _fail()
+    sent, edited = [], []
+
+    async def slow_send(text, keyboard=None, *, photo_path=None, silent=True):
+        sent.append(text)
+        await asyncio.sleep(0.05)                                                        # failure 4 arrives during this
+        return [{"chat_id": "111", "message_id": 5, "photo": False}]
+
+    async def edit(chat_id, message_id, *, text=None, keyboard=None, photo=False):
+        edited.append(text)
+        return True
+
+    monkeypatch.setattr(telegram_notify, "send_ticket", slow_send)
+    monkeypatch.setattr(telegram_notify, "edit_message", edit)
+    _t4, (same, _new) = _fail()
+    first = asyncio.create_task(telegram_batches.announce(burst, True))
+    await asyncio.sleep(0.01)
+    second = asyncio.create_task(telegram_batches.announce(same, False))               # holds the pre-send copy with no messages yet
+    assert await first is True and await second is True
+    assert len(sent) == 1 and len(edited) == 1 and "4 lỗi cùng nguyên nhân" in edited[0]
+
+
+def test_the_error_summary_card_is_reused_not_stored_again_each_time(env):
+    for hours in (1, 2, 3):
+        _failed_task(age_hours=hours)
+    first = telegram_batches.build_list_batch()
+    second = telegram_batches.build_list_batch()
+    assert first["id"] == second["id"] and len(failure_tickets.list_open(kind=failure_tickets.BATCH)) == 1
+    _failed_task(age_hours=4)
+    third = telegram_batches.build_list_batch()
+    assert third["id"] == first["id"] and len(third["members"]) == 4                         # the same card, with the new failure added
+
+
+def test_a_card_that_vanishes_during_a_bulk_action_does_not_break_the_answer(env, later_slot, monkeypatch):
+    a, _ = _fail(); b, _ = _fail()
+    batch = _batch(a, b)
+    real = failure_tickets.update
+    monkeypatch.setattr(failure_tickets, "update", lambda tid, **f: None if tid == batch["id"] else real(tid, **f))   # pruned meanwhile
+    r = _press("ra", batch)
+    assert r.toast == "Đã lên lịch lại 2 lỗi" and r.text and len(schedule_store.list_pending()) == 2
+    assert _press("sc", batch).text
+
+
+def test_long_skip_lists_still_fit_a_telegram_popup(env):
+    assert len(telegram_batches._toast("x" * 500)) <= 195 and telegram_batches._toast("short") == "short"
+    reasons = telegram_batches._SKIP_REASON
+    why = ", ".join(f"{text} ×9" for text in reasons.values())
+    assert len(telegram_batches._toast(f"Chưa làm được 99 lỗi: {why}. Xem từng lỗi ở /error.")) <= 195
+
+
+def test_an_unwritable_ticket_store_is_reported_not_pretended(env, monkeypatch):
+    t, _ = _fail()
+    monkeypatch.setattr(failure_tickets, "_save", lambda tickets: False)
+    assert failure_tickets.update(t["id"], status=failure_tickets.DISMISSED) is None            # not a ticket that only exists in memory
+
+
+def test_requeue_tells_the_truth_when_only_the_ticket_could_not_be_saved(env, later_slot, monkeypatch):
+    task = _failed_task(age_hours=0.05)
+    t = _ticket_for(task)
+    monkeypatch.setattr(failure_tickets, "update", lambda tid, **f: None)
+    r = telegram_failures.handle_callback(f"rs|{t['id']}", "Tu")
+    assert r.alert and "đừng bấm lại" in r.toast and schedule_store.get(task.task_id) is not None     # it IS queued; the person is told not to repeat it

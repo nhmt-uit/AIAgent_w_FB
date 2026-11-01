@@ -33,6 +33,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import threading
+import weakref
 from collections import Counter
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -67,6 +68,11 @@ _SKIP_REASON = {
 }
 
 
+def _toast(text: str, limit: int = 195) -> str:
+    """answerCallbackQuery cuts at 200 characters — keep the ending the person needs instead of losing it silently."""
+    return text if len(text) <= limit else text[: limit - 1] + "…"
+
+
 def _parse(iso: str | None) -> datetime | None:
     return telegram_failures.parse_iso(iso)
 
@@ -86,8 +92,8 @@ def _bulk_ok(ticket: dict[str, Any]) -> bool:
 
 
 def members_of(batch: dict[str, Any]) -> list[dict[str, Any]]:
-    """The members that still exist, in the order they joined — ONE read of the store."""
-    return failure_tickets.get_many(list(batch.get("members") or []))
+    """The members that still exist, in the order they joined, each once — ONE read of the store."""
+    return failure_tickets.get_many(list(dict.fromkeys(batch.get("members") or [])))
 
 
 # --- joining a burst (called when a failure ticket has just been created) ---------------------------
@@ -117,8 +123,11 @@ def attach(ticket: dict[str, Any]) -> tuple[dict[str, Any] | None, bool]:
     with _burst_lock:
         burst = _active_burst(category, now)
         if burst is not None:
-            members = list(burst.get("members") or []) + [ticket["id"]]
-            return failure_tickets.update(burst["id"], members=members, last_member_at=now.isoformat()), False
+            members = list(burst.get("members") or [])
+            if ticket["id"] not in members:  # a failure landing together with the one that started the burst is already in
+                members.append(ticket["id"])
+            last = max(filter(None, [_parse(burst.get("last_member_at")), now]))  # the window never moves back
+            return failure_tickets.update(burst["id"], members=members, last_member_at=last.isoformat()) or burst, False
         grouped = {  # already in an open burst (one whose window has lapsed) — never in two group cards
             member for batch in failure_tickets.list_open(kind=failure_tickets.BATCH)
             if batch.get("scope") == "burst" for member in batch.get("members") or []
@@ -149,28 +158,47 @@ def build_list_batch(tickets: list[dict[str, Any]] | None = None) -> dict[str, A
     if len(safe) < LIST_MIN:
         return None
     safe.sort(key=lambda t: t.get("failed_at") or t.get("created_at") or "")
-    return failure_tickets.create(
-        kind=failure_tickets.BATCH, scope="list", category=None, members=[t["id"] for t in safe],
-        last_resched=None, last_dismiss=None,
-    )
+    members = [t["id"] for t in safe]
+    with _burst_lock:
+        for existing in failure_tickets.list_open(kind=failure_tickets.BATCH):  # newest first
+            if existing.get("scope") == "list":  # one summary card at a time: every copy of it stays in sync
+                return failure_tickets.update(existing["id"], members=members) or existing
+        return failure_tickets.create(
+            kind=failure_tickets.BATCH, scope="list", category=None, members=members, last_resched=None, last_dismiss=None,
+        )
+
+
+_announce_locks: "weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, asyncio.Lock]" = weakref.WeakKeyDictionary()
+
+
+def _announce_lock() -> asyncio.Lock:
+    loop = asyncio.get_running_loop()  # one lock per event loop (a Lock must not outlive the loop it was used on)
+    lock = _announce_locks.get(loop)
+    if lock is None:
+        lock = _announce_locks[loop] = asyncio.Lock()
+    return lock
 
 
 async def announce(batch: dict[str, Any], is_new: bool) -> bool:
     """Puts the group card in front of the recipients: a new one is sent, an existing one is
-    edited in place (silently — per-attempt reports are always silent). True when somebody has it."""
+    edited in place (silently — per-attempt reports are always silent). True when somebody has it.
+    One announcement at a time: a failure joining while the card is still being sent must wait
+    for it, then see it (and edit it) instead of sending a second copy."""
     from human_bot import telegram_notify  # local import — as telegram_failures does
-    if is_new or not batch.get("messages"):
-        text, keyboard = card(batch)
-        refs = await telegram_notify.send_ticket(text, keyboard, silent=True)
-        for ref in refs:
-            try:
-                await asyncio.to_thread(failure_tickets.add_message, batch["id"], ref["chat_id"], ref["message_id"], ref["photo"])
-            except Exception:  # noqa: BLE001 — it was DELIVERED; failing to remember where only loses later edits
-                logger.exception("could not remember where group card %s was sent", batch["id"])
-        return bool(refs)
-    # True only if at least one copy was really updated — else nobody saw this failure, and the caller
-    # gives it a card of its own
-    return await telegram_failures.sync_copies(batch["id"]) > 0
+    async with _announce_lock():
+        batch = failure_tickets.get(batch["id"]) or batch  # the state NOW (the previous announcement may have just stored its messages)
+        if is_new or not batch.get("messages"):
+            text, keyboard = card(batch)
+            refs = await telegram_notify.send_ticket(text, keyboard, silent=True)
+            for ref in refs:
+                try:
+                    await asyncio.to_thread(failure_tickets.add_message, batch["id"], ref["chat_id"], ref["message_id"], ref["photo"])
+                except Exception:  # noqa: BLE001 — it was DELIVERED; failing to remember where only loses later edits
+                    logger.exception("could not remember where group card %s was sent", batch["id"])
+            return bool(refs)
+        # True only if at least one copy was really updated — else nobody saw this failure, and the caller
+        # gives it a card of its own
+        return await telegram_failures.sync_copies(batch["id"]) > 0
 
 
 # --- the card ----------------------------------------------------------------------------------------------
@@ -274,13 +302,14 @@ def _keyboard(batch: dict[str, Any], members: list[dict[str, Any]]) -> list[list
 
 # --- button presses ----------------------------------------------------------------------------------------------
 
-def _refresh_status(batch_id: str) -> dict[str, Any]:
-    """OPEN while any member is still open, else DONE. Under _burst_lock: a failure joining the
-    burst right now must not be missed (a DONE burst cannot be joined)."""
+def _refresh_status(batch: dict[str, Any]) -> dict[str, Any]:
+    """OPEN while any member is still open, else DONE (the updated card; `batch` itself if it vanished
+    meanwhile). Under _burst_lock: a failure joining the burst right now must not be missed (a DONE
+    burst cannot be joined)."""
     with _burst_lock:
-        batch = failure_tickets.get(batch_id) or {}
-        has_open = any(m.get("status") == failure_tickets.OPEN for m in members_of(batch))
-        return failure_tickets.update(batch_id, status=failure_tickets.OPEN if has_open else failure_tickets.DONE) or batch
+        fresh = failure_tickets.get(batch["id"]) or batch
+        has_open = any(m.get("status") == failure_tickets.OPEN for m in members_of(fresh))
+        return failure_tickets.update(batch["id"], status=failure_tickets.OPEN if has_open else failure_tickets.DONE) or fresh
 
 
 def _result(batch: dict[str, Any], toast: str = "", *, changed: list[str] | tuple[str, ...] = (), alert: bool = False) -> CallbackResult:
@@ -341,7 +370,7 @@ def _reschedule_all(batch: dict[str, Any], actor: str) -> CallbackResult:
         if not skipped:
             return _result(batch, "Không còn lỗi nào đang chờ")
         why = ", ".join(f"{_SKIP_REASON.get(k, k)} ×{v}" for k, v in skipped.items())
-        return _result(batch, f"Chưa làm được {sum(skipped.values())} lỗi: {why}. Xem từng lỗi ở /error.", alert=True)
+        return _result(batch, _toast(f"Chưa làm được {sum(skipped.values())} lỗi: {why}. Xem từng lỗi ở /error."), alert=True)
     previous = batch.get("last_resched") or {}
     still_queued = _undoable(batch, members)  # an earlier bulk's tasks that are still in the schedule stay undoable
     slots = sorted(filter(None, [(u.get("resched") or {}).get("at") for u in done] + (
@@ -353,7 +382,7 @@ def _reschedule_all(batch: dict[str, Any], actor: str) -> CallbackResult:
             "ids": [m["id"] for m in still_queued] + [u["id"] for u in done], "first_at": slots[0], "last_at": slots[-1],
         },
     ) or batch
-    batch = _refresh_status(batch["id"])
+    batch = _refresh_status(batch)
     toast = f"Đã lên lịch lại {len(done)} lỗi" + (f", chưa làm được {sum(skipped.values())} (xem thẻ)" if skipped else "")
     return _result(batch, toast, changed=[u["id"] for u in done])
 
@@ -365,7 +394,7 @@ def _dismiss_all(batch: dict[str, Any], actor: str, expected: int | None = None)
         # never dismiss what the person was not asked about — ask again with the real number
         return CallbackResult(
             alert=True,
-            toast=f"Danh sách vừa thay đổi: nay có {len(open_)} lỗi đang chờ (lúc hỏi là {expected}). Xác nhận lại để bỏ qua {len(open_)} lỗi.",
+            toast=_toast(f"Danh sách vừa thay đổi: nay có {len(open_)} lỗi đang chờ (lúc hỏi là {expected}). Xác nhận lại để bỏ qua {len(open_)} lỗi."),
             keyboard=[[_btn(f"✅ Xác nhận bỏ qua {len(open_)} lỗi", f"fb|sc|{batch['id']}|{len(open_)}"), _btn("↩ Quay lại", f"fb|bk|{batch['id']}")]],
         )
     changed = []
@@ -376,7 +405,7 @@ def _dismiss_all(batch: dict[str, Any], actor: str, expected: int | None = None)
         return _result(batch, "Không còn lỗi nào đang chờ")
     # a separate field: an earlier bulk re-queue is still undoable
     batch = failure_tickets.update(batch["id"], last_dismiss={"by": actor, "count": len(changed), "at": datetime.now(timezone.utc).isoformat()}) or batch
-    batch = _refresh_status(batch["id"])
+    batch = _refresh_status(batch)
     return _result(batch, f"Đã bỏ qua {len(changed)} lỗi", changed=changed)
 
 
@@ -392,6 +421,6 @@ def _undo_all(batch: dict[str, Any], actor: str) -> CallbackResult:
         after = telegram_failures.undo_requeue(member, actor)
         (undone if after.get("status") == failure_tickets.OPEN else kept).append(after["id"])
     batch = failure_tickets.update(batch["id"], last_resched=dict(resched, ids=kept) if kept else None) or batch
-    batch = _refresh_status(batch["id"])
+    batch = _refresh_status(batch)
     toast = f"Đã hoàn tác {len(undone)} lỗi" + (f", {len(kept)} không hoàn tác được (sắp/đã chạy)" if kept else "")
     return _result(batch, toast, changed=undone + kept, alert=bool(kept and not undone))

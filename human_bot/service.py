@@ -468,7 +468,7 @@ async def _send_failure_list(chat_id: str) -> None:
         ref = await telegram_notify.send_ticket_to(chat_id, text, keyboard, silent=True)
         if ref:
             await asyncio.to_thread(failure_tickets.add_message, batch["id"], ref["chat_id"], ref["message_id"], ref["photo"])
-        else:
+        elif not batch.get("messages"):
             await asyncio.to_thread(failure_tickets.delete, batch["id"])  # nobody holds this card — do not leave it behind
     for ticket, text, keyboard, photo in items:
         ref = await telegram_notify.send_ticket_to(chat_id, text, keyboard, photo_path=photo, silent=True)
