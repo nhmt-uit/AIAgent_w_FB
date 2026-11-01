@@ -113,10 +113,13 @@ class _FakePage:
         if self.fail_goto:
             raise self.fail_goto
 
+    menu_label = "Account, your profile"
+
     def get_by_role(self, role, name=None):
         if name is not None and "Switch" in name.pattern:
             return _FakeLocator([_FakeButton(label) for label in self.switch_labels])
-        return _FakeLocator([_FakeButton("Account, your profile")])
+        # the account-menu button: only buttons whose label the given regex matches are "visible"
+        return _FakeLocator([_FakeButton(self.menu_label)] if name is None or name.search(self.menu_label) else [])
 
     async def press(self, key):
         self.pressed.append(key)
@@ -372,7 +375,7 @@ def test_the_accounts_list_shows_the_page_and_personal_names(client):
         "account_id": "page_donkysu", "display_name": "D", "page_name": PAGE, "personal_name": ME, "owner_account_id": "tu_iizuki",
     })
     html = client.get("/admin/accounts").text
-    assert "thuộc tài khoản cá nhân" in html and PAGE in html and ME in html
+    assert f"Page: {PAGE}" in html and f"Hồ sơ cá nhân: {ME}" in html and "↳ " in html
 
 
 def test_a_plain_account_has_no_page_or_personal_name(client):
@@ -458,8 +461,8 @@ def test_a_page_cannot_be_the_owner_of_another_page(client):
 def test_the_list_links_a_page_to_its_owner_and_the_owner_to_its_pages(client):
     _register(client)
     html = client.get("/admin/accounts").text
-    assert "thuộc tài khoản cá nhân" in html and "/admin/reports?account_id=tu_iizuki" in html
-    assert "Các Page của tài khoản này" in html and "/admin/reports?account_id=page_donkysu" in html
+    assert 'href="/admin/reports?account_id=tu_iizuki"' in html and "Xem báo cáo của tài khoản cá nhân sở hữu Page này" in html
+    assert "Các Page:" in html and 'href="/admin/reports?account_id=page_donkysu"' in html
     from human_bot.config import pages_of
     assert [a.account_id for a in pages_of("tu_iizuki")] == ["page_donkysu"]
     assert pages_of("page_donkysu") == []
@@ -789,11 +792,15 @@ def test_an_owner_that_still_has_pages_cannot_be_deleted(client):
     assert "page_donkysu" not in get_all_accounts()
 
 
-def test_an_owner_session_page_shows_no_login_button_of_its_own(client):
-    _register(client, mode="owner_session")
+def test_a_page_never_shows_the_personal_login_button(client):
+    """"Đăng nhập & lưu phiên" logs in as the PERSONAL profile — exactly what a Page's own
+    session must not be — so it is not offered for any Page, in any mode."""
+    for mode, acc in (("owner_session", "page_a"), ("own_session", "page_b"), ("auto", "page_c")):
+        _register(client, mode=mode, account_id=acc, page_name=f"Page {acc}")
     html = client.get("/admin/accounts").text
-    assert "đăng nhập ở tài khoản cá nhân sở hữu Page này" in html or "phiên OK" in html
-    assert "bootstrap-login-modal?account_id=page_donkysu" not in html
+    for acc in ("page_a", "page_b", "page_c"):
+        assert f"bootstrap-login-modal?account_id={acc}" not in html
+    assert "bootstrap-login-modal?account_id=tu_iizuki" in html or "phiên OK" in html   # personal accounts keep theirs
 
 
 async def test_already_on_the_page_is_not_a_refusal(owner_mode):
@@ -963,8 +970,8 @@ async def test_own_session_mode_is_strict_and_never_falls_back(auto_mode):
 def test_the_form_defaults_to_auto_and_lists_all_three_modes(client):
     html = client.get("/admin/accounts/add-modal").text
     for mode in ("auto", "own_session", "owner_session"):
-        assert f'value="{mode}"' in html
-    assert 'value="auto" selected' in html
+        assert f'name="page_session_mode" value="{mode}"' in html
+    assert 'value="auto" checked' in html
 
 
 def test_auto_mode_keeps_its_own_login_file_and_warm_up(client):
@@ -977,7 +984,7 @@ def test_auto_mode_keeps_its_own_login_file_and_warm_up(client):
 def test_the_list_offers_all_three_modes_in_a_select(client):
     _register(client, mode="auto")
     html = client.get("/admin/accounts").text
-    assert 'name="mode"' in html and "ưu tiên phiên riêng của Page" in html
+    assert 'name="mode"' in html and "Tự động (khuyên dùng)" in html and "Chỉ phiên của Page" in html and "Chỉ phiên cá nhân" in html
     client.post("/admin/accounts/page-mode", data={"account_id": "page_donkysu", "mode": "owner_session"})
     assert get_all_accounts()["page_donkysu"].uses_owner_session
 
@@ -998,3 +1005,115 @@ def test_a_plain_account_ignores_page_only_form_fields(client):
     assert resp.status_code in (200, 303)
     account = get_all_accounts()["plain2"]
     assert account.page_name == "" and account.owner_account_id == ""
+
+
+async def test_the_account_menu_is_found_even_if_its_label_differs_while_acting_as_a_page(quiet_actions, monkeypatch):
+    """Page mode may label the menu button differently from the recorded personal
+    "Account, your profile" — the looser prefix must still open it, or every
+    Page check would fail."""
+    from playwright.async_api import TimeoutError as PlaywrightTimeoutError
+
+    async def click(page, target, mouse):
+        if hasattr(target, "_buttons") and not target._buttons:
+            raise PlaywrightTimeoutError("no such button")   # a real click on a missing element times out
+
+    monkeypatch.setattr(actions, "human_click", click)
+    page = _FakePage([f"Switch to {ME}"])
+    page.menu_label = "Account, Đơn Kỹ Sư Nhật"
+    assert await actions.ensure_page_identity(page, PAGE, ME) is None
+    page.menu_label = "Something unrelated"
+    result = await actions.ensure_page_identity(page, PAGE, ME)
+    assert result.startswith("identity_check_error")   # nothing matched → a clean refusal, not a crash
+
+
+async def test_the_exact_menu_label_wins_over_another_button_that_also_starts_with_account(quiet_actions, monkeypatch):
+    clicked = []
+
+    class _Btn(_FakeButton):
+        pass
+
+    class _Many:
+        def __init__(self, labels):
+            self.buttons = [_Btn(l) for l in labels]
+
+        @property
+        def first(self):
+            return _First(self.buttons)
+
+        async def all(self):
+            return self.buttons
+
+    class _Page(_FakePage):
+        def get_by_role(self, role, name=None):
+            if name is not None and "Switch" not in name.pattern:
+                return _Many(["Accounts Center", "Account, your profile"])
+            return super().get_by_role(role, name)
+
+    async def click(page, target, mouse):
+        clicked.append(getattr(target, "label", None))
+
+    monkeypatch.setattr(actions, "human_click", click)
+    await actions.ensure_page_identity(_Page([f"Switch to {ME}"]), PAGE, ME)
+    assert clicked[0] == "Account, your profile"
+
+
+# --- UI (2026-10-31): simpler form, clearer list ----------------------------------------------
+
+def test_page_fields_are_in_a_collapsed_section_so_the_personal_form_stays_short(client):
+    html = client.get("/admin/accounts/add-modal").text
+    assert '<details class="page-section">' in html          # collapsed by default
+    assert html.index('name="account_id"') < html.index('class="page-section"') < html.index('name="page_name"')
+
+
+def test_the_page_section_opens_by_itself_when_redisplayed_with_input(client):
+    resp = client.post("/admin/accounts/add", data={
+        "account_id": "bad id!", "display_name": "x", "page_name": PAGE, "owner_account_id": "tu_iizuki",
+    }, headers={"hx-request": "true"})
+    assert '<details class="page-section" open>' in resp.text and f'value="{PAGE}"' in resp.text
+
+
+def test_the_list_explains_each_page_session_state(client):
+    _register(client, mode="auto")
+    html = client.get("/admin/accounts").text
+    assert "chưa có phiên riêng — đang dùng phiên của" in html          # auto + no own file → fallback in use
+    assert "Cách tạo phiên riêng cho Page" in html and "check_page_identity" in html and "_page_probe_state.json" in html
+    client.post("/admin/accounts/page-mode", data={"account_id": "page_donkysu", "mode": "own_session"})
+    assert "chưa có phiên riêng</span>" in client.get("/admin/accounts").text     # strict mode → plain red
+
+
+def test_an_existing_own_session_shows_ok_and_hides_the_how_to(client):
+    _register(client, mode="auto")
+    page = get_all_accounts()["page_donkysu"]
+    page.storage_state_path.parent.mkdir(parents=True, exist_ok=True)
+    page.storage_state_path.write_text("{}")
+    html = client.get("/admin/accounts").text
+    assert "phiên riêng OK" in html and "Cách tạo phiên riêng cho Page" not in html
+
+
+def test_a_page_with_a_missing_personal_name_is_flagged_in_the_list(isolated_runtime_config, isolated_accounts_dir, client):
+    save_registered_account("page_x", "X", PAGE, "", "tu_iizuki", "auto")
+    assert "chưa khai báo tên hồ sơ cá nhân" in client.get("/admin/accounts").text
+
+
+def test_pickers_mark_page_accounts_with_the_page_emoji(client):
+    from human_bot import admin
+    _register(client)
+    accounts = get_all_accounts()
+    assert admin._account_label("page_donkysu", accounts).startswith("📄 ")
+    assert not admin._account_label("tu_iizuki", accounts).startswith("📄")
+    html = client.get("/admin/post?account_id=page_donkysu").text
+    assert f"📄 {PAGE}" in html or "📄 D" in html
+
+
+def test_the_copy_paste_commands_are_shell_safe_even_for_a_hostile_page_name(client):
+    evil = 'x"; rm -rf ~; "$(whoami)'
+    save_registered_account("page_evil", "E", evil, ME, "tu_iizuki", "auto")
+    html = client.get("/admin/accounts").text
+    import shlex, html as html_lib
+    cmd = [c for c in html_lib.unescape(html).split("<code>")[1:] if "check_page_identity" in c][0].split("</code>")[0]
+    assert shlex.split(cmd)[-1] == evil     # parsed back as ONE literal argument — nothing was injected
+
+
+def test_a_misconfigured_page_says_so_in_the_session_column(isolated_runtime_config, isolated_accounts_dir, client):
+    save_registered_account("page_orphan", "O", PAGE, ME, "", "auto")           # no owner
+    assert "bot sẽ từ chối đăng" in client.get("/admin/accounts").text

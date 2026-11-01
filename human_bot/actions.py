@@ -87,7 +87,14 @@ async def _check_anomaly_or_raise(page: Page) -> None:
 # wrong identity (posting to the Page's groups from the personal profile) is
 # worse than not acting.
 _SWITCH_TO_RE = re.compile(r"^(Switch to|Chuyển sang)\s+(.+)$", re.IGNORECASE)
+# The account-menu button: its label while acting as the PERSONAL profile is
+# "Account, your profile" (recorded). While acting as a Page it is not known to
+# be identical, and the diagnostic script that worked in Page mode used the
+# looser prefix below — so try the exact label first and fall back to the
+# prefix (a too-strict regex would make every Page check fail, i.e. refuse
+# forever).
 _ACCOUNT_MENU_RE = re.compile(r"^(Account, your profile|Tài khoản)", re.IGNORECASE)
+_ACCOUNT_MENU_LOOSE_RE = re.compile(r"^(Account|Tài khoản)\b", re.IGNORECASE)
 # "Answer as <name>" / "Comment as <name>" (English, confirmed live) and
 # "... dưới tên <name>" / "... với tư cách <name>" (Vietnamese).
 _COMMENT_AS_RE = re.compile(
@@ -144,6 +151,25 @@ def comment_box_identity_problem(label: str | None, expected_page_name: str) -> 
     return f"wrong_identity:comment_box_label={(label or '')[:80]!r}"
 
 
+async def _open_account_menu(page: Page, mouse) -> None:
+    """Clicks the account-menu button. Candidates are every button matching the
+    looser prefix; the one whose label is exactly the recorded
+    "Account, your profile" wins, else the first (see _ACCOUNT_MENU_LOOSE_RE).
+    One wait for the candidates, no dead wait on an exact-match attempt."""
+    candidates = page.get_by_role("button", name=_ACCOUNT_MENU_LOOSE_RE)
+    await candidates.first.wait_for(state="visible", timeout=8000)
+    chosen = candidates.first
+    for button in await candidates.all():
+        try:
+            label = (await button.get_attribute("aria-label", timeout=3000)) or ""
+        except PlaywrightError:
+            continue  # a candidate that detached mid-loop must not fail the whole check
+        if _ACCOUNT_MENU_RE.match(label.strip()):
+            chosen = button
+            break
+    await human_click(page, chosen, mouse)
+
+
 async def _menu_switch_buttons(page: Page, pacing, mouse) -> list[tuple[str, "Locator"]]:
     """facebook.com → account menu → every "Switch to <name>" button as
     (name, button). The ONE copy of this sequence (reading the menu and
@@ -151,7 +177,7 @@ async def _menu_switch_buttons(page: Page, pacing, mouse) -> list[tuple[str, "Lo
     await page.goto("https://www.facebook.com/", wait_until="domcontentloaded")
     await pause_after_page_load(pacing)
     await _check_anomaly_or_raise(page)
-    await human_click(page, page.get_by_role("button", name=_ACCOUNT_MENU_RE).first, mouse)
+    await _open_account_menu(page, mouse)
     await pause_between_ui_steps(pacing)
     switch_buttons = page.get_by_role("button", name=_SWITCH_TO_RE)
     # .all() alone does not wait — give the menu time to render first.

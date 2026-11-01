@@ -6630,3 +6630,20 @@ trong danh sách bằng ô chọn; `own_session`/`owner_session` vẫn dùng đ�
   không phải Page. **Giữ nguyên:** Page bị chặn khi tài khoản cá nhân tạm dừng (chung đăng nhập — cố ý);
   nhiều lần mở menu mỗi tác vụ; ô kiểm tra bình luận đọc `.first`. Suite 877 pass. Chưa thử dự phòng trên Facebook thật.
 
+#### Rà soát lại phần Page + làm gọn giao diện (2026-10-31)
+
+- **Lỗi ẩn tìm ra:** (1) bản siết bộ khớp nút menu tài khoản thành đúng "Account, your profile" (theo bản quay
+  ở danh tính CÁ NHÂN) có thể làm kiểm tra danh tính luôn thất bại khi đang ở danh tính Page, vì nhãn nút ở Page
+  chưa được xác nhận (script thăm dò chạy được ở Page dùng bộ khớp rộng hơn) → nay lấy mọi nút bắt đầu bằng
+  "Account", ưu tiên nút đúng nhãn đã quay, không còn chờ chết 6 giây; (2) Page vẫn hiện nút "Đăng nhập & lưu
+  phiên" — nút đó đăng nhập kiểu CÁ NHÂN và sẽ ghi đè phiên Page bằng danh tính sai → bỏ hẳn cho mọi Page, thay
+  bằng hướng dẫn tạo phiên riêng; (3) lệnh hướng dẫn copy-paste chèn tên Page tự do → dùng `shlex.quote`;
+  (4) cột phiên báo "phiên riêng OK" dù Page thiếu chủ/tên hồ sơ cá nhân (bot vẫn từ chối) → nay báo đỏ ngay.
+- **Giao diện (/admin/accounts):** form đăng ký còn 3 ô, các ô dành cho Page gom vào mục "📄 Đây là tài khoản chạy
+  bằng một Facebook Page" gập sẵn (tự mở khi hiện lại sau lỗi), nhãn ngắn + dòng gợi ý nhỏ, 3 cách chạy là 3 thẻ
+  chọn có mô tả; danh sách: Page hiện chip "📄 Page: tên" + "↳ tài khoản cá nhân" (link báo cáo), tài khoản cá nhân
+  hiện chip các Page của nó, cột phiên giải thích trạng thái theo cách chạy + ô chọn cách chạy gọn; các ô chọn tài
+  khoản ở trang khác đánh dấu 📄 cho Page. Đã chụp ảnh trước/sau bằng Playwright để soát bố cục.
+- **Đã biết, chưa đổi:** Page đăng ký mới MẶC ĐỊNH được đồng bộ với bên B (nhận tin/ứng viên chia theo hạn mức
+  như mọi tài khoản có nhóm) — muốn Page chỉ đăng tay thì tắt "Đồng bộ" của Page ở tab Đồng bộ. Suite 887 pass.
+

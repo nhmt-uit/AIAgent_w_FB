@@ -49,6 +49,7 @@ import os
 import random
 import re
 import secrets
+import shlex
 import sqlite3
 from datetime import datetime, timedelta, timezone
 from typing import Any, get_type_hints
@@ -246,7 +247,11 @@ def _account_label(account_id: str, accounts: dict | None = None) -> str:
     a dangling account_id in old data."""
     accounts = accounts if accounts is not None else get_all_accounts()
     account = accounts.get(account_id)
-    return f"{account.display_name} ({account_id})" if account else account_id
+    if not account:
+        return account_id
+    # 📄 marks an account that runs as a Facebook Page, so it is not mistaken
+    # for a personal account in pickers and headings (2026-10-31).
+    return f"{'📄 ' if getattr(account, 'page_name', '') else ''}{account.display_name} ({account_id})"
 
 
 def _auto_fire_status_html() -> str:
@@ -1028,6 +1033,32 @@ _PAGE_STYLE = """
   .form-actions[hidden] { @apply hidden; }
 
   .badge { @apply inline-block text-xs font-semibold px-2.5 py-0.5 rounded-full bg-indigo-50 text-indigo-600; }
+  .badge-ok { @apply bg-emerald-50 text-emerald-700; }
+  .badge-warn { @apply bg-amber-50 text-amber-800; }
+  .badge-bad { @apply bg-red-50 text-red-700; }
+
+  /* Facebook-Page accounts (2026-10-31): small tags under an account's name
+     and a compact mode picker, so a Page's link to its owner and its run
+     mode read at a glance instead of as long sentences in a narrow column. */
+  .chip-row { @apply flex flex-wrap gap-1.5 mt-1.5; }
+  .chip { @apply inline-flex items-center gap-1 text-xs font-semibold px-2 py-0.5 rounded-full bg-sky-50 text-sky-700 border border-sky-100 no-underline; }
+  a.chip:hover { @apply bg-sky-100 no-underline; }
+  .chip-owner { @apply bg-gray-50 text-gray-600 border-gray-200 font-medium; }
+  a.chip-owner:hover { @apply bg-gray-100; }
+  .chip-warn { @apply bg-amber-50 text-amber-800 border-amber-200; }
+  select.mode-select { @apply w-auto max-w-full text-xs py-1 px-2 mt-1; }
+  .mini-help { @apply mt-1.5 text-xs text-gray-500; }
+  .mini-help summary { @apply cursor-pointer text-indigo-600 font-medium; }
+  .mini-help code { @apply block bg-gray-50 border border-gray-200 rounded-md px-2 py-1 mt-1 text-[11px] text-gray-700 break-all whitespace-pre-wrap; }
+  .hint { @apply text-gray-500 text-xs mt-1 leading-relaxed; }
+  details.page-section { @apply border border-gray-200 rounded-xl px-4 py-3 mt-3 bg-gray-50/60; }
+  details.page-section > summary { @apply cursor-pointer text-sm font-semibold text-gray-800; }
+  details.page-section[open] > summary { @apply mb-2; }
+  .mode-card { @apply flex gap-2.5 items-start border border-gray-200 rounded-xl px-3 py-2.5 cursor-pointer bg-white mb-2; }
+  .mode-card:has(input:checked) { @apply border-indigo-600 bg-indigo-50; }
+  .mode-card input { @apply mt-1 flex-shrink-0; }
+  .mode-card .mode-title { @apply text-sm font-semibold text-gray-900; }
+  .mode-card .mode-desc { @apply text-xs text-gray-500 mt-0.5; }
 
   .account-list { @apply list-none p-0 m-0 flex flex-wrap gap-2; }
   .account-list li { @apply bg-indigo-50 text-indigo-600 text-sm font-semibold px-3 py-1.5 rounded-full; }
@@ -3111,13 +3142,21 @@ def _account_id_error(account_id: str, existing: dict) -> str | None:
     return None
 
 
-def _account_modal_html(account_id: str = "", display_name: str = "", error: str | None = None, page_name: str = "", personal_name: str = "", owner_account_id: str = "", page_session_mode: str = "") -> str:
+def _account_modal_html(
+    account_id: str = "", display_name: str = "", error: str | None = None, page_name: str = "",
+    personal_name: str = "", owner_account_id: str = "", page_session_mode: str = "",
+) -> str:
     """Renders the whole #modal-root swap for the "Đăng ký tài khoản mới"
     form — same pattern as _group_modal_html(): opened via GET (button
     below), redisplayed with a validation error on a bad POST without
     losing what was typed, and a successful POST returns something else
     entirely (_accounts_content_html's oob update) which is what actually
-    closes it."""
+    closes it.
+
+    The Facebook-Page fields (2026-10-31) live in a collapsed <details> so a
+    normal personal-account registration stays a 3-field form; the section
+    opens by itself when it already has input (a redisplay after an error).
+    Its fields are ignored server-side unless a Page name is filled in."""
     err_html = f'<p class="error">⚠️ {html.escape(error)}</p>' if error else ""
     owner_options = "".join(
         f'<option value="{html.escape(aid)}"{" selected" if aid == owner_account_id else ""}>{html.escape(a.display_name)} ({html.escape(aid)})</option>'
@@ -3128,6 +3167,13 @@ def _account_modal_html(account_id: str = "", display_name: str = "", error: str
         f'{html.escape(label)} ({rl.posts_per_day} bài/ngày)</option>'
         for tier_key, (label, rl) in ACCOUNT_AGE_TIERS.items()
     )
+    chosen_mode = page_session_mode if page_session_mode in PAGE_SESSION_MODES else PAGE_MODE_AUTO
+    mode_cards = "".join(
+        f'<label class="mode-card"><input type="radio" name="page_session_mode" value="{m}"{" checked" if m == chosen_mode else ""}>'
+        f'<span><span class="mode-title">{html.escape(title)}</span><span class="mode-desc" style="display:block;">{html.escape(desc)}</span></span></label>'
+        for m, (title, desc) in _PAGE_MODE_TEXT.items()
+    )
+    page_open = " open" if (page_name or personal_name or owner_account_id) else ""
     return f"""
 <div class="modal-backdrop" onclick="if(event.target===this) this.remove()">
   <div class="modal-box modal-box-wide">
@@ -3135,23 +3181,27 @@ def _account_modal_html(account_id: str = "", display_name: str = "", error: str
       <h2>➕ Đăng ký tài khoản mới</h2>
       <button type="button" class="modal-close" onclick="this.closest('.modal-backdrop').remove()">✕</button>
     </div>
-    <p class="page-desc">Chỉ đăng ký sau khi đã chạy <code>python3 human_bot/bootstrap_login.py &lt;account_id&gt;</code> trên máy này để lưu phiên đăng nhập.</p>
+    <p class="page-desc">Tài khoản cá nhân: chỉ đăng ký sau khi đã chạy <code>python3 human_bot/bootstrap_login.py &lt;account_id&gt;</code> trên máy này để lưu phiên đăng nhập.</p>
     {err_html}
     <form method="post" action="/admin/accounts/add" hx-post="/admin/accounts/add" hx-target="#modal-root" hx-swap="innerHTML">
       <div class="field-grid">
-        <div class="field-stack"><div class="field-label">account_id (khớp với tên đã dùng ở bootstrap_login.py)</div><div class="field-input"><input type="text" name="account_id" value="{html.escape(account_id)}" placeholder="vd: my_page" required pattern="[a-z0-9_]+"></div></div>
+        <div class="field-stack"><div class="field-label">ID tài khoản</div><div class="field-input"><input type="text" name="account_id" value="{html.escape(account_id)}" placeholder="vd: my_page" required pattern="[a-z0-9_]+"></div><div class="hint">Chữ thường, số, gạch dưới. Với tài khoản cá nhân: khớp với tên đã dùng ở bootstrap_login.py.</div></div>
         <div class="field-stack"><div class="field-label">Tên hiển thị</div><div class="field-input"><input type="text" name="display_name" value="{html.escape(display_name)}" placeholder="vd: Trang của tôi"></div></div>
-        <div class="field-stack"><div class="field-label">Tên Facebook Page (chỉ điền nếu tài khoản này chạy bằng danh tính một Page — đúng như trong nút "Switch to …"; để trống nếu là tài khoản cá nhân)</div><div class="field-input"><input type="text" name="page_name" value="{html.escape(page_name)}" placeholder="vd: Đơn Kỹ Sư Nhật"></div></div>
-        <div class="field-stack"><div class="field-label">Tên hồ sơ CÁ NHÂN của bạn (bắt buộc nếu điền tên Page ở trên — đúng như nút "Switch to …" hiện ra khi đang ở danh tính Page; dùng để bot chắc chắn đang là Page trước khi đăng)</div><div class="field-input"><input type="text" name="personal_name" value="{html.escape(personal_name)}" placeholder="vd: Tu Nguyen"></div></div>
-        <div class="field-stack"><div class="field-label">Page này thuộc tài khoản cá nhân nào? (bắt buộc nếu điền tên Page — Page được tạo từ một tài khoản cá nhân, liên kết này giúp truy lỗi của Page từ tài khoản đó)</div><div class="field-input"><select name="owner_account_id"><option value="">— chọn —</option>{owner_options}</select></div></div>
-        <div class="field-stack"><div class="field-label">Cách chạy tác vụ của Page</div><div class="field-input"><select name="page_session_mode">
-          <option value="auto"{" selected" if page_session_mode in ("", "auto") else ""}>Ưu tiên phiên riêng của Page; nếu phiên đó lỗi thì dùng phiên của tài khoản cá nhân (khuyên dùng)</option>
-          <option value="own_session"{" selected" if page_session_mode == "own_session" else ""}>Chỉ dùng phiên riêng của Page (file phiên đã ở sẵn danh tính Page)</option>
-          <option value="owner_session"{" selected" if page_session_mode == "owner_session" else ""}>Chỉ dùng phiên của tài khoản cá nhân, chuyển sang Page rồi chuyển lại</option>
-        </select></div></div>
-        <div class="field-stack"><div class="field-label">Tuổi tài khoản Facebook (đặt giới hạn tốc độ ban đầu tương ứng)</div><div class="field-input"><select name="age_tier">{tier_options}</select></div></div>
+        <div class="field-stack"><div class="field-label">Tuổi tài khoản Facebook</div><div class="field-input"><select name="age_tier">{tier_options}</select></div><div class="hint">Đặt giới hạn tốc độ ban đầu tương ứng (với Page: tuổi của Page).</div></div>
       </div>
-      <div class="form-actions">
+
+      <details class="page-section"{page_open}>
+        <summary>📄 Đây là tài khoản chạy bằng một Facebook Page <span class="muted">(không bắt buộc)</span></summary>
+        <p class="hint">Page được tạo từ một tài khoản cá nhân và đăng nhập qua tài khoản đó. Khai báo liên kết này để bot luôn kiểm tra đang đúng là Page trước khi đăng, và để truy lỗi của Page từ tài khoản cá nhân. Bỏ trống Tên Page nếu đây là tài khoản cá nhân.</p>
+        <div class="field-grid">
+          <div class="field-stack"><div class="field-label">Tên Page</div><div class="field-input"><input type="text" name="page_name" value="{html.escape(page_name)}" placeholder="vd: Đơn Kỹ Sư Nhật"></div><div class="hint">Đúng như chữ trong nút "Switch to …" ở menu tài khoản Facebook khi bạn đang là tài khoản cá nhân.</div></div>
+          <div class="field-stack"><div class="field-label">Page thuộc tài khoản cá nhân nào?</div><div class="field-input"><select name="owner_account_id"><option value="">— chọn —</option>{owner_options}</select></div></div>
+          <div class="field-stack"><div class="field-label">Tên hồ sơ cá nhân của bạn</div><div class="field-input"><input type="text" name="personal_name" value="{html.escape(personal_name)}" placeholder="vd: Tu Nguyen"></div><div class="hint">Đúng như chữ trong nút "Switch to …" khi bạn đang ở Page. Gõ sai ở đây hoặc ở Tên Page thì bot sẽ từ chối đăng (không bao giờ đăng nhầm danh tính).</div></div>
+          <div class="field-stack"><div class="field-label">Cách chạy tác vụ của Page</div><div class="field-input">{mode_cards}</div></div>
+        </div>
+      </details>
+
+      <div class="form-actions" style="margin-top:16px;">
         <button type="button" class="btn-secondary" style="margin-right:8px;" onclick="this.closest('.modal-backdrop').remove()">Huỷ</button>
         <button type="submit">Đăng ký</button>
       </div>
@@ -3562,6 +3612,108 @@ def _account_age_tier_label(rl: RateLimits) -> str:
     return "Tuỳ chỉnh"
 
 
+_PAGE_MODE_TEXT: dict[str, tuple[str, str]] = {
+    PAGE_MODE_AUTO: (
+        "Tự động (khuyên dùng)",
+        "Dùng phiên riêng của Page; nếu phiên đó lỗi thì tự dùng phiên của tài khoản cá nhân.",
+    ),
+    PAGE_MODE_OWN_SESSION: (
+        "Chỉ phiên của Page",
+        "Chỉ dùng phiên riêng của Page (file phiên đã ở sẵn danh tính Page). Lỗi thì dừng, không dự phòng.",
+    ),
+    PAGE_MODE_OWNER_SESSION: (
+        "Chỉ phiên cá nhân",
+        "Mượn phiên của tài khoản cá nhân: chuyển sang Page, làm xong chuyển về. Không cần file phiên riêng.",
+    ),
+}
+
+
+def _account_name_extras_html(aid: str, a, accounts: dict) -> str:
+    """Tags under an account's name: a Page shows what it is and which personal
+    account owns it; a personal account lists its Pages (each linking to that
+    account's report, so a Page's problems are traceable from its owner)."""
+    if a.page_name:
+        owner = accounts.get(a.owner_account_id)
+        if owner:
+            owner_chip = (
+                f'<a class="chip chip-owner" href="/admin/reports?account_id={html.escape(owner.account_id)}" '
+                f'title="Xem báo cáo của tài khoản cá nhân sở hữu Page này">↳ {html.escape(owner.display_name)}</a>'
+            )
+        else:
+            owner_chip = '<span class="chip chip-warn">⚠ chưa liên kết tài khoản cá nhân</span>'
+        who = (
+            f'<div class="row-url" style="word-break:normal;">Hồ sơ cá nhân: {html.escape(a.personal_name)}</div>'
+            if a.personal_name else
+            '<div class="row-url" style="color:#b45309; word-break:normal;">⚠ chưa khai báo tên hồ sơ cá nhân — bot sẽ từ chối đăng</div>'
+        )
+        return (
+            f'<div class="chip-row"><span class="chip" title="Tài khoản này chạy bằng danh tính Facebook Page">'
+            f'📄 Page: {html.escape(a.page_name)}</span>{owner_chip}</div>{who}'
+        )
+    children = pages_of(aid, accounts)
+    if not children:
+        return ""
+    chips = "".join(
+        f'<a class="chip" href="/admin/reports?account_id={html.escape(p.account_id)}" '
+        f'title="Xem báo cáo của Page {html.escape(p.page_name)}">📄 {html.escape(p.page_name)}</a>'
+        for p in children
+    )
+    return f'<div class="chip-row" title="Các Page tạo từ tài khoản này"><span class="hint" style="margin:0;align-self:center;">Các Page:</span>{chips}</div>'
+
+
+def _page_session_cell_html(aid: str, a, accounts: dict) -> str:
+    """Session column of a Page account: what its login state means for the
+    chosen mode, the mode picker, and (when it has no own session) how to
+    create one. No "Đăng nhập" button: that flow logs in as the PERSONAL
+    profile, which is exactly what a Page's own session must not be."""
+    has_session = a.storage_state_path.exists()
+    owner = accounts.get(a.owner_account_id)
+    owner_name = html.escape(owner.display_name) if owner else "tài khoản cá nhân"
+    if owner is None or owner.page_name or not a.personal_name:
+        # The identity guard refuses every action without these — say so here,
+        # not only in the name column.
+        status = '<span class="badge badge-bad">thiếu tài khoản cá nhân sở hữu / tên hồ sơ cá nhân — bot sẽ từ chối đăng</span>'
+    elif a.page_session_mode == PAGE_MODE_OWNER_SESSION and owner.status != AccountStatus.ACTIVE:
+        word = "đang tạm dừng"
+        status = f'<span class="badge badge-warn">{owner_name} {word} — không dùng được phiên của tài khoản đó</span>'
+    elif a.page_session_mode == PAGE_MODE_AUTO and not has_session and owner.status != AccountStatus.ACTIVE:
+        word = "đang tạm dừng"
+        status = f'<span class="badge badge-bad">chưa có phiên riêng và {owner_name} {word} — Page chưa chạy được</span>'
+    elif a.page_session_mode == PAGE_MODE_OWNER_SESSION:
+        status = (
+            f'<span class="badge badge-ok">dùng phiên của {owner_name}</span>' if has_session
+            else f'<span class="badge badge-bad">{owner_name} chưa có phiên đăng nhập</span>'
+        )
+    elif has_session:
+        status = '<span class="badge badge-ok">phiên riêng OK</span>'
+    elif a.page_session_mode == PAGE_MODE_AUTO:
+        status = f'<span class="badge badge-warn">chưa có phiên riêng — đang dùng phiên của {owner_name}</span>'
+    else:
+        status = '<span class="badge badge-bad">chưa có phiên riêng</span>'
+    options = "".join(
+        f'<option value="{m}"{" selected" if m == a.page_session_mode else ""} title="{html.escape(desc)}">{html.escape(title)}</option>'
+        for m, (title, desc) in _PAGE_MODE_TEXT.items()
+    )
+    picker = (
+        f'<div class="hint" style="margin-top:8px;">Cách chạy tác vụ:</div>'
+        f'<form method="post" action="/admin/accounts/page-mode">'
+        f'<input type="hidden" name="account_id" value="{html.escape(aid)}">'
+        f'<select class="mode-select" name="mode" aria-label="Cách chạy" onchange="this.form.submit()">{options}</select></form>'
+    )
+    howto = ""
+    if not has_session and a.page_session_mode != PAGE_MODE_OWNER_SESSION and a.owner_account_id:
+        # shlex.quote: page_name is free text and these lines are meant to be
+        # copy-pasted into a terminal (ids are pattern-restricted, quoted anyway).
+        q_owner, q_aid, q_page = shlex.quote(a.owner_account_id), shlex.quote(aid), shlex.quote(a.page_name)
+        howto = (
+            '<details class="mini-help"><summary>Cách tạo phiên riêng cho Page</summary>'
+            f'<code>{html.escape(f"python3 -m human_bot.smoke_test.check_page_identity switch --account {q_owner} --page {q_page}")}</code>'
+            f'<code>{html.escape(f"mkdir -p accounts/{q_aid} && cp accounts/{q_owner}/_page_probe_state.json accounts/{q_aid}/storage_state.json")}</code>'
+            '</details>'
+        )
+    return f"{status}{picker}{howto}"
+
+
 def _accounts_content_html(saved: bool = False, error: str | None = None, oob: bool = False) -> str:
     accounts = get_all_accounts()
     registered_ids = {a["account_id"] for a in get_registered_accounts()}
@@ -3570,52 +3722,18 @@ def _accounts_content_html(saved: bool = False, error: str | None = None, oob: b
 
     rows = []
     for aid, a in accounts.items():
-        has_session = a.storage_state_path.exists()
-        session_badge = (
-            '<span class="badge" style="background:#ecfdf5;color:#059669;">phiên OK</span>'
-            if has_session
-            else (
-                '<span class="badge" style="background:#fef2f2;color:#dc2626;">chưa có phiên — đăng nhập ở tài khoản cá nhân sở hữu Page này</span>'
-                if a.uses_owner_session
-                else (
-                '<span class="badge" style="background:#fef2f2;color:#dc2626;">chưa có storage_state.json</span> '
+        if a.page_name:
+            session_cell = _page_session_cell_html(aid, a, accounts)
+        elif a.storage_state_path.exists():
+            session_cell = '<span class="badge badge-ok">phiên OK</span>'
+        else:
+            session_cell = (
+                '<span class="badge badge-bad">chưa có storage_state.json</span> '
                 f'<button type="button" class="btn-small btn-secondary" '
                 f'hx-get="/admin/accounts/bootstrap-login-modal?account_id={html.escape(aid)}" '
                 f'hx-target="#modal-root" hx-swap="innerHTML">🌐 Đăng nhập &amp; lưu phiên</button>'
-            ))
-        )
-        page_tag = ""
-        if a.page_name:
-            owner = accounts.get(a.owner_account_id)
-            owner_txt = (
-                f'<a href="/admin/reports?account_id={html.escape(a.owner_account_id)}">{html.escape(owner.display_name)}</a> '
-                f'({html.escape(a.owner_account_id)})' if owner else "— chưa liên kết —"
             )
-            mode_labels = {
-                PAGE_MODE_AUTO: "ưu tiên phiên riêng của Page, lỗi thì dùng phiên tài khoản cá nhân",
-                PAGE_MODE_OWN_SESSION: "chỉ phiên riêng của Page",
-                PAGE_MODE_OWNER_SESSION: "chỉ phiên tài khoản cá nhân (chuyển sang Page rồi chuyển lại)",
-            }
-            mode_options = "".join(
-                f'<option value="{m}"{" selected" if m == a.page_session_mode else ""}>{html.escape(label)}</option>'
-                for m, label in mode_labels.items()
-            )
-            page_tag = (
-                f'<div class="row-url">📄 Page <b>{html.escape(a.page_name)}</b> — thuộc tài khoản cá nhân: {owner_txt}'
-                f' · hồ sơ cá nhân: {html.escape(a.personal_name or "— chưa khai báo —")}</div>'
-                f'<div class="row-url">Cách chạy: '
-                f'<form method="post" action="/admin/accounts/page-mode" style="display:inline;">'
-                f'<input type="hidden" name="account_id" value="{html.escape(aid)}">'
-                f'<select name="mode" onchange="this.form.submit()">{mode_options}</select></form></div>'
-            )
-        else:
-            child_pages = pages_of(aid, accounts)
-            if child_pages:
-                items = ", ".join(
-                    f'<a href="/admin/reports?account_id={html.escape(p.account_id)}">{html.escape(p.page_name)}</a> ({html.escape(p.account_id)})'
-                    for p in child_pages
-                )
-                page_tag = f'<div class="row-url">📄 Các Page của tài khoản này: {items}</div>'
+        name_extras = _account_name_extras_html(aid, a, accounts)
         is_paused = a.status == AccountStatus.PAUSED
         status_badge = (
             '<span class="badge" style="background:#fef2f2;color:#dc2626;">⏸ Tạm dừng</span>'
@@ -3636,7 +3754,7 @@ def _accounts_content_html(saved: bool = False, error: str | None = None, oob: b
             if info:
                 reason_txt = html.escape(info["reason"] or "không rõ (tạm dừng thủ công)")
                 when_txt = _local_dt_html(info["paused_at"])
-                status_detail = f'<div class="row-url">từ {when_txt} — {reason_txt}</div>'
+                status_detail = f'<div class="row-url" style="word-break:normal;">từ {when_txt} — {reason_txt}</div>'
         else:
             cooldown = get_resume_cooldown_info(aid)
             if cooldown:
@@ -3706,12 +3824,12 @@ def _accounts_content_html(saved: bool = False, error: str | None = None, oob: b
         age_tier_label = html.escape(_account_age_tier_label(a.rate_limits))
         rows.append(f"""
 <tr>
-  <td>{html.escape(a.display_name)}<div class="row-url">{html.escape(aid)}</div>{page_tag}</td>
-  <td>{status_badge}{status_detail}</td>
-  <td>{session_badge}</td>
+  <td style="min-width:230px;">{html.escape(a.display_name)}<div class="row-url">{html.escape(aid)}</div>{name_extras}</td>
+  <td style="min-width:150px;">{status_badge}{status_detail}</td>
+  <td>{session_cell}</td>
   <td><span class="badge">{age_tier_label}</span></td>
   <td class="row-url">{html.escape(source)}</td>
-  <td class="col-actions">{status_action} {rate_limits_btn} {delete_btn}</td>
+  <td class="col-actions" style="white-space:normal; width:250px;">{status_action} {rate_limits_btn} {delete_btn}</td>
 </tr>""")
 
     table = f"""
@@ -5196,7 +5314,7 @@ def _schedule_content_html(
     # page-size select itself (owner request: no way to see/change how
     # many items render per page).
     account_options = '<option value="">— Tất cả tài khoản —</option>' + "".join(
-        f'<option value="{html.escape(aid)}"{" selected" if aid == account_id else ""}>{html.escape(a.display_name)} ({html.escape(aid)})</option>'
+        f'<option value="{html.escape(aid)}"{" selected" if aid == account_id else ""}>{html.escape(_account_label(aid, accounts))}</option>'
         for aid, a in accounts.items()
     )
     page_size_options = "".join(
@@ -6496,7 +6614,7 @@ def _groups_content_html(
     err = f'<p class="error">⚠️ {html.escape(error)}</p>' if error else ""
 
     account_options = "".join(
-        f'<option value="{html.escape(aid)}"{" selected" if aid == account_id else ""}>{html.escape(a.display_name)} ({html.escape(aid)})</option>'
+        f'<option value="{html.escape(aid)}"{" selected" if aid == account_id else ""}>{html.escape(_account_label(aid, accounts))}</option>'
         for aid, a in accounts.items()
     )
     filter_html = f"""
@@ -7156,7 +7274,7 @@ def _reports_content_html(
     warn = f'<p class="warning">⏳ {html.escape(warning)}</p>' if warning else ""
 
     account_options = '<option value="">— Tất cả tài khoản —</option>' + "".join(
-        f'<option value="{html.escape(aid)}"{" selected" if aid == account_id else ""}>{html.escape(a.display_name)} ({html.escape(aid)})</option>'
+        f'<option value="{html.escape(aid)}"{" selected" if aid == account_id else ""}>{html.escape(_account_label(aid, accounts))}</option>'
         for aid, a in accounts.items()
     )
     days_options = "".join(
