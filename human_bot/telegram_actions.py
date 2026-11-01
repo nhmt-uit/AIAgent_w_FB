@@ -182,7 +182,7 @@ def build_items(command: str) -> list[Item]:
         if len(missed) > MAX_ITEMS:
             items.append(Item(
                 f"…còn {len(missed) - MAX_ITEMS} bài lỡ giờ nữa.\n"
-                "Xử lý các bài trên rồi gõ lại /overdue để xem tiếp, hoặc vào /admin/schedule → tab \"Task quá hạn\"."
+                "Xử lý các bài trên rồi gõ lại /overdue để xem tiếp, hoặc vào Lịch đăng → tab \"Quá hạn\" ở trang quản trị."
             ))
         return items
     if command == "review":
@@ -296,7 +296,7 @@ def _execute(verb: str, ident: str, original: str, actor: str) -> CallbackResult
         logger.warning("telegram: %s set auto_fire_enabled=%s", actor, want_on)
         line = (
             f"▶️ {actor} đã BẬT LẠI tự động đăng." if want_on
-            else f"⏸ {actor} đã TẠM DỪNG tự động đăng — mọi task đến giờ sẽ nằm lại hàng chờ. Dùng /resume để bật lại."
+            else f"⏸ {actor} đã TẠM DỪNG tự động đăng — mọi bài đến giờ sẽ nằm lại hàng chờ. Dùng /resume để bật lại."
         )
         return CallbackResult(toast="Đã bật lại" if want_on else "Đã tạm dừng", text=f"{original}\n\n{line}", keyboard=[], broadcast=line)
     return CallbackResult(toast="Nút không hợp lệ")

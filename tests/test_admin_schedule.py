@@ -106,7 +106,7 @@ def test_missed_filter_controls_survive_a_filter_with_zero_matches(client):
     assert resp.status_code == 200
     assert 'id="schedule-missed-mindays-select"' in resp.text
     assert "Chọn tất cả" in resp.text
-    assert "Không có task nào quá hạn" in resp.text
+    assert "Không có bài nào quá hạn" in resp.text
 
 
 def test_missed_filter_shows_matching_tasks_and_hides_fresher_ones(client):
@@ -666,7 +666,7 @@ def test_needs_review_tab_shows_missing_confidence_as_a_warning(client):
 
 def test_needs_review_tab_empty_state(client):
     resp = client.get("/admin/schedule?tab=needs_review")
-    assert "Không có job nào chờ duyệt" in resp.text
+    assert "Không có tin tuyển dụng nào chờ duyệt" in resp.text
 
 
 def test_needs_review_approve_creates_pending_task_with_edited_content_and_future_time(client, account_with_rate_limits):

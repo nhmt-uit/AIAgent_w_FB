@@ -237,7 +237,7 @@ def test_the_sync_tab_and_the_post_page_explain_an_off_account(client):
     client.post("/admin/accounts/disable", data={"account_id": ACC})
     assert "đã tắt — không sync" in client.get("/admin/accounts?tab=sync").text
     post = client.get(f"/admin/post?account_id={ACC}").text
-    assert "đang <strong>tắt</strong>" in post and "Task quá hạn" in post
+    assert "đang <strong>tắt</strong>" in post and "Quá hạn" in post
 
 
 # --- Pages whose owner is switched off --------------------------------------------------------

@@ -1145,6 +1145,10 @@ Telegram dùng nội dung đã soạn sẵn; muốn sửa chữ vẫn phải và
   không thử lại hàng loạt vì sẽ cùng hỏng lại — thử từng lỗi ở `/error`.
   Tin báo đỏ **"N lần thất bại LIÊN TIẾP"** nay có nút **"Tắt"** (một chạm, bật lại là chạy ngay), **"Tạm dừng"**
   (hỏi xác nhận, vì kích hoạt lại phải hạ nhiệt) và **"Đã biết"**; tin tự đổi theo trạng thái thật của tài khoản.
+- **Lịch đăng gọn hơn (02/11).** Mỗi bài chờ đăng giờ là **một dòng** (trước đây là một thẻ cao gần 250px với tám nút), gom theo ngày ("Hôm nay", "Ngày mai"): giờ, loại việc, **tên nhóm**
+  (không còn hiện đường dẫn dài), tài khoản và hai dòng nội dung. Nút **Đăng ngay** chỉ nổi bật khi bài đã đến giờ; **Sửa** mở khung sửa ngay dưới dòng; đổi giờ với bài khác, copy đường
+  dẫn và huỷ nằm trong menu "⋯". Tab **Quá hạn** lấy **Lên lịch lại** làm nút chính và nói rõ lý do bài bị lỡ; tab **Chờ duyệt** cho xem nhanh tiêu đề, độ tin cậy và bài mẫu rồi duyệt hoặc bỏ qua.
+  Cũng sửa lỗi khiến tab bị chữ khó đọc khi rê chuột, viết lại các câu mô tả đầu trang cho dễ hiểu (bỏ tên file và mã), và thống nhất gọi là "bài" thay vì "task" ở cả tin Telegram.
 - **Trang Tài khoản gọn hơn (01/11).** Thay bảng sáu cột bằng danh sách: mỗi tài khoản một dòng, **Page nằm ngay dưới tài khoản cá nhân
   chủ của nó**, đầu trang cho biết có bao nhiêu tài khoản và bao nhiêu cái cần chú ý. Mỗi dòng chỉ có **một nút chính khi có việc cần
   làm** (Đăng nhập, Bật lại hoặc Kích hoạt lại); mọi thứ còn lại (giới hạn tốc độ, Tắt, Tạm dừng, Xoá) nằm trong menu "⋯" kèm một dòng

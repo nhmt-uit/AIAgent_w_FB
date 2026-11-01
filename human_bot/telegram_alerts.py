@@ -124,7 +124,7 @@ def _lines(items: list[dict[str, str]], total: int) -> str:
         for i in items[:_MAX_LISTED]
     ]
     if total > len(lines):
-        lines.append(f"…và {total - len(lines)} task khác")
+        lines.append(f"…và {total - len(lines)} bài khác")
     return "\n".join(lines)
 
 
@@ -151,7 +151,7 @@ def format_outage_text(outage: dict[str, Any], ended_at: datetime) -> str:
     return (
         f"🌐 Đã có mạng lại (lúc {jst_hhmm(ended_at.isoformat())}). Mất mạng được phát hiện từ "
         f"{jst_hhmm(outage.get('since'))} (có thể đã mất từ trước đó).\n"
-        f"{count} task đến giờ trong lúc đó đã chuyển sang \"Task quá hạn\" (cần lên lịch lại):\n"
+        f"{count} bài đến giờ trong lúc đó đã chuyển sang mục \"Quá hạn\" của Lịch đăng (cần lên lịch lại):\n"
         f"{_lines(outage.get('items', []), count)}"
     )
 
@@ -229,8 +229,8 @@ async def notify_startup_sweep(items: list[dict[str, str]]) -> None:
     if not items:
         return
     text = (
-        f"⚠️ Service vừa khởi động lại — {len(items)} task đã quá giờ đăng trong lúc tắt, "
-        f"đã chuyển sang \"Task quá hạn\" (cần lên lịch lại):\n"
+        f"⚠️ Service vừa khởi động lại — {len(items)} bài đã quá giờ đăng trong lúc tắt, "
+        f"đã chuyển sang mục \"Quá hạn\" của Lịch đăng (cần lên lịch lại):\n"
         f"{_lines(items, len(items))}"
     )
     if not await telegram_notify.send_message_checked(text, silent=False):

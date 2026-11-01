@@ -57,7 +57,7 @@ def test_format_outage_text_lists_a_few_and_counts_the_rest():
     telegram_alerts.record_outage([_Task(i) for i in range(8)])
     outage = telegram_alerts.get_state()["outage"]
     text = telegram_alerts.format_outage_text(outage, datetime.now(timezone.utc) + timedelta(minutes=45))
-    assert "8 task" in text and "…và 3 task khác" in text and "có thể đã mất từ trước đó" in text
+    assert "8 bài" in text and "…và 3 bài khác" in text and "có thể đã mất từ trước đó" in text
     assert text.count("•") == 5
 
 
@@ -78,7 +78,7 @@ async def test_flush_sends_one_combined_message_once_online_then_clears(monkeypa
     sent = _wire(monkeypatch)
     telegram_alerts.record_outage([_Task(1), _Task(2), _Task(3)])
     assert await telegram_alerts.flush_pending() is True
-    assert len(sent) == 1 and "3 task" in sent[0]
+    assert len(sent) == 1 and "3 bài" in sent[0]
     assert "outage" not in telegram_alerts.get_state()
     assert await telegram_alerts.flush_pending() is False
     assert len(sent) == 1

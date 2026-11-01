@@ -570,7 +570,7 @@ def _ai_provider_card_html(flash: str = "") -> str:
     return f"""
 <div class="card" id="ai-provider-card">
   <h2>🔑 Cấu hình AI</h2>
-  <p class="page-desc">Chọn nhà cung cấp AI dùng cho 2 công tắc AI ở dưới (soạn bài tin tuyển dụng + viết lại reply ứng viên). Key/model nhập ở đây <b>ưu tiên hơn</b> biến môi trường trong <code>.env</code> — có hiệu lực ngay, không cần khởi động lại service.</p>
+  <p class="page-desc">Key và model nhập ở đây được <b>ưu tiên hơn</b> file <code>.env</code>.</p>
   {flash}
   <p>{status}</p>
   <div class="field-stack">
@@ -729,14 +729,14 @@ def _content_library_card_html(
 
     visa_section = _content_library_section_html(
         "Tên gọi các loại visa", len(visa_names),
-        '<p class="page-desc">Mỗi mã visa (VD gijinkoku, tokutei — khớp đúng dữ liệu bên B gửi sang) có thể có nhiều cách gọi, hệ thống chọn ngẫu nhiên 1 cách mỗi lần đăng. Mã không có trong danh sách vẫn đăng được, chỉ in nguyên mã viết hoa chữ đầu. <b>Mục "Câu mở đầu bài đăng nhóm" ngay dưới dùng đúng danh sách mã ở đây</b> — nếu vừa thêm mã mới, bấm "Lưu Kho nội dung" 1 lần trước để mã đó hiện ra trong lựa chọn "Giới hạn visa".</p>',
+        '<p class="page-desc">Mỗi mã visa (ví dụ gijinkoku, tokutei — viết đúng như bên B gửi sang) có thể có nhiều cách gọi; bot chọn ngẫu nhiên một cách mỗi lần đăng. Mã chưa có trong danh sách vẫn đăng được. <b>Vừa thêm mã mới thì bấm “Lưu Kho nội dung” một lần</b> để mã đó hiện ra ở “Giới hạn visa” của mục “Câu mở đầu” bên dưới.</p>',
         _repeatable_rows_html(visa_blocks, "+ Thêm mã visa"),
         _content_library_reset_btn_html("visa_names", "Tên gọi các loại visa"),
         open_by_default=expand_all,  # bulkiest/least-often-touched section — tucked away by default
     )
     opener_section = _content_library_section_html(
         "Câu mở đầu bài đăng nhóm", len(openers),
-        '<p class="page-desc">Mỗi bài chọn 1 câu, xoay vòng theo nhóm. "Giới hạn visa" (tuỳ chọn, chọn được nhiều mã) chỉ dùng câu đó cho đúng (các) loại visa đã chọn — không chọn mã nào nghĩa là dùng được cho mọi tin. Phải còn ít nhất 1 câu không giới hạn.</p>',
+        '<p class="page-desc">Mỗi bài chọn một câu, xoay vòng theo nhóm. Chọn “Giới hạn visa” để chỉ dùng câu đó cho tin thuộc loại visa đã chọn; không chọn gì nghĩa là dùng cho mọi tin. Cần có ít nhất một câu không giới hạn.</p>',
         _repeatable_rows_html(opener_blocks, "+ Thêm câu mở đầu"),
         _content_library_reset_btn_html("openers", "Câu mở đầu bài đăng nhóm"),
         open_by_default=True,
@@ -764,7 +764,7 @@ def _content_library_card_html(
     return f"""
 <div class="card" id="content-library-card">
   <h2>📝 Kho nội dung</h2>
-  <p class="page-desc">Câu chữ hệ thống dùng khi tự soạn bài đăng nhóm/bình luận trả lời ứng viên (human_bot/content_strategist.py, human_bot/data_sync.py). Lưu ở đây có hiệu lực ngay cho lần đăng tiếp theo, không cần sửa code/khởi động lại.</p>
+  <p class="page-desc">Câu chữ bot dùng khi tự soạn bài đăng nhóm và trả lời ứng viên. Lưu xong là dùng ngay cho lần đăng sau.</p>
   {flash}
   {visa_section}
   {opener_section}
@@ -1080,6 +1080,51 @@ _PAGE_STYLE = """
   .row-menu-info { @apply px-3 pt-1.5 pb-1 text-[11px] text-gray-400; }
   .sync-table tr.sync-child td:first-child { @apply pl-9; }
   .sync-table td { @apply align-top; }
+  /* /admin/schedule (2026-11-02): compact rows grouped by day, edit panel opened in place, "⋯" for the rest. */
+  .sched-toolbar { @apply flex flex-wrap items-center gap-x-3 gap-y-2 mb-4; }
+  .sched-toolbar label { @apply text-xs font-semibold text-gray-500; }
+  .sched-toolbar select, .sched-toolbar input[type=date] { @apply w-auto text-sm py-1.5; min-width: 0; }
+  .sched-count { @apply ml-auto text-sm font-semibold text-gray-700; }
+  .sched-tabs { @apply flex flex-wrap gap-1.5 border-b border-gray-200 mb-5; }
+  a.sched-tab { @apply px-3.5 py-2.5 text-sm font-semibold text-gray-500 no-underline border-b-2 border-transparent -mb-px; }
+  a.sched-tab:hover { @apply text-gray-900; }
+  a.sched-tab.active { @apply text-indigo-600 border-indigo-600; }
+  .sched-list { @apply bg-white border border-gray-200 rounded-2xl shadow-sm; }
+  .sched-list > :first-child { @apply rounded-t-2xl; }
+  .sched-list > :last-child { @apply rounded-b-2xl; }
+  .sched-dayhead { @apply px-4 py-2 bg-gray-50 border-b border-gray-100 text-xs font-bold uppercase tracking-wide text-gray-500; }
+  .sched-item { @apply border-b border-gray-100 relative; }
+  .sched-item:last-child { @apply border-b-0; }
+  .sched-line { @apply grid items-center gap-x-3 gap-y-2 px-4 py-3; grid-template-columns: 66px minmax(0, 1fr) auto; }
+  .sched-missed .sched-line { grid-template-columns: 22px 76px minmax(0, 1fr) auto; }
+  .sched-review .sched-line { grid-template-columns: minmax(0, 1fr) auto; }
+  .sched-due, .sched-missed { box-shadow: inset 3px 0 0 #f59e0b; }
+  .sched-review { box-shadow: inset 3px 0 0 #8b5cf6; }
+  .sched-time { @apply text-sm font-semibold text-gray-900; font-variant-numeric: tabular-nums; }
+  .sched-time small { @apply block text-[11px] font-normal text-amber-700 whitespace-nowrap; }
+  .sched-title { @apply flex flex-wrap items-center gap-x-2 gap-y-1 text-sm; }
+  .sched-target { @apply font-semibold text-gray-900 no-underline; }
+  a.sched-target:hover { @apply text-indigo-600; }
+  .sched-acct { @apply text-xs text-gray-400; }
+  .sched-preview { @apply mt-0.5 text-[13px] text-gray-500; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; word-break: break-word; }
+  .sched-why { @apply mt-1 text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-2 py-1; }
+  .sched-actions { @apply flex flex-wrap items-center justify-end gap-1.5; }
+  .sched-actions form { @apply m-0; }
+  .sched-edit { @apply px-4 pb-4; padding-left: 82px; }
+  .sched-edit textarea { @apply w-full; min-height: 90px; }
+  .sched-edit-row { @apply flex flex-wrap items-center gap-2 mt-2; }
+  .sched-check { @apply flex items-center; }
+  .sched-help { @apply text-xs text-gray-500 mb-3; }
+  .sched-groups { @apply flex flex-wrap gap-3; }
+  .sched-group { flex: 1 1 260px; min-width: 0; }
+  .sched-group textarea { @apply w-full; min-height: 90px; }
+  @media (max-width: 720px) {
+    .sched-line, .sched-missed .sched-line { grid-template-columns: minmax(0, 1fr); }
+    .sched-actions { justify-content: flex-start; position: relative; }
+    .sched-actions details.row-menu { position: static; }
+    .sched-actions .row-menu-pop { left: 0; right: auto; }
+    .sched-edit { padding-left: 16px; }
+  }
   .tg-list { @apply mt-1; }
   .tg-row { @apply flex items-center justify-between gap-3 py-3 border-t border-gray-100; }
   .tg-list > .tg-row:first-child { @apply border-t-0; }
@@ -1128,8 +1173,8 @@ _PAGE_STYLE = """
 
   .tab-bar { @apply flex gap-1.5 border-b border-gray-200 mb-5 flex-wrap; }
   .tab-btn { @apply bg-transparent border-0 border-b-2 border-transparent px-3.5 py-2.5 text-sm font-semibold text-gray-500 cursor-pointer -mb-px; }
-  .tab-btn:hover { @apply text-gray-900; }
-  .tab-btn.active { @apply text-indigo-600 border-indigo-600; }
+  .tab-btn:hover { @apply bg-transparent text-gray-900; }
+  .tab-btn.active, .tab-btn.active:hover { @apply text-indigo-600 border-indigo-600; }
   .tab-panel[hidden] { @apply hidden; }
 
   /* Custom select — styled trigger + dropdown panel that opens below it,
@@ -1622,9 +1667,8 @@ _PAGE_STYLE = """
   function initLocalDateTime(el) {
     if (el.dataset.localDtInit) return;
     el.dataset.localDtInit = "1";
-    var iso = el.getAttribute("data-utc");
-    var d = iso ? new Date(iso) : null;
-    if (!d || isNaN(d.getTime())) return;
+    var d = parseUtc(el.getAttribute("data-utc"));
+    if (!d) return;
     function pad(n) { return String(n).padStart(2, "0"); }
     el.textContent = pad(d.getHours()) + ":" + pad(d.getMinutes()) + " " +
       pad(d.getDate()) + "-" + pad(d.getMonth() + 1) + "-" + d.getFullYear();
@@ -1644,6 +1688,78 @@ _PAGE_STYLE = """
   // initLocalDateTime), since the freshly-rendered hidden input
   // otherwise comes back with whatever default the server rendered (0)
   // until this overwrites it.
+  // new Date("2026-11-03T09:00:00") reads a timestamp WITHOUT an offset as browser-local time, but the
+  // server (schedule_store) treats it as UTC — so add the "Z" before parsing.
+  function parseUtc(iso) {
+    if (!iso) return null;
+    var d = new Date(/(Z|[+-]\d\d:?\d\d)$/i.test(iso) ? iso : iso + "Z");
+    return isNaN(d.getTime()) ? null : d;
+  }
+
+  // "HH:MM" in the viewer's own timezone for a schedule row (the day it belongs to is the heading
+  // initScheduleDays() puts above it); the full local date+time is the tooltip.
+  function initLocalTime(el) {
+    if (el.dataset.localTimeInit) return;
+    el.dataset.localTimeInit = "1";
+    var d = parseUtc(el.getAttribute("data-utc"));
+    if (!d) return;
+    function pad(n) { return String(n).padStart(2, "0"); }
+    el.textContent = pad(d.getHours()) + ":" + pad(d.getMinutes());
+    el.title = pad(d.getDate()) + "/" + pad(d.getMonth() + 1) + "/" + d.getFullYear() + " " + el.textContent;
+  }
+
+  // Puts a "Hôm nay · 02/11" style heading above the first schedule row of each LOCAL day. Rows
+  // carry data-sched-when (UTC ISO); without JS the list simply has no headings.
+  function initScheduleDays(list) {
+    if (list.dataset.daysInit) return;
+    list.dataset.daysInit = "1";
+    var names = ["Chủ nhật", "Thứ hai", "Thứ ba", "Thứ tư", "Thứ năm", "Thứ sáu", "Thứ bảy"];
+    function pad(n) { return String(n).padStart(2, "0"); }
+    var today = new Date(); today.setHours(0, 0, 0, 0);
+    var lastKey = "";
+    Array.prototype.slice.call(list.querySelectorAll(":scope > [data-sched-when]")).forEach(function (row) {
+      var d = parseUtc(row.getAttribute("data-sched-when"));
+      if (!d) return;
+      var key = d.getFullYear() + "-" + d.getMonth() + "-" + d.getDate();
+      if (key === lastKey) return;
+      lastKey = key;
+      var day = new Date(d.getFullYear(), d.getMonth(), d.getDate());
+      var diff = Math.round((day - today) / 86400000);
+      var label = diff === 0 ? "Hôm nay" : diff === 1 ? "Ngày mai" : diff === -1 ? "Hôm qua" : names[d.getDay()];
+      var head = document.createElement("div");
+      head.className = "sched-dayhead";
+      head.textContent = label + " · " + pad(d.getDate()) + "/" + pad(d.getMonth() + 1);
+      list.insertBefore(head, row);
+    });
+  }
+
+  // Copies `text`; navigator.clipboard only exists on https/localhost, and the admin is often opened over plain
+  // http on a LAN, so fall back to a temporary textarea. Reports the outcome in the menu item's own small line,
+  // then closes its menu.
+  function copyText(text, btn) {
+    var small = btn.querySelector("small");
+    var original = small ? small.textContent : "";
+    function done(ok) {
+      if (small) small.textContent = ok ? "✅ Đã copy" : "⚠️ Không copy được — hãy chép tay";
+      setTimeout(function () {
+        if (small) small.textContent = original;
+        var menu = btn.closest("details"); if (menu) menu.removeAttribute("open");
+      }, ok ? 900 : 2500);
+    }
+    if (navigator.clipboard && window.isSecureContext) {
+      navigator.clipboard.writeText(text).then(function () { done(true); }, function () { done(false); });
+      return;
+    }
+    var ta = document.createElement("textarea");
+    ta.value = text; ta.style.position = "fixed"; ta.style.opacity = "0";
+    document.body.appendChild(ta); ta.select();
+    var ok = false;
+    try { ok = document.execCommand("copy"); } catch (e) { ok = false; }
+    document.body.removeChild(ta);
+    done(ok);
+  }
+  window.copyText = copyText;
+
   function initTzOffsetField(el) {
     if (el.dataset.tzOffsetInit) return;
     el.dataset.tzOffsetInit = "1";
@@ -1688,6 +1804,8 @@ _PAGE_STYLE = """
     root.querySelectorAll("[data-repeatable-blocks]").forEach(initRepeatableBlocks);
     root.querySelectorAll("[data-schedule-field]").forEach(initScheduleField);
     root.querySelectorAll("[data-local-dt]").forEach(initLocalDateTime);
+    root.querySelectorAll("[data-local-time]").forEach(initLocalTime);
+    root.querySelectorAll("[data-sched-days]").forEach(initScheduleDays);
     root.querySelectorAll("[data-tz-offset-field]").forEach(initTzOffsetField);
     root.querySelectorAll("[data-apply-tier]").forEach(initApplyTierButton);
     root.querySelectorAll("[data-preserve-post-form]").forEach(initPreservePostForm);
@@ -1749,7 +1867,7 @@ _PAGE_STYLE = """
   //
   // Listener attached to `document`, NOT `document.body` (bug found
   // 2026-09-15, owner report: switching /admin/schedule's own
-  // "Task đã lên lịch"/"Task quá hạn" tabs back and forth blanked the
+  // "Đã lên lịch"/"Quá hạn" tabs back and forth blanked the
   // datetime picker EVERY time, F5 was the only fix) — this whole
   // <script> block runs inside <head> (see _PAGE_STYLE/_layout()),
   // where `document.body` is still null; `document.body.
@@ -2106,7 +2224,7 @@ def _mod_users_content_html(saved: bool = False, error: str | None = None) -> st
     return f"""
 <div class="card" id="mod-users-content">
   {flash}{err}
-  <p class="page-desc" style="margin-top:0;">{len(users)} tài khoản MOD hiện có — mỗi tài khoản có đầy đủ quyền như ADMIN ở mọi trang khác, chỉ riêng trang này (quản lý tài khoản đăng nhập) là chỉ ADMIN vào được.</p>
+  <p class="page-desc" style="margin-top:0;">{len(users)} tài khoản MOD — có đủ quyền như ADMIN ở mọi trang, trừ trang này (chỉ ADMIN vào được).</p>
   {add_btn}
   <div class="table-scroll" style="margin-top:12px;">
     <table class="data-table">
@@ -2985,7 +3103,7 @@ async def config_form(request: Request, saved: bool = False, tab: str = "behavio
 
     return _layout(f"""
 <h1>Cấu hình</h1>
-<p class="page-desc">Ghi vào runtime_config.json (không đụng tới .env), có hiệu lực ngay, không cần khởi động lại service.</p>
+<p class="page-desc">Thay đổi có hiệu lực ngay, không cần khởi động lại.</p>
 {flash}
 <form method="post" action="/admin/config">
 <div data-tabs>
@@ -3001,12 +3119,12 @@ async def config_form(request: Request, saved: bool = False, tab: str = "behavio
   </div>
 
   <div class="tab-panel" id="tab-sync"{panel_attrs("sync")}>
-    <p class="page-desc">Cấu hình cho bộ đồng bộ dữ liệu bên B (human_bot/data_sync.py). Lần sync gần nhất theo từng tài khoản: xem <a href="/admin/accounts?tab=sync">Tài khoản → Đồng bộ</a>.</p>
+    <p class="page-desc">Chu kỳ lấy việc từ bên B, khoảng cách giữa các bài và ngưỡng lọc. Kết quả lần đồng bộ gần nhất của từng tài khoản: <a href="/admin/accounts?tab=sync">Tài khoản → Đồng bộ</a>.</p>
     {sync_cards}
   </div>
 
   <div class="tab-panel" id="tab-ai"{panel_attrs("ai")}>
-    <p class="page-desc">Chọn nhà cung cấp AI + key/model và công tắc bật/tắt cho AI soạn bài tin tuyển dụng đăng nhóm + viết lại reply ứng viên (human_bot/content_strategist.py, human_bot/ai_client.py). Cả 2 công tắc dưới đây vẫn là field của bộ đồng bộ bên B (DataSyncConfig) — chỉ tách ra hiển thị riêng ở đây cho gọn.</p>
+    <p class="page-desc">Nhà cung cấp AI, key, model và hai công tắc: AI soạn bài tin tuyển dụng, AI viết lại câu trả lời ứng viên.</p>
     {_ai_provider_card_html()}
     {ai_toggle_card}
   </div>
@@ -3696,7 +3814,7 @@ def _row_menu_html(items: list[str]) -> str:
 
 def _menu_form(
     url: str, hidden: dict[str, str], label: str, small: str, *, target: str = "#accounts-content",
-    confirm: str = "", danger: bool = False, title: str = "",
+    confirm: str = "", danger: bool = False, title: str = "", swap: str = "outerHTML", close_menu: bool | None = None,
 ) -> str:
     """One item of a "⋯" menu: a POST (htmx swaps `target`), optionally confirmed first. `url`, `label`,
     `small` and `confirm` are HTML the CALLER built — html.escape() every name or user-supplied text you put in
@@ -3704,9 +3822,14 @@ def _menu_form(
     attrs = f' hx-confirm="{confirm}"' if confirm else ""
     tip = f' title="{html.escape(title)}"' if title else ""
     inputs = "".join(f'<input type="hidden" name="{html.escape(k)}" value="{html.escape(v)}">' for k, v in hidden.items())
+    # a menu item that opens a modal must not leave its menu open behind it (default: exactly when it targets the
+    # modal slot; the other targets replace the whole list, menu included)
+    if close_menu is None:
+        close_menu = target == "#modal-root"
+    close = ' onclick="this.closest(\'details\').removeAttribute(\'open\')"' if close_menu else ""
     return (
-        f'<form method="post" action="{url}" hx-post="{url}" hx-target="{target}" hx-swap="outerHTML"{attrs}>{inputs}'
-        f'<button type="submit" class="menu-item{" danger" if danger else ""}"{tip}>{label}<small>{small}</small></button></form>'
+        f'<form method="post" action="{url}" hx-post="{url}" hx-target="{target}" hx-swap="{swap}"{attrs}>{inputs}'
+        f'<button type="submit" class="menu-item{" danger" if danger else ""}"{tip}{close}>{label}<small>{small}</small></button></form>'
     )
 
 
@@ -3914,7 +4037,7 @@ def _acct_row_html(aid: str, a, accounts: dict, registered_ids: set, *, child: b
             "/admin/accounts/disable", {"account_id": aid}, "⏻ Tắt", "Nghỉ có chủ đích · bật lại là chạy ngay, không hạ nhiệt",
             confirm=(
                 f"Tắt tài khoản {esc(aid)}? Sẽ không chạy tác vụ nào cho tới khi bạn bật lại; bài đến giờ trong lúc tắt sẽ "
-                "chuyển sang &quot;Task quá hạn&quot; để bạn xếp lại. Bật lại là chạy ngay, không bị hạ nhiệt."
+                "chuyển sang mục &quot;Quá hạn&quot; của Lịch đăng để bạn xếp lại. Bật lại là chạy ngay, không bị hạ nhiệt."
             ),
             title="Tắt chủ động (không có vấn đề gì). Bật lại là chạy ngay đủ giới hạn.",
         ))
@@ -4498,7 +4621,7 @@ async def post_form(
     if accounts[account_id].status == AccountStatus.DISABLED:
         pause_warning = (
             '<div class="warning">⏻ Tài khoản này đang <strong>tắt</strong> — bài lên lịch ở đây sẽ chuyển sang '
-            '"Task quá hạn" khi đến giờ, cho tới khi bạn <a href="/admin/accounts">bật lại</a>.</div>'
+            '"Quá hạn" khi đến giờ, cho tới khi bạn <a href="/admin/accounts">bật lại</a>.</div>'
         )
     elif accounts[account_id].status == AccountStatus.PAUSED:
         pause_warning = (
@@ -4540,7 +4663,7 @@ async def post_form(
         group_post_card = f"""
 <div class="card">
   <h2>👥 Đăng vào nhóm — {html.escape(account_labels[account_id])}</h2>
-  <p class="page-desc">Có thể tạo nhiều khối nội dung khác nhau, mỗi khối đăng vào một tập nhóm riêng — ví dụ nội dung A cho 3 nhóm đầu, nội dung B cho nhóm còn lại. Hệ thống tự rải giờ đăng giữa TẤT CẢ các bài (kể cả giữa các khối khác nhau) theo khoảng cách đang cấu hình ở <a href="/admin/config?tab=sync">Cấu hình → Đồng bộ dữ liệu</a> — không đăng dồn một lúc dù chọn nhiều nhóm.</p>
+  <p class="page-desc">Mỗi khối nội dung đăng vào một tập nhóm riêng (ví dụ nội dung A cho 3 nhóm đầu, nội dung B cho nhóm còn lại). Bot tự rải giờ giữa tất cả các bài theo khoảng cách ở <a href="/admin/config?tab=sync">Cấu hình → Đồng bộ dữ liệu</a>, nên không đăng dồn một lúc.</p>
   <form method="post" action="/admin/post/schedule-groups">
     <input type="hidden" name="account_id" value="{html.escape(account_id)}">
     <input type="hidden" name="retry_of_log_id" value="{prefill_retry_of_log_id or ""}">
@@ -4584,7 +4707,7 @@ async def post_form(
     comment_post_card = f"""
 <div class="card">
   <h2>💬 Đặt lịch bình luận — {html.escape(account_labels[account_id])}</h2>
-  <p class="page-desc">Bình luận vào MỘT bài đăng/hồ sơ Facebook cụ thể (dán URL bài đó bên dưới) — khác với "Đăng vào nhóm" ở trên vốn đăng bài mới, không phải bình luận vào bài có sẵn.</p>
+  <p class="page-desc">Bình luận vào MỘT bài Facebook có sẵn (dán URL bài đó bên dưới). Muốn đăng bài mới thì dùng “Đăng vào nhóm”.</p>
   <form method="post" action="/admin/post/schedule-comment">
     <input type="hidden" name="account_id" value="{html.escape(account_id)}">
     <input type="hidden" name="retry_of_log_id" value="{prefill_retry_of_log_id or ""}">
@@ -4619,7 +4742,7 @@ async def post_form(
     job_card = f"""
 <div class="card">
   <h2>📋 Tin tuyển dụng — {html.escape(account_labels[account_id])}</h2>
-  <p class="page-desc">Nhập thông tin tin tuyển dụng giống dữ liệu bên B gửi sang. Bấm một trong hai nút: hệ thống soạn mỗi nhóm một bài khác nhau, <b>tự chọn nhóm và xếp giờ</b> theo giới hạn của tài khoản rồi lên lịch luôn (xem/sửa/huỷ ở <a href="/admin/schedule">/admin/schedule</a>). Chỉ cần nhập Tiêu đề; ô nào để trống thì bài tự mời nhắn tin để trao đổi thêm.</p>
+  <p class="page-desc">Nhập thông tin tin tuyển dụng như dữ liệu bên B gửi sang. Bot soạn mỗi nhóm một bài khác nhau, <b>tự chọn nhóm và xếp giờ</b> theo giới hạn của tài khoản rồi lên lịch (xem, sửa, huỷ ở <a href="/admin/schedule">Lịch đăng</a>). Chỉ cần Tiêu đề; ô nào để trống thì bài mời nhắn tin để trao đổi thêm.</p>
   <form method="post" action="/admin/post/schedule-job">
     <input type="hidden" name="account_id" value="{html.escape(account_id)}">
     <div class="field-stack"><div class="field-label">Tiêu đề / vị trí *</div>
@@ -4668,7 +4791,7 @@ async def post_form(
 
     return _layout(f"""
 <h1>Đăng bài</h1>
-<p class="page-desc">Soạn nội dung và chọn thời điểm đăng — bài nào cũng qua lịch (<a href="/admin/schedule">/admin/schedule</a>) trước khi thật sự chạy, kể cả muốn đăng ngay (để trống giờ đăng, rồi bấm "🚀 Đăng ngay" bên đó).</p>
+<p class="page-desc">Soạn bài và chọn giờ đăng. Bài nào cũng qua <a href="/admin/schedule">Lịch đăng</a> trước khi chạy — muốn đăng ngay thì để trống giờ rồi bấm “🚀 Đăng ngay” ở đó.</p>
 {flash}{err}
 {account_picker}
 {pause_warning}
@@ -5108,6 +5231,75 @@ def _clamp_schedule_page_size(raw: int) -> int:
     return raw if raw in _SCHEDULE_PAGE_SIZE_CHOICES else _SCHEDULE_PAGE_SIZE
 
 
+def _local_time_html(iso: str | None) -> str:
+    """"HH:MM" in the VIEWER's own timezone (initLocalTime() in the page script rewrites it); the
+    server-rendered fallback is JST, same as _local_dt_html()."""
+    if not iso:
+        return "—"
+    try:
+        fallback = (datetime.fromisoformat(iso.replace("Z", "+00:00")) + timedelta(hours=9)).strftime("%H:%M")
+    except ValueError:
+        fallback = iso
+    return f'<span data-local-time data-utc="{html.escape(iso)}">{html.escape(fallback)}</span>'
+
+
+def _group_name_lookup():
+    """lookup(account_id, url) -> the group's saved name or None. Reads each account's group list ONCE
+    (a schedule page names dozens of tasks) and matches by group id/slug, not exact URL, like
+    agent.resolve_group_name()."""
+    from human_bot.actions import _group_id_from_url
+    cache: dict[str, list[tuple[str, str | None, str]]] = {}
+
+    def lookup(account_id: str, url: str | None) -> str | None:
+        if not url:
+            return None
+        if account_id not in cache:
+            try:
+                cache[account_id] = [(g.url, _group_id_from_url(g.url), g.name) for g in get_joined_groups(account_id)]
+            except Exception:  # noqa: BLE001 — a label is never worth failing the page
+                cache[account_id] = []
+        wanted = _group_id_from_url(url)
+        for group_url, group_id, name in cache[account_id]:
+            if group_url == url or (wanted and group_id == wanted):
+                return name or None
+        return None
+
+    return lookup
+
+
+def _sched_target_html(t, name_lookup) -> str:
+    """The row's target: a group's NAME (the URL is the link and the tooltip), or for a comment the
+    post it goes to. Raw URLs never take the line."""
+    if not t.target_url:
+        return '<span class="sched-target">Tường cá nhân</span>'
+    url = html.escape(t.target_url)
+    if t.action == "post_to_group":
+        label = name_lookup(t.account_id, t.target_url) or t.target_url.rstrip("/").rsplit("/", 1)[-1]
+    else:
+        # a post URL ends in an opaque id: name the group it is in when we know it, else the id's last digits
+        group = name_lookup(t.account_id, t.target_url)
+        tail = t.target_url.split("?")[0].rstrip("/").rsplit("/", 1)[-1]
+        label = f"bài trong {group}" if group else (f"bài viết …{tail[-6:]}" if tail and "." not in tail else "bài viết")
+    return f'<a class="sched-target" href="{url}" target="_blank" rel="noopener" title="{url}">{html.escape(label)}</a>'
+
+
+def _copy_url_button(url: str) -> str:
+    """A "⋯" menu item that copies `url` to the clipboard (copyText() in the page script, which also works over
+    plain http, where navigator.clipboard does not exist) and says whether it worked."""
+    url_js = html.escape(json.dumps(url), quote=True)
+    return (
+        f'<button type="button" class="menu-item" onclick="copyText({url_js}, this)">'
+        '📋 Copy URL<small>Chép đường dẫn vào bộ nhớ tạm</small></button>'
+    )
+
+
+_EDIT_TOGGLE = (
+    "var p=this.closest('.sched-item').querySelector('.sched-edit'); p.hidden=!p.hidden; "
+    "this.setAttribute('aria-expanded', String(!p.hidden));"
+)
+_EDIT_CLOSE = "var it=this.closest('.sched-item'); it.querySelector('.sched-edit').hidden=true;"
+
+
 def _schedule_page_link(
     account_id: str | None, target_page: int, label: str, enabled: bool, page_size: int = _SCHEDULE_PAGE_SIZE,
     action_filter: str | None = None, date_filter: str | None = None, tz_offset: int = 0,
@@ -5188,7 +5380,7 @@ def _missed_tasks_section_html(
     multi-tab pagination)."""
     all_missed = schedule_store.list_missed()
     if not all_missed:
-        return '<div class="empty-state">Không có task nào quá hạn — mọi thứ đúng lịch.</div>'
+        return '<div class="empty-state">Không có bài nào quá hạn — mọi thứ đúng lịch.</div>'
 
     now = datetime.now(timezone.utc)
     overdue_days_by_id = {t.task_id: schedule_store.missed_overdue_days(t, now) for t in all_missed}
@@ -5212,14 +5404,6 @@ def _missed_tasks_section_html(
     start = (missed_page - 1) * page_size
     missed = filtered[start:start + page_size] if filtered else []
 
-    filter_fields = (
-        f'<input type="hidden" name="account_id" value="{html.escape(account_id or "")}">'
-        f'<input type="hidden" name="page" value="{page}">'
-        f'<input type="hidden" name="page_size" value="{page_size}">'
-        f'<input type="hidden" name="tab" value="missed">'
-        f'<input type="hidden" name="missed_page" value="{missed_page}">'
-        f'<input type="hidden" name="missed_min_days" value="{missed_min_days if missed_min_days is not None else ""}">'
-    )
     _missed_days_options = '<option value="">— Tất cả —</option>' + "".join(
         f'<option value="{n}"{" selected" if n == missed_min_days else ""}>≥ {n} ngày</option>'
         for n in _MISSED_MIN_DAYS_CHOICES
@@ -5228,80 +5412,91 @@ def _missed_tasks_section_html(
         json.dumps({"tab": "missed", "account_id": account_id or "", "page_size": page_size}),
         quote=True,
     )
-    missed_filter_html = f"""
-<div class="account-filter">
+    toolbar_html = f"""
+<div class="sched-toolbar">
   <label for="schedule-missed-mindays-select">Quá hạn</label>
   <select name="missed_min_days" id="schedule-missed-mindays-select"
           hx-get="/admin/schedule" hx-target="#schedule-content" hx-swap="outerHTML"
           hx-trigger="change" hx-push-url="true"
           hx-vals="{_missed_filter_hx_vals}">{_missed_days_options}</select>
-  <span class="badge">{total} task{f" (trong tổng {len(all_missed)})" if missed_min_days is not None else ""}</span>
-</div>"""
-    missed_bulk_controls_html = f"""
-<div style="display:flex; align-items:center; gap:12px; flex-shrink:0;">
-  <label style="font-size:13px; display:flex; align-items:center; gap:4px; cursor:pointer; white-space:nowrap;">
+  <span class="sched-count">{total} bài{f" (trong tổng {len(all_missed)})" if missed_min_days is not None else ""}</span>
+  <label style="display:flex; align-items:center; gap:4px; cursor:pointer; white-space:nowrap;">
     <input type="checkbox" onclick="document.querySelectorAll('input[name=task_ids]').forEach(function(cb){{cb.checked=this.checked}}.bind(this))">
     Chọn tất cả
   </label>
-  <button type="submit" form="missed-bulk-form" class="btn-secondary btn-small">🗑️ Xoá đã chọn</button>
+  <button type="submit" form="missed-bulk-form" class="btn-secondary btn-small">🗑 Xoá đã chọn</button>
 </div>"""
     items_html = []
+    empty_note_html = ""
     if missed_min_days is not None and not filtered:
-        items_html.append(
-            f'<div class="empty-state">Không có task nào quá hạn ≥ {missed_min_days} ngày '
-            f'(tổng {len(all_missed)} task quá hạn ở mọi mức) — đổi bộ lọc ở trên để xem lại.</div>'
+        empty_note_html = (
+            f'<div class="empty-state">Không có bài nào quá hạn ≥ {missed_min_days} ngày '
+            f'(tổng {len(all_missed)} bài quá hạn ở mọi mức) — đổi bộ lọc ở trên để xem lại.</div>'
         )
+    name_lookup = _group_name_lookup()
+    # the hidden fields every per-row form (and the bulk form) carries back, built ONCE
+    filter_values = {
+        "account_id": account_id or "", "page": str(page), "page_size": str(page_size), "tab": "missed",
+        "missed_page": str(missed_page), "missed_min_days": str(missed_min_days) if missed_min_days is not None else "",
+    }
+    filter_fields = "".join(f'<input type="hidden" name="{k}" value="{html.escape(v)}">' for k, v in filter_values.items())
     for t in missed:
         content_full = html.escape(t.content or "")
         reason = schedule_store.get_missed_reason(t.task_id)
-        reason_html = f'<div class="warning-inline">{_localize_iso_timestamps_html(reason)}</div>' if reason else ""
-        url_row_html = ""
-        if t.target_url:
-            url_label = "Url nhóm" if t.action == "post_to_group" else "Url bài viết"
-            url_display = html.escape(t.target_url)
-            url_row_html = f'<div class="field-key">{url_label}: <a class="row-url" href="{url_display}" target="_blank" rel="noopener">{url_display}</a></div>'
+        why_html = f'<div class="sched-why">{_localize_iso_timestamps_html(reason)}</div>' if reason else ""
         reschedule_qs = (
             f"task_id={html.escape(t.task_id, quote=True)}&account_id={html.escape(account_id or '', quote=True)}"
             f"&page={page}&page_size={page_size}&missed_page={missed_page}"
             + (f"&missed_min_days={missed_min_days}" if missed_min_days is not None else "")
         )
+        tid = html.escape(t.task_id)
+        menu_items = [_menu_button(
+            f'hx-get="/admin/schedule/missed/borrow?{reschedule_qs}" hx-target="#modal-root" hx-swap="innerHTML"',
+            "↩️ Mượn giờ của bài khác", "Dùng giờ của một bài đang chờ; bài đó dời sang sau",
+        )]
+        if t.target_url:
+            menu_items.append(_copy_url_button(t.target_url))
+        menu_items.append('<hr class="row-menu-sep">')
+        menu_items.append(_menu_form(
+            "/admin/schedule/missed/cancel", {"task_id": t.task_id, **filter_values}, "🗑 Xoá",
+            "Bỏ hẳn bài này, không đăng nữa", target="#schedule-content", confirm="Xoá mục quá hạn này?", danger=True,
+        ))
+        menu_items.append(f'<div class="row-menu-info">Mã: {tid}</div>')
         items_html.append(f"""
-<div class="queue-item" style="border-left:3px solid #f59e0b;">
-  <label style="display:flex; align-items:center; gap:8px; cursor:pointer;">
-    <input type="checkbox" name="task_ids" value="{html.escape(t.task_id)}" form="missed-bulk-form">
-    <span class="queue-filename">{_action_badge_html(t.action)}{_sponsor_badge_html(t)} · {html.escape(_account_label(t.account_id, accounts))}</span>
-  </label>
-  <div class="field-key">id: {html.escape(t.task_id)}</div>
-  <div class="field-key">Giờ dự kiến ban đầu: {_local_dt_html(t.scheduled_at)} — quá hạn {overdue_days_by_id[t.task_id]} ngày</div>
-  {url_row_html}
-  {reason_html}
-  <form method="post" action="/admin/schedule/missed/reschedule"
-        hx-post="/admin/schedule/missed/reschedule" hx-target="#schedule-content" hx-swap="outerHTML"
-        style="margin-top:8px; display:flex; gap:8px; align-items:flex-start; flex-wrap:wrap;">
-    <input type="hidden" name="task_id" value="{html.escape(t.task_id)}">
-    {filter_fields}
-    <textarea name="content" style="flex:1; min-width:240px; min-height:60px;">{content_full}</textarea>
-    {_datetime_picker_html("scheduled_at", current_value=t.scheduled_at, required=True, blank_hint=False)}
-    <button type="submit" class="btn-small">📅 Đặt lịch</button>
-  </form>
-  <div style="margin-top:8px; display:flex; gap:8px;">
-    <form method="post" action="/admin/schedule/missed/fire-now"
-          hx-post="/admin/schedule/missed/fire-now" hx-target="#schedule-content" hx-swap="outerHTML"
-          style="display:inline;">
-      <input type="hidden" name="task_id" value="{html.escape(t.task_id)}">
+<div class="sched-item sched-missed" data-sched-when="{html.escape(t.scheduled_at or '')}">
+  <div class="sched-line">
+    <label class="sched-check" title="Chọn để xoá hàng loạt"><input type="checkbox" name="task_ids" value="{tid}" form="missed-bulk-form"></label>
+    <div class="sched-time">{_local_time_html(t.scheduled_at)}<small>quá {overdue_days_by_id[t.task_id]} ngày</small></div>
+    <div class="sched-main">
+      <div class="sched-title">{_action_badge_html(t.action)}{_sponsor_badge_html(t)}{_sched_target_html(t, name_lookup)}
+        <span class="sched-acct">{html.escape(_account_label(t.account_id, accounts))} · hẹn {_local_dt_html(t.scheduled_at)}</span></div>
+      <div class="sched-preview">{content_full}</div>
+      {why_html}
+    </div>
+    <div class="sched-actions">
+      <button type="button" class="btn-small"
+              hx-get="/admin/schedule/missed/suggest?{reschedule_qs}" hx-target="#modal-root" hx-swap="innerHTML">🔄 Lên lịch lại</button>
+      <form method="post" action="/admin/schedule/missed/fire-now"
+            hx-post="/admin/schedule/missed/fire-now" hx-target="#schedule-content" hx-swap="outerHTML">
+        <input type="hidden" name="task_id" value="{tid}">
+        {filter_fields}
+        <button type="submit" class="btn-secondary btn-small">🚀 Đăng ngay</button>
+      </form>
+      <button type="button" class="btn-secondary btn-small" aria-expanded="false" onclick="{_EDIT_TOGGLE}">📅 Đặt giờ khác</button>
+      {_row_menu_html(menu_items)}
+    </div>
+  </div>
+  <div class="sched-edit" hidden>
+    <form method="post" action="/admin/schedule/missed/reschedule"
+          hx-post="/admin/schedule/missed/reschedule" hx-target="#schedule-content" hx-swap="outerHTML">
+      <input type="hidden" name="task_id" value="{tid}">
       {filter_fields}
-      <button type="submit" class="btn-small">🚀 Đăng ngay</button>
-    </form>
-    <button type="button" class="btn-small"
-            hx-get="/admin/schedule/missed/suggest?{reschedule_qs}" hx-target="#modal-root" hx-swap="innerHTML">🔄 Lên lịch lại</button>
-    <button type="button" class="btn-secondary btn-small"
-            hx-get="/admin/schedule/missed/borrow?{reschedule_qs}" hx-target="#modal-root" hx-swap="innerHTML">↩️ Mượn giờ</button>
-    <form method="post" action="/admin/schedule/missed/cancel"
-          hx-post="/admin/schedule/missed/cancel" hx-target="#schedule-content" hx-swap="outerHTML"
-          hx-confirm="Xoá mục quá hạn này?">
-      <input type="hidden" name="task_id" value="{html.escape(t.task_id)}">
-      {filter_fields}
-      <button type="submit" class="btn-secondary btn-small">🗑️ Xoá</button>
+      <textarea name="content" aria-label="Nội dung bài">{content_full}</textarea>
+      <div class="sched-edit-row">
+        {_datetime_picker_html("scheduled_at", current_value=t.scheduled_at, required=True, blank_hint=False)}
+        <button type="submit" class="btn-small">📅 Đặt lịch</button>
+        <button type="button" class="btn-secondary btn-small" onclick="{_EDIT_CLOSE}">Đóng</button>
+      </div>
     </form>
   </div>
 </div>""")
@@ -5312,15 +5507,19 @@ def _missed_tasks_section_html(
       hx-confirm="Xoá tất cả mục đã chọn?">
   {filter_fields}
 </form>
-<div class="card">
-  <p class="page-desc" style="margin:0 0 8px;">Những bài lẽ ra đã đến giờ đăng nhưng service đang tắt lúc đó — giữ lại đây thay vì tự động đăng khi khởi động lại, chờ bạn duyệt: "📅 Đặt lịch" (tự chọn giờ mới), "🔄 Lên lịch lại" (hệ thống gợi ý giờ trống gần nhất), hoặc xoá nếu không cần nữa. Task nào quá hạn hơn {schedule_store.STALE_MISSED_MAX_AGE_DAYS} ngày mà chưa xử lý sẽ tự động bị huỷ (vẫn giữ lại lịch sử).</p>
-  <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;">
-    {missed_filter_html}
-    {missed_bulk_controls_html}
-  </div>
-  {"".join(items_html)}
-  {_missed_pagination_html(account_id, missed_page, total_pages, total, page_size, missed_min_days)}
-</div>"""
+<p class="sched-help">Bài đến giờ đăng nhưng không chạy được (mất mạng, service tắt, tài khoản tắt hoặc tạm dừng…) được giữ lại ở đây chờ bạn xếp lại.
+  Bài quá hạn hơn {schedule_store.STALE_MISSED_MAX_AGE_DAYS} ngày mà chưa xử lý sẽ tự bị huỷ (vẫn giữ lịch sử).</p>
+<details class="mini-help" style="margin:-4px 0 12px;"><summary>Các nút làm gì?</summary>
+  <div class="hint"><strong>🔄 Lên lịch lại</strong>: hệ thống gợi ý giờ trống gần nhất ·
+    <strong>📅 Đặt giờ khác</strong>: tự chọn giờ và sửa nội dung ·
+    <strong>↩️ Mượn giờ</strong> (menu ⋯): dùng giờ của một bài đang chờ, bài đó dời sang sau ·
+    <strong>🚀 Đăng ngay</strong>: đăng lập tức.</div>
+</details>
+{toolbar_html}
+{empty_note_html}
+{f'<div class="sched-list">{"".join(items_html)}</div>' if items_html else ""}
+{_missed_pagination_html(account_id, missed_page, total_pages, total, page_size, missed_min_days)}
+"""
 
 
 def _missed_pagination_html(
@@ -5368,65 +5567,66 @@ def _needs_review_section_html(accounts: dict) -> str:
     manually clears it), unlike the pending/missed tabs."""
     reviews = schedule_store.list_needs_review()
     if not reviews:
-        return '<div class="empty-state">Không có job nào chờ duyệt.</div>'
+        return '<div class="empty-state">Không có tin tuyển dụng nào chờ duyệt.</div>'
 
     cfg = get_data_sync_config()
     items_html = []
     for r in reviews:
         title = _join_list_or_str((r.job_data or {}).get("title")) or "(không có tiêu đề)"
-        # isinstance check, not `is not None` — defends the `:.2f` format
-        # below against a non-numeric value on disk (e.g. a hand-edited
-        # needs_review/*.json, or a future caller that bypasses
-        # data_sync.py's own _safe_job_confidence() guard at write time):
-        # ValueError there would otherwise crash this whole tab's render,
-        # not just the one malformed row.
+        # isinstance check, not `is not None` — defends the `:.2f` format below against a non-numeric value on
+        # disk (a hand-edited needs_review/*.json, or a future caller that bypasses data_sync.py's own
+        # _safe_job_confidence() guard at write time): ValueError there would otherwise crash this whole
+        # tab's render, not just the one malformed row.
         confidence_html = (
             f"⚠️ Độ tin cậy: {r.confidence:.2f} (dưới mốc {cfg.job_min_confidence:.2f})"
             if isinstance(r.confidence, (int, float)) and not isinstance(r.confidence, bool)
             else f"⚠️ Thiếu trường độ tin cậy (confidence) — coi như chưa đủ tin cậy (mốc hiện tại: {cfg.job_min_confidence:.2f})"
         )
-        # flex:1 1 0 + min-width:0 (owner request, 2026-10-08) divides the
-        # row EVENLY among however many group boxes there are (1/3 each
-        # for 3 groups) instead of each shrinking to its own content width
-        # — `.queue-item form { @apply flex ... flex-wrap }` (admin.py's
-        # CSS, shared by every action form inside a .queue-item) already
-        # makes this a flex row; min-width:0 is needed too, or a flex
-        # item's default min-width:auto stops it shrinking below its
-        # textarea's intrinsic content width, breaking the even 3-way split.
+        # One textarea per group, side by side (they wrap on a narrow screen): a job's groups/contents are
+        # approved or rejected together as one unit, but each group's text can be edited first.
         group_fields = []
         for i, (g, content) in enumerate(zip(r.groups, r.contents)):
             group_name = html.escape(g.get("name") or g.get("url") or f"nhóm {i + 1}")
             content_full = html.escape(content or "")
             group_fields.append(f"""
-  <div style="flex:1 1 0; min-width:0; margin-top:8px;">
+  <div class="sched-group">
     <div class="field-key">Nhóm: {group_name}</div>
-    <textarea name="content_{i}" style="width:100%; min-height:60px; box-sizing:border-box;">{content_full}</textarea>
+    <textarea name="content_{i}" aria-label="Nội dung cho {group_name}">{content_full}</textarea>
   </div>""")
+        first_content = html.escape((r.contents[0] if r.contents else "") or "")
         approve_form_id = f"needs-review-approve-{r.review_id}"
         reject_form_id = f"needs-review-reject-{r.review_id}"
         items_html.append(f"""
-<div class="queue-item" style="border-left:3px solid #8b5cf6;">
-  <span class="queue-filename">{_action_badge_html("post_to_group")}{_sponsor_badge_html(r)} · {html.escape(_account_label(r.account_id, accounts))}</span>
-  <div class="field-key">{html.escape(title)}</div>
-  <div class="warning-inline">{confidence_html}</div>
-  <form id="{approve_form_id}" method="post" action="/admin/schedule/needs-review/{r.review_id}/confirm-modal"
-        hx-post="/admin/schedule/needs-review/{r.review_id}/confirm-modal" hx-target="#modal-root" hx-swap="innerHTML">
-    {"".join(group_fields)}
-  </form>
-  <form id="{reject_form_id}" method="post" action="/admin/schedule/needs-review/{r.review_id}/reject"
-        hx-post="/admin/schedule/needs-review/{r.review_id}/reject" hx-target="#schedule-content" hx-swap="outerHTML"
-        hx-confirm="Bỏ qua job này? Nó sẽ không được đăng."></form>
-  <div style="display:flex; gap:8px; margin-top:8px;">
-    <button type="submit" form="{approve_form_id}" class="btn-small">✅ Duyệt &amp; lên lịch</button>
-    <button type="submit" form="{reject_form_id}" class="btn-secondary btn-small">🗑️ Bỏ qua</button>
+<div class="sched-item sched-review">
+  <div class="sched-line">
+    <div class="sched-main">
+      <div class="sched-title">{_action_badge_html("post_to_group")}{_sponsor_badge_html(r)}<span class="sched-target">{html.escape(title)}</span>
+        <span class="sched-acct">{html.escape(_account_label(r.account_id, accounts))} · {len(r.groups)} nhóm</span></div>
+      <div class="sched-preview">{first_content}</div>
+      <div class="sched-why">{confidence_html}</div>
+    </div>
+    <div class="sched-actions">
+      <button type="submit" form="{approve_form_id}" class="btn-small">✅ Duyệt &amp; lên lịch</button>
+      <button type="submit" form="{reject_form_id}" class="btn-secondary btn-small">🗑 Bỏ qua</button>
+      <button type="button" class="btn-secondary btn-small" aria-expanded="false" onclick="{_EDIT_TOGGLE}">✎ Xem / sửa nội dung</button>
+    </div>
+  </div>
+  <div class="sched-edit" hidden>
+    <form id="{approve_form_id}" method="post" action="/admin/schedule/needs-review/{r.review_id}/confirm-modal"
+          hx-post="/admin/schedule/needs-review/{r.review_id}/confirm-modal" hx-target="#modal-root" hx-swap="innerHTML">
+      <div class="sched-groups">{"".join(group_fields)}</div>
+    </form>
+    <form id="{reject_form_id}" method="post" action="/admin/schedule/needs-review/{r.review_id}/reject"
+          hx-post="/admin/schedule/needs-review/{r.review_id}/reject" hx-target="#schedule-content" hx-swap="outerHTML"
+          hx-confirm="Bỏ qua tin này? Nó sẽ không được đăng."></form>
   </div>
 </div>""")
 
     return f"""
-<div class="card">
-  <p class="page-desc" style="margin:0 0 8px;">Job có độ tin cậy dưới mốc hiện tại (hoặc thiếu hẳn trường này) — đã soạn sẵn nội dung bằng template nhưng CHƯA được tự lên lịch. "✅ Duyệt &amp; lên lịch" sẽ tự tính giờ đăng hợp lệ gần nhất (tôn trọng hạn mức/giờ yên tĩnh) ngay lúc bấm. Sửa ngưỡng ở <a href="/admin/config">/admin/config</a> ("Độ tin cậy tối thiểu để TỰ lên lịch đăng job").</p>
-  {"".join(items_html)}
-</div>"""
+<p class="sched-help">Tin tuyển dụng có độ tin cậy dưới mốc hiện tại (hoặc thiếu hẳn) — đã soạn sẵn nội dung nhưng chưa được tự lên lịch.
+  “✅ Duyệt &amp; lên lịch” tự tính giờ đăng hợp lệ gần nhất (đúng hạn mức và giờ yên tĩnh) ngay lúc bấm. Muốn đổi mốc:
+  <a href="/admin/config?tab=sync">Cấu hình → Đồng bộ dữ liệu</a> (“Độ tin cậy tối thiểu để TỰ lên lịch đăng job”).</p>
+<div class="sched-list">{"".join(items_html)}</div>"""
 
 
 _SCHEDULE_TABS = ("pending", "missed", "needs_review")
@@ -5560,107 +5760,103 @@ def _schedule_content_html(
             f'hx-push-url="true">✕ Xoá bộ lọc</a>'
         )
     filter_html = f"""
-<div class="account-filter">
+<div class="sched-toolbar">
   <label for="schedule-account-select">Tài khoản</label>
   <select name="account_id" id="schedule-account-select" hx-include="{_sched_filter_ids}"
           hx-get="/admin/schedule" hx-target="#schedule-content" hx-swap="outerHTML"
           hx-trigger="change" hx-push-url="true">{account_options}</select>
-  <label for="schedule-pagesize-select">Hiển thị</label>
-  <select name="page_size" id="schedule-pagesize-select" hx-include="{_sched_filter_ids}"
-          hx-get="/admin/schedule" hx-target="#schedule-content" hx-swap="outerHTML"
-          hx-trigger="change" hx-push-url="true">{page_size_options}</select>
-  <span class="badge">{total} bài đang chờ</span>
-</div>
-<div class="account-filter">
-  <label for="schedule-action-select">Hành động</label>
+  <label for="schedule-action-select">Việc</label>
   <select name="action" id="schedule-action-select" hx-include="{_sched_filter_ids}"
           hx-get="/admin/schedule" hx-target="#schedule-content" hx-swap="outerHTML"
           hx-trigger="change" hx-push-url="true">{action_options}</select>
-  <label for="schedule-date-input">Ngày đăng</label>
+  <label for="schedule-date-input">Ngày</label>
   <input type="date" name="date" id="schedule-date-input" value="{html.escape(date_filter or "")}"
          hx-include="{_sched_filter_ids}"
          hx-get="/admin/schedule" hx-target="#schedule-content" hx-swap="outerHTML"
          hx-trigger="change" hx-push-url="true">
   <input type="hidden" name="tz_offset" id="schedule-tz-offset" data-tz-offset-field value="{tz_offset}">
   {clear_filter_html}
+  <select name="page_size" id="schedule-pagesize-select" aria-label="Số bài mỗi trang" hx-include="{_sched_filter_ids}"
+          hx-get="/admin/schedule" hx-target="#schedule-content" hx-swap="outerHTML"
+          hx-trigger="change" hx-push-url="true">{page_size_options}</select>
+  <span class="sched-count">{total} bài đang chờ</span>
 </div>"""
 
     if page_tasks:
         items_html = []
+        name_lookup = _group_name_lookup()
+        now_utc = datetime.now(timezone.utc)
+        # Every mutating form carries the current filter/page back so update / fire-now / cancel re-render the
+        # SAME view instead of resetting to "all accounts, page 1" — the same for every row, so built once.
+        filter_values = {
+            "account_id": account_id or "", "page": str(page), "page_size": str(page_size),
+            "action": action_filter or "", "date": date_filter or "", "tz_offset": str(tz_offset),
+        }
+        filter_fields = "".join(f'<input type="hidden" name="{k}" value="{html.escape(v)}">' for k, v in filter_values.items())
         for t in page_tasks:
-            # NOT truncated — this exact string is also the editable
-            # <textarea>'s value below. Truncating it here used to mean
-            # opening "Sửa" and clicking "Lưu" on any post longer than a
-            # cutoff silently chopped off everything past it, even
-            # without touching the text (found in the admin UI review
-            # that raised this).
+            # The edit textarea's value is NOT truncated: opening "Sửa" and clicking "Lưu" on a long post
+            # must not silently chop it (found in an admin UI review).
             content_full = html.escape(t.content or "")
-            # Every mutating form below carries the current filter/page
-            # back so update/fire-now/cancel re-render the SAME view
-            # instead of silently resetting to "all accounts, page 1".
-            filter_fields = (
-                f'<input type="hidden" name="account_id" value="{html.escape(account_id or "")}">'
-                f'<input type="hidden" name="page" value="{page}">'
-                f'<input type="hidden" name="page_size" value="{page_size}">'
-                f'<input type="hidden" name="action" value="{html.escape(action_filter or "")}">'
-                f'<input type="hidden" name="date" value="{html.escape(date_filter or "")}">'
-                f'<input type="hidden" name="tz_offset" value="{tz_offset}">'
-            )
-            url_row_html = ""
+            tid = html.escape(t.task_id)
+            due_at = None
+            try:
+                due_at = datetime.fromisoformat(t.scheduled_at.replace("Z", "+00:00"))
+                if due_at.tzinfo is None:
+                    due_at = due_at.replace(tzinfo=timezone.utc)  # like schedule_store: a naive time is UTC
+            except (ValueError, AttributeError):
+                pass
+            is_due = due_at is not None and due_at <= now_utc
+            warning_html = f'<div class="sched-why">{html.escape(t.last_warning)}</div>' if t.last_warning else ""
+            menu_items = [_menu_form(
+                "/admin/schedule/swap-modal", {"task_id": t.task_id, **filter_values}, "⇄ Đổi giờ với bài khác",
+                "Hoán đổi giờ đăng với một bài đang chờ", target="#modal-root", swap="innerHTML",
+            )]
             if t.target_url:
-                url_label = "Url nhóm" if t.action == "post_to_group" else "Url bài viết"
-                url_display = html.escape(t.target_url)
-                url_js = html.escape(json.dumps(t.target_url), quote=True)
-                url_row_html = f"""
-  <div class="field-key">{url_label}: <a class="row-url" href="{url_display}" target="_blank" rel="noopener">{url_display}</a>
-    <button type="button" class="btn-copy" style="margin-left:6px;"
-            onclick="navigator.clipboard.writeText({url_js}); var b=this; var t0=b.textContent; b.textContent='✅ Đã copy'; setTimeout(function(){{b.textContent=t0;}}, 1500);">📋 Copy</button>
-  </div>"""
-            warning_html = ""
-            if t.last_warning:
-                warning_html = f'<div class="warning-inline">{html.escape(t.last_warning)}</div>'
+                menu_items.append(_copy_url_button(t.target_url))
+            menu_items.append('<hr class="row-menu-sep">')
+            menu_items.append(_menu_form(
+                "/admin/schedule/cancel", {"task_id": t.task_id, **filter_values}, "🗑 Huỷ lịch đăng",
+                "Bài này sẽ không được đăng", target="#schedule-content", confirm="Huỷ lịch đăng này?", danger=True,
+            ))
+            menu_items.append(f'<div class="row-menu-info">Mã: {tid}</div>')
             items_html.append(f"""
-<div class="queue-item">
-  <div class="queue-filename">{_action_badge_html(t.action)}{_sponsor_badge_html(t)} · {html.escape(_account_label(t.account_id, accounts))}</div>
-  <div class="field-key">id: {html.escape(t.task_id)}</div>
-  <div class="field-key">Ngày giờ thực hiện: {_local_dt_html(t.scheduled_at)}</div>
-  {url_row_html}
-  {warning_html}
-  <form method="post" action="/admin/schedule/update"
-        hx-post="/admin/schedule/update" hx-target="#schedule-content" hx-swap="outerHTML"
-        style="margin-top:8px; display:flex; gap:8px; align-items:flex-start; flex-wrap:wrap;">
-    <input type="hidden" name="task_id" value="{html.escape(t.task_id)}">
-    {filter_fields}
-    <textarea name="content" style="flex:1; min-width:240px; min-height:60px;">{content_full}</textarea>
-    {_datetime_picker_html("scheduled_at", current_value=t.scheduled_at, required=True, blank_hint=False)}
-    <button type="submit" class="btn-small">Lưu</button>
-  </form>
-  <div style="margin-top:8px; display:flex; gap:8px;">
-    <form method="post" action="/admin/schedule/fire-now"
-          hx-post="/admin/schedule/fire-now" hx-target="#schedule-content" hx-swap="outerHTML"
-          hx-confirm="Đăng bài này lên Facebook ngay bây giờ?">
-      <input type="hidden" name="task_id" value="{html.escape(t.task_id)}">
+<div class="sched-item{' sched-due' if is_due else ''}" data-sched-when="{html.escape(t.scheduled_at or '')}">
+  <div class="sched-line">
+    <div class="sched-time">{_local_time_html(t.scheduled_at)}{'<small>⏰ đến giờ</small>' if is_due else ''}</div>
+    <div class="sched-main">
+      <div class="sched-title">{_action_badge_html(t.action)}{_sponsor_badge_html(t)}{_sched_target_html(t, name_lookup)}
+        <span class="sched-acct">{html.escape(_account_label(t.account_id, accounts))}</span></div>
+      <div class="sched-preview">{content_full}</div>
+      {warning_html}
+    </div>
+    <div class="sched-actions">
+      <form method="post" action="/admin/schedule/fire-now"
+            hx-post="/admin/schedule/fire-now" hx-target="#schedule-content" hx-swap="outerHTML"
+            hx-confirm="Đăng bài này lên Facebook ngay bây giờ?">
+        <input type="hidden" name="task_id" value="{tid}">
+        {filter_fields}
+        <button type="submit" class="btn-small{'' if is_due else ' btn-secondary'}">🚀 Đăng ngay</button>
+      </form>
+      <button type="button" class="btn-secondary btn-small" aria-expanded="false" onclick="{_EDIT_TOGGLE}">✎ Sửa</button>
+      {_row_menu_html(menu_items)}
+    </div>
+  </div>
+  <div class="sched-edit" hidden>
+    <form method="post" action="/admin/schedule/update" hx-post="/admin/schedule/update" hx-target="#schedule-content" hx-swap="outerHTML">
+      <input type="hidden" name="task_id" value="{tid}">
       {filter_fields}
-      <button type="submit" class="btn-small">🚀 Đăng ngay</button>
-    </form>
-    <form method="post" action="/admin/schedule/swap-modal"
-          hx-post="/admin/schedule/swap-modal" hx-target="#modal-root" hx-swap="innerHTML">
-      <input type="hidden" name="task_id" value="{html.escape(t.task_id)}">
-      {filter_fields}
-      <button type="submit" class="btn-secondary btn-small">⇄ Đổi giờ</button>
-    </form>
-    <form method="post" action="/admin/schedule/cancel"
-          hx-post="/admin/schedule/cancel" hx-target="#schedule-content" hx-swap="outerHTML"
-          hx-confirm="Huỷ lịch đăng này?">
-      <input type="hidden" name="task_id" value="{html.escape(t.task_id)}">
-      {filter_fields}
-      <button type="submit" class="btn-secondary btn-small">Huỷ</button>
+      <textarea name="content" aria-label="Nội dung bài">{content_full}</textarea>
+      <div class="sched-edit-row">
+        {_datetime_picker_html("scheduled_at", current_value=t.scheduled_at, required=True, blank_hint=False)}
+        <button type="submit" class="btn-small">Lưu</button>
+        <button type="button" class="btn-secondary btn-small" onclick="{_EDIT_CLOSE}">Đóng</button>
+      </div>
     </form>
   </div>
 </div>""")
-        list_html = "".join(items_html)
+        list_html = f'<div class="sched-list" data-sched-days>{"".join(items_html)}</div>'
     elif total == 0:
-        list_html = '<div class="empty-state">Chưa có bài nào đang chờ lịch. Bộ đồng bộ bên B sẽ tự điền vào đây khi có dữ liệu mới, hoặc soạn thủ công ở /admin/post.</div>'
+        list_html = '<div class="empty-state">Chưa có bài nào đang chờ lịch. Khi bên B có dữ liệu mới, bot sẽ tự điền vào đây — hoặc bạn soạn tay ở <a href="/admin/post">Đăng bài</a>.</div>'
     else:
         list_html = '<div class="empty-state">Không có bài nào ở trang này.</div>'
 
@@ -5708,25 +5904,20 @@ def _schedule_content_html(
 
     def _schedule_tab_link(tab_key: str, label: str) -> str:
         from urllib.parse import urlencode as _urlencode_tab
-        active = tab_key == tab
         qs = _urlencode_tab({k: v for k, v in {
             "account_id": account_id, "tab": tab_key,
             "page_size": page_size if page_size != _SCHEDULE_PAGE_SIZE else None,
         }.items() if v})
-        style = (
-            "border-bottom:2px solid #111827; font-weight:600; color:#111827;" if active
-            else "border-bottom:2px solid transparent; color:#6b7280;"
-        )
         return (
             f'<a href="/admin/schedule?{qs}" hx-get="/admin/schedule?{qs}" '
             f'hx-target="#schedule-content" hx-swap="outerHTML" hx-push-url="true" '
-            f'style="padding:8px 4px; text-decoration:none; {style}">{label}</a>'
+            f'class="sched-tab{" active" if tab_key == tab else ""}">{label}</a>'
         )
 
     tab_nav_html = f"""
-<div style="display:flex; gap:20px; margin-bottom:18px; border-bottom:1px solid #e5e7eb;">
-  {_schedule_tab_link("pending", f"📋 Task đã lên lịch ({total})")}
-  {_schedule_tab_link("missed", f"⚠️ Task quá hạn ({missed_count})")}
+<div class="sched-tabs">
+  {_schedule_tab_link("pending", f"📋 Đã lên lịch ({total})")}
+  {_schedule_tab_link("missed", f"⚠️ Quá hạn ({missed_count})")}
   {_schedule_tab_link("needs_review", f"🔍 Chờ duyệt ({needs_review_count})")}
 </div>"""
 
@@ -5781,7 +5972,7 @@ async def schedule_list(
         return content
     return _layout(f"""
 <h1>Lịch đăng</h1>
-<p class="page-desc">Mọi bài chờ đăng — tự động từ bộ đồng bộ bên B (human_bot/data_sync.py) hoặc soạn thủ công ở /admin/post — đều nằm ở đây trước khi thật sự chạy.</p>
+<p class="page-desc">Mọi bài chờ đăng, tự động hay soạn tay, đều nằm ở đây trước khi chạy.</p>
 {_auto_fire_status_html()}
 {content}
 """, active="schedule", current_user=_build_current_user(request))
@@ -6022,8 +6213,8 @@ def _borrow_modal_html(
       <button type="button" class="modal-close" onclick="this.closest('.modal-backdrop').remove()">✕</button>
     </div>
     {err_html}
-    <p class="page-desc" style="margin-top:0;">Task quá hạn: {_local_dt_html(task.scheduled_at)} — {html.escape((task.content or "")[:80])}</p>
-    <p class="muted">Chọn 1 bài đang chờ đăng, cùng tài khoản + cùng loại hành động — task quá hạn ở trên sẽ đăng vào đúng giờ của bài đó, còn bài đó dời sang giờ mới như xem trước bên dưới.</p>
+    <p class="page-desc" style="margin-top:0;">Bài quá hạn: {_local_dt_html(task.scheduled_at)} — {html.escape((task.content or "")[:80])}</p>
+    <p class="muted">Chọn 1 bài đang chờ đăng, cùng tài khoản + cùng loại hành động — bài quá hạn ở trên sẽ đăng vào đúng giờ của bài đó, còn bài đó dời sang giờ mới như xem trước bên dưới.</p>
     <form method="post" action="/admin/schedule/missed/borrow-confirm"
           hx-post="/admin/schedule/missed/borrow-confirm" hx-target="#schedule-content" hx-swap="outerHTML">
       {filter_fields}
@@ -6940,7 +7131,7 @@ async def groups_form(
         return content
     return _layout(f"""
 <h1>Nhóm đã tham gia</h1>
-<p class="page-desc">Danh sách nhóm Facebook mỗi tài khoản đã tham gia. Bộ đồng bộ dữ liệu bên B (human_bot/data_sync.py) dùng danh sách này để broadcast mỗi bài tuyển dụng mới vào tất cả các nhóm của tài khoản tương ứng. Lưu ở đây có hiệu lực ngay, không cần sửa code hay khởi động lại. Ưu tiên URL dạng ID số thay vì tên tuỳ chỉnh — xem docs/skills/group-targeting.md, mục "Numeric ID vs. custom (vanity) group URL".</p>
+<p class="page-desc">Các nhóm Facebook mỗi tài khoản đã tham gia — bot chọn nhóm để đăng từ danh sách này. Lưu xong là dùng ngay. Nên dán URL dạng ID số (…/groups/1234567) thay vì tên tuỳ chỉnh để bot tìm đúng nhóm.</p>
 {content}
 """, active="groups", current_user=_build_current_user(request))
 
@@ -7039,7 +7230,7 @@ _SOURCE_LABELS: dict[str, str] = {
     "manual": "Đăng trực tiếp (/admin/post)",
     "queue": "Từ hàng đợi (content_queue)",
     "schedule_manual": "Đăng ngay (/admin/schedule)",
-    "schedule_missed_manual": "Đăng ngay từ Task quá hạn (/admin/schedule)",
+    "schedule_missed_manual": "Đăng ngay từ mục Quá hạn (Lịch đăng)",
     "schedule_auto": "Tự động (bộ đồng bộ bên B)",
     "api": "Gọi API /tasks trực tiếp (VD: n8n)",
 }
@@ -8176,7 +8367,7 @@ async def reports_page(
         return content
     return _layout(f"""
 <h1>Báo cáo</h1>
-<p class="page-desc">Thống kê từ các hành động human_bot đã thử thực hiện trong {_retention_note()} (thành công lẫn thất bại; cũ hơn tự xoá) — ghi tự động mỗi lần qua human_bot/agent.py's run_task(), không phân biệt đăng thủ công, từ hàng đợi, đặt lịch, hay tự động từ bộ đồng bộ bên B.</p>
+<p class="page-desc">Các lần bot đã thử đăng hoặc bình luận trong {_retention_note()}, cả thành công lẫn thất bại, bất kể đăng tay, theo lịch hay tự động.</p>
 {content}
 """, active="reports", current_user=_build_current_user(request))
 

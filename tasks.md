@@ -6859,3 +6859,32 @@ Owner: "Tốt, tương tự với màn hình Tài khoản tab Đồng bộ và T
   rằng `label/small/confirm` của menu là HTML do người gọi dựng (phải html.escape). **Bỏ có chủ ý:** câu "tài khoản đăng ký ở đây dùng rate limit /
   nhóm mặc định, chỉnh ở /admin/config và /admin/groups" khỏi đầu trang (mức giới hạn nay là mục đầu của menu ⋯, nhóm có tab riêng trên thanh menu).
 - Test: thêm vào `tests/test_admin_accounts_list.py` (nay 24 test), sửa 1 test Telegram. Suite 1167 pass.
+
+### Giao diện các màn hình còn lại — đợt 1: lỗi hover tab, câu mô tả đầu trang, Lịch đăng (2026-11-02)
+
+Owner: "Nghiên cứu giao diện các màn hình còn lại, đi từng màn hình một, đưa ra hướng thay đổi" → "Đồng ý, làm cẩn thận, làm kĩ không cần gấp".
+Mình dựng từng màn hình bằng dữ liệu mẫu rồi chụp ảnh (Trang chủ, Cấu hình 4 tab, Đăng bài 4 tab, Lịch đăng 3 tab, Nhóm, Báo cáo, MOD, Đăng nhập,
+hộp Giới hạn tốc độ), đưa hướng cho từng màn hình + thứ tự ưu tiên; owner đồng ý thứ tự: (1) lỗi hover tab + câu mô tả → (2) Lịch đăng → (3) trang chủ
+"Hôm nay" → (4) Đăng bài → (5) Báo cáo → (6) Cấu hình → (7) Nhóm / MOD / hộp thoại. **Đã làm (1) và (2).** Chưa làm 3–7; riêng nút công tắc "Tự động đăng"
+trên thanh menu (đổi cách làm việc, không chỉ diện mạo) sẽ hỏi lại khi tới lượt.
+- **(1a) Lỗi thật:** rê chuột lên tab chưa chọn → nền chàm đậm + chữ gần đen (đo: nền rgb(67,56,202), chữ rgb(17,24,39)) ở MỌI thanh tab, vì `button:hover`
+  (0,1,1) tô nền mà `.tab-btn:hover` không đặt nền. Sửa: `.tab-btn:hover { bg-transparent … }` + `.tab-btn.active:hover`.
+- **(1b) Câu mô tả đầu trang** viết lại cho người dùng, không còn tên file / mã (`human_bot/data_sync.py`, `docs/skills/…`, `run_task()`, `runtime_config.json`,
+  "broadcast", "DataSyncConfig"): Cấu hình + 3 tab con, Kho nội dung, Đăng bài + 3 tab con, Lịch đăng, Nhóm, Báo cáo, MOD. Giữ lại thông tin có ích (URL dạng ID số cho
+  nhóm; bấm "Lưu Kho nội dung" sau khi thêm mã visa mới). Trang chủ chưa đổi (nằm trong mục 3).
+- **(2) Lịch đăng** (màn nặng nhất: 5 bài ≈ 1700px, mỗi bài 250px và 8 điều khiển): mỗi bài một **dòng gọn** gom theo ngày ("Hôm nay · 02/11", "Ngày mai"), tiêu đề ngày +
+  HH:MM dựng ở trình duyệt theo múi giờ người xem (không có JS thì chỉ mất tiêu đề ngày). Dòng: giờ · loại việc · **tên nhóm** (URL là link/tooltip) · tài khoản · 2 dòng
+  nội dung; nút **🚀 Đăng ngay** (nổi bật CHỈ khi bài đã đến giờ — có vạch vàng + "⏰ đến giờ"), **✎ Sửa** mở khung sửa ngay dưới dòng (nội dung ĐẦY ĐỦ, giờ + 3 nút giờ nhanh, Lưu/Đóng),
+  menu **⋯**: ⇄ Đổi giờ với bài khác, 📋 Copy URL (chạy được cả khi mở qua http), 🗑 Huỷ lịch đăng (đỏ, vẫn xác nhận), mã bài. Bộ lọc gom thành 1 hàng (giữ nguyên id/hành vi).
+  Tab **Quá hạn**: dòng có checkbox xoá hàng loạt, "quá N ngày", lý do trong khung vàng, **🔄 Lên lịch lại** là nút chính; 🚀 Đăng ngay, 📅 Đặt giờ khác (khung sửa); menu: ↩️ Mượn giờ của bài
+  khác ("bài đó dời sang sau"), 🗑 Xoá; đoạn giải thích gọn + "Các nút làm gì?". Tab **Chờ duyệt**: tên tin, độ tin cậy, bài mẫu; ✅ Duyệt & lên lịch / 🗑 Bỏ qua / ✎ Xem–sửa nội dung (các ô vẫn được gửi cùng lúc duyệt).
+  Mọi route, hx-confirm, trường ẩn giữ bộ lọc và phân trang giữ nguyên; chỉ đổi cách dựng HTML.
+- **Thống nhất từ ngữ "task" → "bài":** tab "Đã lên lịch / Quá hạn / Chờ duyệt" (trước: "Task đã lên lịch / Task quá hạn"); các chỗ người dùng thấy tên tab cũng đổi theo: tin Telegram
+  (mất mạng, service khởi động lại, "…và N bài khác", nút Tạm dừng), hộp xác nhận "Tắt" tài khoản, banner trang Đăng bài khi tài khoản tắt, nhãn báo cáo "Đăng ngay từ mục Quá hạn".
+- Đã chạy thật trên trình duyệt + route thật (không bấm "Đăng ngay" để khỏi đăng thật): sửa nội dung tại chỗ rồi Lưu, mở hộp Đổi giờ, Huỷ lịch (xác nhận), "Lên lịch lại" mở hộp gợi ý giờ,
+  "Đặt giờ khác" → +1 giờ → Đặt lịch (bài rời khỏi Quá hạn), mở rộng nội dung ở Chờ duyệt, bấm Duyệt mở hộp xác nhận; ảnh chụp desktop + điện thoại 390px (menu ⋯ nằm gọn trong màn hình).
+- **Rà soát /code-review:** sửa — `scheduled_at` KHÔNG có múi giờ (store coi là UTC) làm so sánh `due_at <= now` ném TypeError → CẢ trang Lịch đăng 500 chỉ vì 1 dòng (nay coi là UTC);
+  cùng lỗi ở JS (`new Date("…T09:00:00")` đọc là giờ máy) → hàm `parseUtc` cho giờ/tiêu đề ngày (và cả ô ngày-giờ cũ); các dòng Quá hạn nằm ngoài khung thẻ như hai tab kia; bộ trường ẩn dựng 1 lần
+  thay vì 2 bản có thể lệch; bài comment không còn hiện đuôi URL vô nghĩa ("bài trong <tên nhóm>" hoặc "bài viết …123456"); nút Copy hoạt động cả khi `navigator.clipboard` không có (mở qua http) và báo khi thất bại;
+  `_menu_form` có tham số `close_menu` rõ ràng.
+- Test: `tests/test_admin_ui_polish.py` (mới) + `tests/test_admin_schedule_ui.py` (mới, 23 test) + cập nhật chữ trong `test_admin_schedule.py`, `test_account_off.py`, `test_telegram_alerts.py`. Suite 1198 pass.
