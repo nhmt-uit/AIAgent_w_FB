@@ -6644,8 +6644,9 @@ trong danh sách bằng ô chọn; `own_session`/`owner_session` vẫn dùng đ�
   chọn có mô tả; danh sách: Page hiện chip "📄 Page: tên" + "↳ tài khoản cá nhân" (link báo cáo), tài khoản cá nhân
   hiện chip các Page của nó, cột phiên giải thích trạng thái theo cách chạy + ô chọn cách chạy gọn; các ô chọn tài
   khoản ở trang khác đánh dấu 📄 cho Page. Đã chụp ảnh trước/sau bằng Playwright để soát bố cục.
-- **Đã biết, chưa đổi:** Page đăng ký mới MẶC ĐỊNH được đồng bộ với bên B (nhận tin/ứng viên chia theo hạn mức
-  như mọi tài khoản có nhóm) — muốn Page chỉ đăng tay thì tắt "Đồng bộ" của Page ở tab Đồng bộ. Suite 887 pass.
+- **Đã quyết (owner, 2026-11-01): giữ nguyên.** Page đăng ký mới MẶC ĐỊNH được đồng bộ với bên B (nhận tin/ứng viên
+  chia theo hạn mức như mọi tài khoản có nhóm), bật/tắt "Đồng bộ" ở tab Đồng bộ — đúng như tài khoản cá nhân, không
+  có ngoại lệ riêng cho Page. Không cần đổi code. Suite 887 pass.
 
 #### Nút "⏻ Tắt" tách khỏi "⚠ Tạm dừng" (2026-10-31)
 

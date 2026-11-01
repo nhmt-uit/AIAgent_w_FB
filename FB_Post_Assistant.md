@@ -1117,6 +1117,9 @@ Telegram dùng nội dung đã soạn sẵn; muốn sửa chữ vẫn phải và
   Page rồi chuyển về). Chỉ chuyển cách khi **chưa hề đăng/bình luận**; nếu lỗi xảy ra giữa lúc đang đăng thì
   không thử lại bằng cách khác, vì bài có thể đã lên và sẽ bị đăng trùng. Khi phải dự phòng, owner nhận cảnh báo
   Telegram để biết phiên riêng của Page cần sửa lại. Chưa thử trên Facebook thật.
+- **Page có đồng bộ với bên B không? Có, như tài khoản cá nhân (quyết định 01/11).** Page mới đăng ký mặc định
+  được đồng bộ và nhận tin/ứng viên chia theo hạn mức như mọi tài khoản có nhóm; bật hoặc tắt "Đồng bộ" ở tab Đồng bộ,
+  không có quy tắc riêng cho Page. Nếu một Page chỉ để đăng tay thì tắt đồng bộ của Page đó.
 - **Nút "Tắt" riêng, khác "Tạm dừng" (31/10).** Trước đây chỉ có "Tạm dừng", mà nó dành cho lúc nghi tài khoản bị
   Facebook hạn chế (bật lại thì phải chạy giới hạn thấp vài ngày cho an toàn). Nay có thêm **"Tắt"** để chủ động
   nghỉ một tài khoản khi không có vấn đề gì: bật lại là chạy ngay đủ hạn mức, không cảnh báo, không bị tính là lỗi.
