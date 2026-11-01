@@ -151,7 +151,7 @@ def log_action(
     job_data: dict | None = None,
     retry_of_log_id: int | None = None,
     created_at: str | None = None,
-) -> None:
+) -> int | None:
     """Record one attempted action, whatever the outcome. Called from the
     single choke point every action passes through — human_bot/agent.py's
     run_task() — so every manual post, queued post, scheduled fire, and
@@ -181,10 +181,13 @@ def log_action(
     human_bot/agent.py's TaskRequest.retry_of_log_id docstring for the
     exact plumbing). Backs successful_retry_log_ids() below, so a report
     row already retried successfully shows "Đã đăng lại" instead of
-    offering the button again. None for anything not created that way."""
+    offering the button again. None for anything not created that way.
+
+    Returns the new row's id (2026-11-01 — Telegram failure tickets need it to
+    point back at this attempt)."""
     conn = _connect()
     try:
-        conn.execute(
+        cur = conn.execute(
             """
             INSERT INTO action_log
                 (account_id, action, target_url, target_group_name, content,
@@ -210,6 +213,7 @@ def log_action(
             ),
         )
         conn.commit()
+        return cur.lastrowid
     finally:
         conn.close()
 
@@ -614,6 +618,31 @@ def candidate_comments_count(account_id: str | None = None, since: str | None = 
         where = f"{where} AND {extra}" if where else f"WHERE {extra}"
         cur = conn.execute(f"SELECT COUNT(*) AS total FROM action_log {where}", params)
         return cur.fetchone()["total"] or 0
+    finally:
+        conn.close()
+
+
+def success_logged_after(
+    account_id: str, target_url: str | None, content: str | None, since_iso: str,
+    source_id: str | None = None, source_kind: str | None = None,
+) -> sqlite3.Row | None:
+    """A SUCCESSFUL attempt by this account at this target, logged after
+    `since_iso`, with exactly this content OR for the same side-B job/candidate
+    (source_kind + source_id) — the content alone misses a job post that fire-time
+    AI re-drafted into different words. Used to refuse re-queueing a failed post
+    that has meanwhile been posted by something else, so a Telegram "Lên lịch
+    lại" can never double-post it. EMPTY content never matches on content alone
+    (an unrelated image-only post would otherwise match)."""
+    conn = _connect()
+    try:
+        return conn.execute(
+            "SELECT id, created_at FROM action_log WHERE success = 1 AND account_id = ? "
+            "AND COALESCE(target_url, '') = COALESCE(?, '') AND created_at > ? "
+            "AND ((? <> '' AND COALESCE(content, '') = ?) "
+            "     OR (? <> '' AND COALESCE(source_id, '') = ? AND COALESCE(source_kind, '') = COALESCE(?, ''))) "
+            "ORDER BY id DESC LIMIT 1",
+            (account_id, target_url, since_iso, content or "", content or "", source_id or "", source_id or "", source_kind),
+        ).fetchone()
     finally:
         conn.close()
 

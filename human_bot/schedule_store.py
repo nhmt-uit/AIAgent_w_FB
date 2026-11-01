@@ -18,6 +18,7 @@ ky muc nao truoc khi no thuc su chay.
 from __future__ import annotations
 
 import json
+import os
 import uuid
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -108,6 +109,11 @@ class ScheduledTask:
     # hand at /admin/post, where the admin already picked "AI" or "template"
     # for the text (2026-10-30). Old files without the field read as True.
     ai_redraft: bool = True
+    # How many times this task was re-queued after a failure from Telegram's
+    # failure tickets (human_bot/telegram_failures.py). 0 = never. Shown in the
+    # next failure message ("lần thử N") and capped so a task that keeps
+    # failing is not retried forever.
+    retries: int = 0
 
 
 @dataclass
@@ -257,6 +263,85 @@ def list_posted() -> list[ScheduledTask]:
         if task is not None:
             items.append(task)
     return items
+
+
+def get_failed(task_id: str) -> ScheduledTask | None:
+    return _read(_safe_path_in(task_id, FAILED_DIR))
+
+
+def get_failed_reason(task_id: str) -> str | None:
+    """The .result.txt mark_failed() wrote next to this failed task."""
+    path = _safe_path_in(task_id, FAILED_DIR).with_suffix(".result.txt")
+    try:
+        return path.read_text(encoding="utf-8")
+    except OSError:
+        return None
+
+
+def failed_at(task_id: str) -> datetime | None:
+    """When the task failed = the mtime of its .result.txt (written at failure
+    time; the task JSON itself keeps its old mtime because a rename does not
+    touch it)."""
+    path = _safe_path_in(task_id, FAILED_DIR).with_suffix(".result.txt")
+    try:
+        return datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc)
+    except OSError:
+        return None
+
+
+def set_failed_at(task_id: str, when: datetime) -> None:
+    """Sets the recorded failure time (the .result.txt mtime) — used when an
+    undone re-queue puts a task back in failed/, so it keeps its ORIGINAL
+    failure time instead of looking freshly failed."""
+    path = _safe_path_in(task_id, FAILED_DIR).with_suffix(".result.txt")
+    try:
+        stamp = when.timestamp()
+        os.utime(path, (stamp, stamp))
+    except OSError:
+        pass
+
+
+def list_failed(since: datetime | None = None) -> list[ScheduledTask]:
+    """Failed tasks, newest failure first, optionally only those that failed at
+    or after `since`. The cheap .result.txt mtime is checked BEFORE a task's
+    JSON is parsed (failed/ keeps months of files)."""
+    ensure_dirs()
+    items: list[tuple[datetime, ScheduledTask]] = []
+    for path in FAILED_DIR.glob("*.json"):
+        try:
+            when = datetime.fromtimestamp(path.with_suffix(".result.txt").stat().st_mtime, tz=timezone.utc)
+        except OSError:
+            try:
+                when = datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc)
+            except OSError:
+                continue
+        if since is not None and when < since:
+            continue
+        task = _read(path)
+        if task is not None:
+            items.append((when, task))
+    items.sort(key=lambda pair: pair[0], reverse=True)
+    return [task for _when, task in items]
+
+
+def restore_failed_to_pending(task_id: str, **fields_to_update) -> ScheduledTask | None:
+    """Re-queues a FAILED task (the Telegram "Lên lịch lại" button): reads it
+    back out of FAILED_DIR, applies the changes (at least a new scheduled_at),
+    writes it into PENDING_DIR and removes the failed copy + its .result.txt.
+    Same shape as restore_to_pending() for a missed task. None if it is no
+    longer there (already handled)."""
+    task = get_failed(task_id)
+    if task is None:
+        return None
+    known = set(ScheduledTask.__dataclass_fields__) - {"task_id"}
+    for k, v in fields_to_update.items():
+        if k in known:
+            setattr(task, k, v)
+    add(task)
+    src = _safe_path_in(task_id, FAILED_DIR)
+    src.unlink(missing_ok=True)
+    src.with_suffix(".result.txt").unlink(missing_ok=True)
+    return task
 
 
 def get_missed(task_id: str) -> ScheduledTask | None:

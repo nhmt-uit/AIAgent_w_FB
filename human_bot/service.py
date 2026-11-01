@@ -52,7 +52,7 @@ import time  # noqa: E402
 from urllib.parse import quote  # noqa: E402
 from datetime import datetime, timedelta, timezone  # noqa: E402
 
-from human_bot import data_sync, db, schedule_store, screenshots, telegram_actions, telegram_alerts, telegram_commands, telegram_notify  # noqa: E402
+from human_bot import data_sync, db, schedule_store, screenshots, failure_tickets, telegram_actions, telegram_alerts, telegram_commands, telegram_failures, telegram_notify  # noqa: E402
 from human_bot.admin import (  # noqa: E402
     NotLoggedIn,
     _SESSION_EXPIRY_WARNING_DAYS,
@@ -445,7 +445,42 @@ def _telegram_reply_for(command: str) -> str:
 
 
 # Commands whose whole answer is the button messages (no summary text first).
-_TELEGRAM_BUTTON_ONLY_COMMANDS = {"quahan", "choduyet", "tamdung", "tieptuc"}
+_TELEGRAM_BUTTON_ONLY_COMMANDS = {"quahan", "choduyet", "tamdung", "tieptuc", "loi"}
+
+
+async def _send_failure_list(chat_id: str) -> None:
+    """/loi — one card per unresolved failure (last 48h), with its buttons; each
+    sent card is remembered on its ticket so replies/updates find it."""
+    items, overflow = await asyncio.to_thread(telegram_failures.build_list)
+    if not items:
+        await telegram_notify.send_message_to(chat_id, telegram_failures.empty_list_item().text, silent=True)
+        return
+    for ticket, text, keyboard, photo in items:
+        ref = await telegram_notify.send_ticket_to(chat_id, text, keyboard, photo_path=photo, silent=True)
+        if ref:
+            failure_tickets.add_message(ticket["id"], ref["chat_id"], ref["message_id"], ref["photo"])
+    if overflow:
+        await telegram_notify.send_message_to(
+            chat_id, f"…còn {overflow} lỗi nữa — xử lý các lỗi trên rồi gõ lại /loi.", silent=True,
+        )
+
+
+async def _handle_failure_reply(chat_id: str, message: dict, recipient: dict) -> bool:
+    """A reply to one of our failure cards. True if it was one (handled), False
+    to let the message fall through to the normal command/help handling."""
+    reply_to = message.get("reply_to_message") or {}
+    ticket = failure_tickets.find_by_message(chat_id, reply_to.get("message_id") or 0)
+    if ticket is None:
+        return False
+    actor = recipient.get("label") or chat_id
+    outcome = await asyncio.to_thread(telegram_failures.apply_reply, ticket, message.get("text") or "", actor)
+    if outcome.keyboard:  # the reply changed something → show what, with an [↩ Hoàn tác]
+        await telegram_notify.send_message_with_buttons(chat_id, outcome.message, outcome.keyboard)
+    else:
+        await telegram_notify.send_message_to(chat_id, outcome.message, silent=True)
+    if outcome.ticket_id:
+        await telegram_failures.sync_copies(outcome.ticket_id)  # every copy, incl. the one replied to
+    return True
 
 
 async def _handle_telegram_callback(callback: dict, recipients_by_id: dict[str, dict]) -> bool:
@@ -470,21 +505,27 @@ async def _handle_telegram_callback(callback: dict, recipients_by_id: dict[str, 
         return True
     recipient = recipients_by_id.get(chat_id) or {}
     actor = recipient.get("label") or sender.get("first_name") or chat_id
+    # A failure card with a screenshot is a PHOTO message: its text is the caption.
+    is_photo = bool(message.get("photo"))
+    original_text = message.get("text") or message.get("caption") or ""
     try:
         result = await asyncio.to_thread(
-            telegram_actions.handle_callback, callback.get("data") or "", message.get("text") or "", actor,
+            telegram_actions.handle_callback, callback.get("data") or "", original_text, actor,
         )
     except Exception:  # noqa: BLE001 - a failing action must still answer the tap
         logger.exception("telegram callback %r failed", callback.get("data"))
         await telegram_notify.answer_callback_query(callback_id, "Có lỗi — thử lại hoặc dùng /admin.", alert=True)
         return True
-    await telegram_notify.answer_callback_query(callback_id, result.toast)
+    await telegram_notify.answer_callback_query(callback_id, result.toast, alert=result.alert)
     message_id = message.get("message_id")
     # A message Telegram no longer shows us the text of (older than 48h /
     # inaccessible) must not have its text replaced by just the result line.
-    new_text = result.text if message.get("text") else None
+    new_text = result.text if original_text else None
     if message_id and (new_text is not None or result.keyboard is not None):
-        await telegram_notify.edit_message(chat_id, message_id, text=new_text, keyboard=result.keyboard)
+        await telegram_notify.edit_message(chat_id, message_id, text=new_text, keyboard=result.keyboard, photo=is_photo)
+    if result.ticket_id:
+        # Someone dealt with a failure card — bring every OTHER recipient's copy up to date.
+        await telegram_failures.sync_copies(result.ticket_id, skip=(chat_id, message_id))
     if result.broadcast:
         await telegram_notify.send_message(result.broadcast, silent=False)
     return True
@@ -653,6 +694,14 @@ async def _telegram_listen_loop() -> None:
                     if target_bot and (not my_username or target_bot.lower() != my_username.lower()):
                         continue  # "/lich@some_other_bot" — meant for a different bot in a shared chat (fails closed while our own username is still unknown)
                     command = telegram_commands.parse_command(message.get("text"))
+                    if (
+                        command is None and message.get("reply_to_message") and message.get("text")
+                        and chat.get("type", "private") == "private"
+                    ):
+                        # A plain REPLY to a failure card = "post THIS text instead".
+                        if await _handle_failure_reply(chat_id, message, recipients_by_id.get(chat_id) or {}):
+                            replied_to_anything = True
+                            continue
                     if not telegram_commands.is_known_command(command):
                         command = "help"
                     if command in _TELEGRAM_BUTTON_ONLY_COMMANDS and chat.get("type", "private") != "private":
@@ -661,6 +710,10 @@ async def _telegram_listen_loop() -> None:
                         await telegram_notify.send_message_to(
                             chat_id, "Các nút thao tác chỉ dùng được trong chat riêng với bot.", silent=True,
                         )
+                        replied_to_anything = True
+                        continue
+                    if command == "loi":
+                        await _send_failure_list(chat_id)
                         replied_to_anything = True
                         continue
                     if command not in replies_by_command:

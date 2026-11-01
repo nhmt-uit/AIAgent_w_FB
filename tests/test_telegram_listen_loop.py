@@ -654,7 +654,7 @@ def _wire_buttons(monkeypatch):
         calls.answers.append((callback_id, text, alert))
         return True
 
-    async def edit(chat_id, message_id, *, text=None, keyboard=None):
+    async def edit(chat_id, message_id, *, text=None, keyboard=None, photo=False):
         calls.edits.append((chat_id, message_id, text, keyboard))
         return True
 

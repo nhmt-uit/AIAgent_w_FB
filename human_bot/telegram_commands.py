@@ -29,6 +29,7 @@ from human_bot.telegram_alerts import jst_hhmm
 COMMANDS: list[tuple[str, str]] = [
     ("lich", "Task sắp đăng hôm nay"),
     ("quahan", "Task quá hạn — lên lịch lại / huỷ"),
+    ("loi", "Lỗi đăng/bình luận — lên lịch lại / bỏ qua"),
     ("choduyet", "Job chờ duyệt — duyệt / bỏ qua"),
     ("baocao", "Báo cáo hôm nay"),
     ("suckhoe", "Sức khoẻ tài khoản"),
@@ -190,8 +191,10 @@ def _queue_footer(now: datetime) -> str:
         if when is None or when <= now:
             stuck += 1
     pending = f"{left}" + (f" (⏰ {stuck} đã quá giờ chưa chạy)" if stuck else "")
+    from human_bot import telegram_failures  # local import — it imports modules that import this one
     return (
         f"Hiện — chờ đăng hôm nay: {pending} · Quá hạn: {len(schedule_store.list_missed())} · "
+        f"Lỗi chưa xử lý: {telegram_failures.open_failure_count()} · "
         f"Chờ duyệt: {len(schedule_store.list_needs_review())}"
     )
 

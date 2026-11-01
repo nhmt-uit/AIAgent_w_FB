@@ -60,6 +60,8 @@ class CallbackResult:
     # `keyboard` too.
     keyboard: Keyboard | None = None
     broadcast: str | None = None  # also tell every recipient (high-impact toggles)
+    ticket_id: str | None = None  # a failure ticket this press changed → refresh every recipient's copy
+    alert: bool = False  # show `toast` as a popup that stays until dismissed (for refusals worth reading)
 
 
 def _btn(label: str, data: str) -> dict[str, str]:
@@ -266,6 +268,13 @@ def handle_callback(data: str, original_text: str, actor: str) -> CallbackResult
     label). Never raises for a malformed/stale `data`."""
     verb, _, rest = (data or "").partition("|")
     original_text = original_text or ""
+    if verb == "fx":  # failure tickets (human_bot/telegram_failures.py) — they re-render their own card
+        from human_bot import telegram_failures  # local import — it imports this module
+        try:
+            return telegram_failures.handle_callback(rest, actor)
+        except Exception:  # noqa: BLE001 — a bad ticket must still answer the tap
+            logger.exception("telegram_actions: failure-ticket callback %r failed", data)
+            return CallbackResult(toast="Có lỗi khi xử lý phiếu lỗi — thử lại hoặc dùng /admin.", alert=True)
     try:
         if verb == "bk":
             kind, _, ident = rest.partition("|")

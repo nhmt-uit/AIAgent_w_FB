@@ -40,8 +40,9 @@ def _isolated_telegram_state_and_no_real_telegram(tmp_path, monkeypatch):
     removed from the environment so no test can reach the real Telegram API
     by accident — tests that need a token set one themselves (their own
     monkeypatch.setenv runs after this fixture)."""
-    from human_bot import telegram_alerts
+    from human_bot import failure_tickets, telegram_alerts
     monkeypatch.setattr(telegram_alerts, "STATE_PATH", tmp_path / "_telegram_state.json")
+    monkeypatch.setattr(failure_tickets, "STORE_PATH", tmp_path / "_telegram_tickets.json")
     monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
 
 
@@ -211,3 +212,23 @@ def no_real_bootstrap_login(monkeypatch):
     monkeypatch.setattr(bls, "confirm", fake_confirm)
     monkeypatch.setattr(bls, "cancel", fake_cancel)
     return calls, state
+
+
+
+@pytest.fixture(autouse=True)
+def _no_real_network_from_httpx(monkeypatch):
+    """Found 2026-11-01: a Telegram test that forgot to stub one send function
+    made a REAL request to api.telegram.org (it only showed up as a "404" log
+    line). Any httpx.AsyncClient built without a test transport now raises
+    instead — tests that need HTTP patch httpx.AsyncClient themselves (a
+    MockTransport), and their own monkeypatch runs after this fixture."""
+    import httpx
+
+    real = httpx.AsyncClient
+
+    def guarded(*args, **kwargs):
+        if kwargs.get("transport") is None and kwargs.get("mounts") is None:
+            raise RuntimeError("a test tried to make a REAL HTTP request — stub it (httpx.MockTransport)")
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(httpx, "AsyncClient", guarded)

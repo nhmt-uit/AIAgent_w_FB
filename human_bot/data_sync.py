@@ -2128,6 +2128,8 @@ async def fire_due_tasks(cfg: SchedulingConfig | None = None) -> dict[str, Any]:
             # "theo từng lần bình luận" report) needs no schema change.
             job_data=task.job_data or task.candidate_data,
             retry_of_log_id=task.retry_of_log_id,
+            scheduled_task_id=task.task_id,
+            retries=task.retries,
         )
         result = await run_task(request)
         if result.success:

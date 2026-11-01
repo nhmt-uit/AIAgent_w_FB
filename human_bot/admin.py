@@ -6498,6 +6498,8 @@ async def schedule_fire_now(request: Request, _: None = Depends(_require_login))
         audience=task.audience,
         reasoning=task.reasoning,
         source="schedule_manual",
+        scheduled_task_id=task.task_id,
+        retries=task.retries,
         source_kind=task.source_kind,
         source_id=task.source_id,
         # See data_sync.py's fire_due_tasks() for why: candidate tasks
@@ -6644,6 +6646,8 @@ async def schedule_missed_fire_now(request: Request, _: None = Depends(_require_
         audience=task.audience,
         reasoning=task.reasoning,
         source="schedule_missed_manual",
+        scheduled_task_id=task.task_id,
+        retries=task.retries,
         source_kind=task.source_kind,
         source_id=task.source_id,
         job_data=task.job_data or task.candidate_data,

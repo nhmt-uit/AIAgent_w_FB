@@ -56,8 +56,14 @@ def telegram_calls(monkeypatch):
     async def fake_send_photo(path, caption="", *, silent=False):
         calls.append(("photo", caption, silent))
 
+    async def fake_send_ticket(text, keyboard=None, *, photo_path=None, silent=True):
+        calls.append(("ticket", text, silent))
+        return [{"chat_id": "1", "message_id": 1, "photo": False}]  # delivered to one chat
+
     monkeypatch.setattr(agent.telegram_notify, "send_message", fake_send_message)
     monkeypatch.setattr(agent.telegram_notify, "send_photo", fake_send_photo)
+    monkeypatch.setattr(agent.telegram_notify, "send_ticket", fake_send_ticket)
+    monkeypatch.setattr(agent.telegram_notify, "is_configured", lambda: True)
     return calls
 
 
@@ -135,9 +141,10 @@ async def test_genuine_failure_sends_exactly_one_silent_report(
     assert result.success is False
     assert len(telegram_calls) == 1
     kind, text, silent = telegram_calls[0]
+    assert kind == "ticket"  # since 2026-11-01 a failure is an actionable card, not a bare message
     assert silent is True
     assert "❌" in text
-    assert "selector not found" in text
+    assert "selector not found" in text  # the raw reason survives as the small technical footnote
 
 
 async def test_consecutive_failure_alert_fires_exactly_once_at_threshold(

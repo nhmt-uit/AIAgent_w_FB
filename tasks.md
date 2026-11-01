@@ -6668,3 +6668,45 @@ Yêu cầu của owner: đôi khi chỉ muốn off một tài khoản, không ph
   trong khoá, nút "Bật lại" kiểm tra hợp lệ, nhãn Page khi chủ tắt, chịu lỗi từng nút khi tìm menu, ghi chú
   `mark_missed`). Giữ nguyên: ghi `runtime_config.json` không khoá (cách làm chung của file này). Suite 915 pass.
 
+### Telegram: xử lý lỗi đăng/bình luận ngay trên Telegram — giai đoạn 1 (2026-11-01)
+
+Yêu cầu của owner: nhận tin báo lỗi trên Telegram thì **xử lý luôn trong Telegram, không phải vào admin**.
+Nghiên cứu trước khi làm (dữ liệu thật 236 lượt từ 04/09 → 31/10): 55 lỗi thật, 56% do mạng/trình duyệt
+(an toàn thử lại), 29% hết thời gian chờ ô/nút, 7% "không chắc đã đăng"; chỉ 4/55 từng được thử lại —
+41 task lỗi nằm im trong `scheduled/failed/`. Quyết định owner: "Lên lịch lại" **một chạm kèm Hoàn tác**;
+sửa nội dung bằng cách **trả lời (reply)** tin báo lỗi.
+- **Thẻ lỗi (phiếu):** mỗi lượt thất bại thật → 1 tin có ảnh chụp + nút, thay cho tin lỗi thô. Ghi nguyên nhân
+  bằng tiếng Việt, nhóm (tên chứ không phải URL), tiêu đề tin, "lần thử N", và 1 dòng **an toàn hay chưa**.
+  Dữ liệu: `failure_info.py` (phân loại lỗi → an toàn/chưa chắc/không thử lại), `failure_tickets.py` (kho phiếu
+  `data_sync_cache/_telegram_tickets.json`, ghi nguyên tử + khoá, nhớ tin nhắn của TỪNG người nhận),
+  `telegram_failures.py` (dựng thẻ, nút, hành động, reply, /loi).
+- **Nút:** 🔄 Lên lịch lại (1 chạm, tự chọn giờ trống sớm nhất — cùng thuật toán "Lên lịch lại" của admin — rồi thẻ
+  thành "✅ Đã lên lịch lại lúc … · [↩ Hoàn tác]"); 🗑 Bỏ qua; ✅ Đã lên rồi — bỏ qua (chuyển task sang `posted/`);
+  khi **chưa chắc đã đăng** thì 2 nút "Đã lên rồi" / "Vẫn lên lịch lại" (cái sau phải xác nhận); lỗi retry không
+  giải quyết được (checkpoint, sai danh tính Page, bài đích đã xoá, lỗi code) chỉ có Bỏ qua.
+  Tài khoản đang tắt/tạm dừng: từ chối bằng popup có nút **"▶ Bật lại"** / **"▶ Kích hoạt lại (hạ nhiệt)"** (xác nhận) —
+  Page cần phiên của chủ thì nút áp dụng cho CHỦ.
+- **Trả lời để sửa:** reply vào thẻ bằng nội dung mới → lên lịch lại (hoặc đổi nội dung bài đang chờ) với đúng chữ đó,
+  `ai_redraft=False` để AI không viết lại; bot trả lời kèm bản xem trước + **Hoàn tác** (hoàn tác khôi phục nội dung gốc).
+- **/loi:** liệt kê lỗi chưa xử lý trong 48 giờ (mỗi lỗi 1 thẻ, tối đa 5, lỗi cũ chưa có phiếu thì tự tạo từ
+  `failed/`); bản tóm tắt thêm "Lỗi chưa xử lý: N". Khi 1 người xử lý, thẻ ở máy người khác tự cập nhật.
+- **An toàn trước khi lên lịch lại:** tối đa 2 lần thử lại/task; tài khoản phải đang hoạt động; không lên lịch lại nếu
+  cùng nội dung HOẶC cùng job/ứng viên đã được đăng thành công sau lúc lỗi (tránh đăng trùng); lỗi > 48 giờ (comment > 24
+  giờ) cần xác nhận; hoàn tác đóng lại khi task sắp chạy (≤ 60 giây); 2 người bấm cùng lúc chỉ lên lịch 1 lần (khoá).
+- **Sửa nền:** `TaskRequest.scheduled_task_id/retries`; `db.log_action` trả id; `schedule_store.list_failed/
+  restore_failed_to_pending/failed_at/set_failed_at`; `ScheduledTask.retries`; `send_ticket(_to)` (ảnh + chú thích +
+  nút, trả `message_id`); `edit_message(photo=True)` dùng `editMessageCaption`; nút bấm trên tin ảnh đọc `caption`;
+  task của tài khoản TẠM DỪNG đến giờ chuyển vào "Task quá hạn" (như tài khoản tắt) thay vì thất bại trong im lặng.
+- **Rà soát /code-review (2 vòng, 18 phát hiện, sửa 16):** quan trọng nhất — phân loại phải **mặc định "chưa chắc"**
+  (lỗi lạ có thể xảy ra SAU khi bấm Đăng), chỉ coi "an toàn" với lỗi chắc chắn xảy ra trước khi đăng (mở trang,
+  chờ ô/nút — vì mọi cú bấm đều `wait_for` trước nên timeout nghĩa là chưa bấm); mạng đứt GIỮA chừng không còn
+  coi là an toàn; kho phiếu hỏng được dời sang file `.corrupt-…` thay vì bị ghi đè; không tạo được phiếu → tin lỗi
+  thô cũ vẫn được gửi (không bao giờ im lặng); không ai nhận được thẻ → cũng gửi tin thô; dựng lại từ nhật ký
+  giữ ảnh đính kèm + đối tượng xem; việc nặng ra khỏi event loop. **Giữ nguyên/đã biết:** đọc /loi có thể tạo phiếu
+  và gạt phiếu cũ (dọn lười); chủ tắt + Page chế độ `auto` có thể tốn 1 lượt thử lại.
+- Thêm guard test: mọi test không được gọi HTTP thật (`httpx.AsyncClient` không transport sẽ báo lỗi) — một test
+  Telegram từng lỡ gọi thật tới api.telegram.org mà chỉ thấy dòng "404".
+- Test: `tests/test_telegram_failures.py`, `tests/test_telegram_failures_wiring.py` (+ sửa test cũ). Suite 1010 pass.
+  CHƯA thử với bot thật. Giai đoạn 2/3 (gộp lỗi dồn dập + "Lên lịch lại tất cả", nút cho tin 3-lỗi-liên-tiếp, tự thử lại
+  lỗi hạ tầng, tắt cảnh báo tạm) chưa làm.
+

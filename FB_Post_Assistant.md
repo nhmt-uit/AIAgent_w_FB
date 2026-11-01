@@ -1123,6 +1123,14 @@ Telegram dùng nội dung đã soạn sẵn; muốn sửa chữ vẫn phải và
   Các bài đến giờ trong lúc tài khoản tắt được chuyển vào "Task quá hạn" để bạn xếp lại, thay vì thất bại hay đăng
   dồn một lúc khi bật lại. Với Page: tắt tài khoản cá nhân chỉ làm Page không mượn được phiên của nó; Page có phiên
   riêng vẫn chạy bình thường.
+- **Xử lý lỗi đăng bài ngay trên Telegram (01/11, chưa thử với bot thật).** Khi một bài đăng hoặc bình luận thất
+  bại, bot gửi **một tin có ảnh chụp và nút bấm** thay vì dòng lỗi kỹ thuật: ghi rõ nguyên nhân bằng tiếng Việt, nhóm
+  nào, tin nào, thử lần thứ mấy, và **bài đã đăng chưa hay chưa chắc**. Chỉ cần bấm **"Lên lịch lại"** (một chạm) là
+  hệ thống tự chọn giờ phù hợp với giới hạn của tài khoản; bấm nhầm thì có nút **"Hoàn tác"**. Muốn đăng lại với nội dung
+  khác thì chỉ cần **trả lời (reply) tin đó bằng nội dung mới**. Nếu lỗi kiểu "chưa chắc đã đăng" thì bot hỏi lại trước
+  khi cho đăng lại, để khỏi đăng trùng; tài khoản đang tắt hay tạm dừng thì có sẵn nút bật lại ngay trong tin. Lệnh
+  `/loi` liệt kê các lỗi chưa xử lý trong 48 giờ gần nhất. Dữ liệu thật cho thấy lý do cần làm: trong 55 lần lỗi chỉ có
+  4 lần từng được thử lại, và 41 bài lỗi đang nằm im — vì trước đây phải mở trang quản trị mới xử lý được.
 
 Cố tình không đề xuất: soạn/đăng bài thật từ Telegram (rủi ro tin nhắn bị chuyển
 tiếp, tăng bề mặt rủi ro) và hỏi đáp ngôn ngữ tự nhiên qua AI (tốn chi phí, dễ

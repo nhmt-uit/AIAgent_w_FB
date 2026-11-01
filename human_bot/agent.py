@@ -11,6 +11,8 @@ once, kept open 24/7) rather than opening/closing a browser per task.
 See docs/agents/human-bot-executor.md for the full behavior contract and
 docs/skills/facebook-custom-actions.md for what each action name maps to.
 """
+import asyncio
+import logging
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from typing import Awaitable, Callable
@@ -51,6 +53,12 @@ class TaskRequest:
     # per-action identity guards in actions.py read it without re-resolving
     # the account.
     expected_page_name: str = ""
+    # The ScheduledTask this attempt comes from (None for a manual/API run) and
+    # how many times it was already re-queued after a failure — carried so a
+    # failure's Telegram card can point back at the task (human_bot/
+    # telegram_failures.py).
+    scheduled_task_id: str | None = None
+    retries: int = 0
     # Where this task originated — recorded alongside every action in
     # human_bot/db.py's action_log so /admin/reports can tell manual clicks
     # apart from automated ones. "api" is the default because the most
@@ -91,6 +99,8 @@ class TaskResult:
     screenshot_path: str | None
     timestamp: str
 
+
+logger = logging.getLogger("human_bot.agent")
 
 # Page accounts whose "wrong identity" alert was already sent (in-memory) —
 # one loud Telegram message per episode, not one per refused task.
@@ -172,14 +182,14 @@ def resolve_group_name(account_id: str, url: str | None) -> str | None:
     return None
 
 
-def _log_result(request: TaskRequest, success: bool, message: str, screenshot_path: str | None = None) -> None:
+def _log_result(request: TaskRequest, success: bool, message: str, screenshot_path: str | None = None) -> int | None:
     """Best-effort write to human_bot/db.py's action_log — every return
     path in run_task() calls this, including the early-exit failures
     (paused account, unsupported action, rate limited), so /admin/reports
     sees the full picture, not just successful posts. A logging failure
     must never surface as a task failure."""
     try:
-        db.log_action(
+        return db.log_action(
             account_id=request.account_id,
             action=request.action,
             success=success,
@@ -195,11 +205,48 @@ def _log_result(request: TaskRequest, success: bool, message: str, screenshot_pa
             screenshot_path=screenshot_path,
         )
     except Exception:  # noqa: BLE001 — see docstring
-        pass
+        return None
+
+
+async def _notify_failure_ticket(
+    request: TaskRequest, message: str, screenshot_path: str | None, log_id: int | None,
+) -> bool:
+    """A failed attempt becomes an ACTIONABLE card (buttons + reply-to-edit),
+    not a bare error dump — see human_bot/telegram_failures.py. Imported
+    lazily: that module pulls in the admin layer, which imports this one.
+    Returns False when the card could not be built, so the caller falls back
+    to the plain text report (a failure must never go unreported)."""
+    if not telegram_notify.is_configured():
+        return True  # nothing would be sent either way
+    from human_bot import failure_tickets, telegram_failures
+    try:
+        # Disk/DB work (ticket store, account + group lookups) — off the event loop thread.
+        def build():
+            return failure_tickets.create(**telegram_failures.ticket_fields_for_failure(
+                account_id=request.account_id, action=request.action, target_url=request.target_url,
+                content=request.content, message=message, task_id=request.scheduled_task_id, log_id=log_id,
+                screenshot=screenshot_path, retries=request.retries, source_kind=request.source_kind,
+                job_data=request.job_data if isinstance(request.job_data, dict) else None, source_id=request.source_id,
+                media_path=request.media_path, audience=request.audience,
+            ))
+
+        ticket = await asyncio.to_thread(build)
+        refs = await telegram_notify.send_ticket(
+            telegram_failures.render(ticket), telegram_failures.keyboard_for(ticket),
+            photo_path=screenshot_path, silent=True,  # per-attempt reports are always silent (owner's rule)
+        )
+        for ref in refs:
+            await asyncio.to_thread(failure_tickets.add_message, ticket["id"], ref["chat_id"], ref["message_id"], ref["photo"])
+        # Nobody got the card (every send failed, or there is no recipient) → report the
+        # plain way too; a failure must never go unreported.
+        return bool(refs)
+    except Exception:  # noqa: BLE001 — a notification must never fail the task it reports on
+        logger.exception("could not send the failure card — falling back to the plain report")
+        return False
 
 
 async def _notify_telegram_for_attempt(
-    request: TaskRequest, success: bool, message: str, screenshot_path: str | None,
+    request: TaskRequest, success: bool, message: str, screenshot_path: str | None, log_id: int | None = None,
 ) -> None:
     """Called ONLY for a genuine attempt (run_task()'s 3 early-exit paths
     — paused/unsupported/rate_limited — never reached Facebook at all, so
@@ -220,7 +267,9 @@ async def _notify_telegram_for_attempt(
     if not success:
         report += f"\nLý do: {message}"
     # Alert type 2/5 ("mọi lượt đăng") — ALWAYS silent, per owner's request.
-    if screenshot_path:
+    if not success and await _notify_failure_ticket(request, message, screenshot_path, log_id):
+        pass  # the card is the report
+    elif screenshot_path:
         await telegram_notify.send_photo(screenshot_path, caption=report, silent=True)
     else:
         await telegram_notify.send_message(report, silent=True)
@@ -566,14 +615,14 @@ async def run_task(request: TaskRequest) -> TaskResult:
     success, message = attempt.success, attempt.message
     screenshot_path, anomaly_paused = attempt.screenshot_path, attempt.anomaly_paused
 
-    _log_result(request, success, message, screenshot_path)
+    log_id = _log_result(request, success, message, screenshot_path)
     # Skip the per-attempt report when AnomalyDetected already sent its own
     # loud "TẠM DỪNG" alert above for this exact incident — otherwise the
     # owner gets a redundant silent failure report (and possibly a 3rd,
     # unrelated "N lần liên tiếp" alert) on top of the one that actually
     # matters.
     if not anomaly_paused:
-        await _notify_telegram_for_attempt(request, success, message, screenshot_path)
+        await _notify_telegram_for_attempt(request, success, message, screenshot_path, log_id)
     return TaskResult(
         success=success,
         message=message,

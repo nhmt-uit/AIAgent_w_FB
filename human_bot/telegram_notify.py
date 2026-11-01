@@ -52,6 +52,7 @@ Nguoi nhan la danh sach quan ly qua tab "Tai khoan Telegram" trong
 """
 from __future__ import annotations
 
+import json
 import logging
 import os
 from datetime import datetime, timezone
@@ -282,12 +283,72 @@ async def answer_callback_query(callback_query_id: str, text: str = "", *, alert
     return await _api_post("answerCallbackQuery", payload) is not None
 
 
+async def send_ticket_to(
+    chat_id: str, text: str, keyboard: list[list[dict]] | None = None, *,
+    photo_path: str | None = None, silent: bool = True,
+) -> dict | None:
+    """One message for a failure ticket (2026-11-01): a photo with the text as
+    its caption when `photo_path` is readable (caption cap 1024), else a plain
+    text message — with an inline keyboard if given. Returns
+    {"chat_id", "message_id", "photo"} so the caller can remember WHICH message
+    carries the buttons (replies and later edits need it), None on failure."""
+    if not is_configured():
+        return None
+    markup = {"inline_keyboard": keyboard} if keyboard else None
+    if photo_path:
+        try:
+            with open(photo_path, "rb") as f:
+                photo_bytes = f.read()
+        except OSError:
+            photo_bytes = None
+        if photo_bytes:
+            try:
+                data = {"chat_id": chat_id, "caption": text[:1024], "disable_notification": silent}
+                if markup:
+                    data["reply_markup"] = json.dumps(markup)
+                async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
+                    resp = await client.post(
+                        _API_BASE.format(token=_token()) + "/sendPhoto",
+                        data=data, files={"photo": (os.path.basename(photo_path), photo_bytes)},
+                    )
+                body = resp.json() if resp.status_code == 200 else {}
+                if body.get("ok"):
+                    return {"chat_id": str(chat_id), "message_id": body["result"]["message_id"], "photo": True}
+                logger.warning("telegram_notify: sendPhoto to %s HTTP %s: %s", chat_id, resp.status_code, resp.text[:300])
+            except Exception:  # noqa: BLE001 — fall back to a text-only message below
+                logger.exception("telegram_notify: sendPhoto to %s failed", chat_id)
+    payload: dict = {"chat_id": chat_id, "text": text[:4096], "disable_notification": silent}
+    if markup:
+        payload["reply_markup"] = markup
+    result = await _api_post("sendMessage", payload)
+    if result is None:
+        return None
+    return {"chat_id": str(chat_id), "message_id": result["result"]["message_id"], "photo": False}
+
+
+async def send_ticket(
+    text: str, keyboard: list[list[dict]] | None = None, *, photo_path: str | None = None, silent: bool = True,
+) -> list[dict]:
+    """send_ticket_to() for every registered recipient; the list of message
+    references that were actually delivered (each recipient isolated)."""
+    if not is_configured():
+        return []
+    refs = []
+    for recipient in get_telegram_recipients():
+        ref = await send_ticket_to(recipient["chat_id"], text, keyboard, photo_path=photo_path, silent=silent)
+        if ref:
+            refs.append(ref)
+    return refs
+
+
 async def edit_message(
     chat_id: str, message_id: int, *, text: str | None = None, keyboard: list[list[dict]] | None = None,
+    photo: bool = False,
 ) -> bool:
     """Edits a message previously sent by the bot: new `text` (and/or) a
     new inline `keyboard` ([] removes the buttons). With only a keyboard
-    the text is left as it was. NOTE: editing the text without passing a
+    the text is left as it was. `photo=True` for a message sent as a photo
+    (its text is the caption). NOTE: editing the text without passing a
     keyboard also REMOVES the buttons (Telegram drops them unless resent)."""
     if not is_configured():
         return False
@@ -295,6 +356,11 @@ async def edit_message(
     if text is None:
         result = await _api_post("editMessageReplyMarkup", {
             "chat_id": chat_id, "message_id": message_id, "reply_markup": markup,
+        })
+    elif photo:
+        # A photo message has a CAPTION, not text — editMessageText fails on it.
+        result = await _api_post("editMessageCaption", {
+            "chat_id": chat_id, "message_id": message_id, "caption": text[:1024], "reply_markup": markup,
         })
     else:
         result = await _api_post("editMessageText", {
