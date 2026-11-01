@@ -1117,6 +1117,12 @@ Telegram dùng nội dung đã soạn sẵn; muốn sửa chữ vẫn phải và
   Page rồi chuyển về). Chỉ chuyển cách khi **chưa hề đăng/bình luận**; nếu lỗi xảy ra giữa lúc đang đăng thì
   không thử lại bằng cách khác, vì bài có thể đã lên và sẽ bị đăng trùng. Khi phải dự phòng, owner nhận cảnh báo
   Telegram để biết phiên riêng của Page cần sửa lại. Chưa thử trên Facebook thật.
+- **Nút "Tắt" riêng, khác "Tạm dừng" (31/10).** Trước đây chỉ có "Tạm dừng", mà nó dành cho lúc nghi tài khoản bị
+  Facebook hạn chế (bật lại thì phải chạy giới hạn thấp vài ngày cho an toàn). Nay có thêm **"Tắt"** để chủ động
+  nghỉ một tài khoản khi không có vấn đề gì: bật lại là chạy ngay đủ hạn mức, không cảnh báo, không bị tính là lỗi.
+  Các bài đến giờ trong lúc tài khoản tắt được chuyển vào "Task quá hạn" để bạn xếp lại, thay vì thất bại hay đăng
+  dồn một lúc khi bật lại. Với Page: tắt tài khoản cá nhân chỉ làm Page không mượn được phiên của nó; Page có phiên
+  riêng vẫn chạy bình thường.
 
 Cố tình không đề xuất: soạn/đăng bài thật từ Telegram (rủi ro tin nhắn bị chuyển
 tiếp, tăng bề mặt rủi ro) và hỏi đáp ngôn ngữ tự nhiên qua AI (tốn chi phí, dễ

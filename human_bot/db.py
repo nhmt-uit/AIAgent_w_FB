@@ -668,7 +668,14 @@ def last_successful_action_per_account() -> dict[str, str]:
 # otherwise a paused/rate-limited account's routine rejections count
 # towards the SAME streak as genuine attempt failures, firing the "N lần
 # fail liên tiếp" Telegram alert off of rows that were never a real try.
-_EARLY_EXIT_MESSAGE_PREFIXES = ("account_paused:", "unsupported_action:", "rate_limited:")
+# 2026-10-31: + "account_disabled:" (account switched off on purpose) and
+# "page_owner_off:" / "page_owner_missing:" (a Page that could not even pick a
+# session) — also refusals that never touched Facebook, and an account the
+# operator switched off must not page anyone with a "failing" alert.
+_EARLY_EXIT_MESSAGE_PREFIXES = (
+    "account_paused:", "account_disabled:", "unsupported_action:", "rate_limited:",
+    "page_owner_off:", "page_owner_missing:",
+)
 # How much wider than `max_rows` the raw SQL fetch window is, in
 # consecutive_failure_streak() below — gives early-exit rows interleaved
 # with genuine ones room to be skipped without running out of fetched

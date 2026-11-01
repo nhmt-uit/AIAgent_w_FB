@@ -290,9 +290,11 @@ def list_missed() -> list[ScheduledTask]:
 
 
 def mark_missed(task_id: str, reason: str) -> bool:
-    """Move a pending task to MISSED_DIR — called ONLY by the one-time
-    startup sweep (human_bot/service.py's sweep_overdue_on_startup()),
-    never by the recurring due-task check. Same "never silently delete"
+    """Move a pending task to MISSED_DIR — called by the one-time startup
+    sweep (human_bot/service.py's sweep_overdue_on_startup()) and, since
+    2026-10, by fire_due_tasks() for a due task that cannot run for a reason
+    that is not the task's fault (no internet; the account switched off).
+    Never for ordinary lateness. Same "never silently delete"
     pattern as mark_posted()/mark_failed(): the task's own JSON is
     untouched, just relocated, plus a sibling .result.txt explaining why."""
     dest = _move_to(task_id, MISSED_DIR)

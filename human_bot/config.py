@@ -20,6 +20,10 @@ ACCOUNTS_DIR = Path(__file__).resolve().parent.parent / "accounts"
 class AccountStatus(str, Enum):
     ACTIVE = "active"
     PAUSED = "paused"  # set by the Safety Monitor — requires human review
+    # Switched off on purpose by the operator (2026-10-31) — nothing is wrong
+    # with the account. Unlike PAUSED: turning it back on is immediate and at
+    # full limits (no post-resume cooldown), and it raises no alerts.
+    DISABLED = "disabled"
 
 
 @dataclass
@@ -303,6 +307,7 @@ def get_all_accounts() -> dict[str, AccountConfig]:
     over."""
     from human_bot.runtime_config import (
         get_active_cooldown_rate_limits,
+        get_disabled_account_ids,
         get_paused_account_ids,
         get_rate_limits_overrides,
         get_registered_accounts,
@@ -332,6 +337,11 @@ def get_all_accounts() -> dict[str, AccountConfig]:
             )
     for aid in get_removed_account_ids():
         result.pop(aid, None)
+    # Switched off (not paused): applied BEFORE the paused override below, so
+    # an account that is somehow both stays PAUSED (the stricter state).
+    for aid in get_disabled_account_ids():
+        if aid in result and result[aid].status == AccountStatus.ACTIVE:
+            result[aid] = replace(result[aid], status=AccountStatus.DISABLED)
     paused_ids = get_paused_account_ids()
     for aid in paused_ids:
         if aid in result and result[aid].status != AccountStatus.PAUSED:

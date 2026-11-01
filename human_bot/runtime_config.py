@@ -1273,6 +1273,8 @@ def get_pause_info(account_id: str) -> dict[str, Any] | None:
 
 
 def set_account_paused(account_id: str, paused: bool, reason: str | None = None) -> None:
+    if paused:
+        set_account_disabled(account_id, False)  # PAUSED supersedes "switched off" — never both at once
     data = _read_all()
     raw = data.get(_ACCOUNT_STATUS_KEY, {})
     if not isinstance(raw, dict):
@@ -1289,6 +1291,55 @@ def set_account_paused(account_id: str, paused: bool, reason: str | None = None)
     RUNTIME_CONFIG_PATH.write_text(
         json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8"
     )
+
+
+# --- Switched-off accounts (2026-10-31) --------------------------------------
+#
+# "Tắt" is the operator's own on/off for an account — no fault involved. It is
+# deliberately NOT built on set_account_paused(): a pause means "the safety
+# monitor/operator suspects Facebook restricted this account", so resuming it
+# starts a reduced-limit cooldown (resume_account()) and the admin home shows
+# a red warning. Switching an account back ON has none of that.
+
+_DISABLED_ACCOUNTS_KEY = "disabled_accounts"
+
+
+def get_disabled_account_ids() -> set[str]:
+    raw = _read_all().get(_DISABLED_ACCOUNTS_KEY, {})
+    if isinstance(raw, dict):
+        return {str(aid) for aid in raw if str(aid).strip()}
+    if isinstance(raw, list):  # tolerate a hand-edited plain list
+        return {str(aid) for aid in raw if str(aid).strip()}
+    return set()
+
+
+def get_disabled_info(account_id: str) -> dict[str, Any] | None:
+    """{"disabled_at": iso-str|None} if the account is switched off, else None."""
+    raw = _read_all().get(_DISABLED_ACCOUNTS_KEY, {})
+    if isinstance(raw, dict) and account_id in raw:
+        entry = raw[account_id]
+        return {"disabled_at": entry.get("disabled_at") if isinstance(entry, dict) else None}
+    if isinstance(raw, list) and account_id in raw:
+        return {"disabled_at": None}
+    return None
+
+
+def set_account_disabled(account_id: str, disabled: bool) -> None:
+    data = _read_all()
+    raw = data.get(_DISABLED_ACCOUNTS_KEY, {})
+    if isinstance(raw, list):
+        raw = {str(aid): {"disabled_at": None} for aid in raw}
+    if not isinstance(raw, dict):
+        raw = {}
+    already = account_id in raw
+    if disabled == already:
+        return  # nothing to change (and nothing to rewrite)
+    if disabled:
+        raw[account_id] = {"disabled_at": datetime.now(timezone.utc).isoformat()}
+    else:
+        raw.pop(account_id, None)
+    data[_DISABLED_ACCOUNTS_KEY] = raw
+    RUNTIME_CONFIG_PATH.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
 
 
 def resume_account(account_id: str) -> None:

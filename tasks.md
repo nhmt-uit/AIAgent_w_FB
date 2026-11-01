@@ -6647,3 +6647,24 @@ trong danh sách bằng ô chọn; `own_session`/`owner_session` vẫn dùng đ�
 - **Đã biết, chưa đổi:** Page đăng ký mới MẶC ĐỊNH được đồng bộ với bên B (nhận tin/ứng viên chia theo hạn mức
   như mọi tài khoản có nhóm) — muốn Page chỉ đăng tay thì tắt "Đồng bộ" của Page ở tab Đồng bộ. Suite 887 pass.
 
+#### Nút "⏻ Tắt" tách khỏi "⚠ Tạm dừng" (2026-10-31)
+
+Yêu cầu của owner: đôi khi chỉ muốn off một tài khoản, không phải vì nó vi phạm.
+- **Hai trạng thái khác nhau:** `AccountStatus.DISABLED` ("⏻ Đã tắt", chủ động, không có lỗi) và `PAUSED`
+  ("⚠ Tạm dừng", nghi bị Facebook hạn chế). Khác biệt: bật lại một tài khoản TẮT là **chạy ngay đủ hạn mức, không
+  hạ nhiệt** (`set_account_disabled`, không đi qua `resume_account()`); tài khoản TẠM DỪNG kích hoạt lại vẫn phải
+  hạ nhiệt vài ngày. Tắt không bật banner đỏ ở trang chủ, không cảnh báo "im lặng/phiên hết hạn" trên Telegram,
+  không tính vào chuỗi "N lần fail liên tiếp". Tạm dừng thay thế (và xoá) trạng thái tắt; tài khoản đang tạm
+  dừng không tắt được.
+- **Bài đến giờ của tài khoản đang tắt** (`fire_due_tasks`): chuyển sang "Task quá hạn" với lý do "Tài khoản đang
+  được tắt" thay vì thất bại, và không để chờ rồi đổ ra hàng loạt cũ lúc bật lại — admin xếp lại sau khi bật.
+- **Tắt còn đóng trình duyệt đang rảnh** của tài khoản (đang chạy tác vụ thì không đụng, đóng trong khoá).
+- **Page:** chủ chỉ TẮT → Page có phiên riêng vẫn chạy; Page cần phiên của chủ (`owner_session`, hoặc dự phòng của
+  `auto`) thì không dùng được (`page_owner_off`); chủ TẠM DỪNG → mọi Page của nó vẫn bị chặn (chung đăng nhập).
+- **Giao diện:** danh sách tài khoản có 2 nút riêng "⏻ Tắt" / "⚠ Tạm dừng" (mỗi nút có giải thích hậu quả), dòng đã tắt
+  hiện "▶ Bật lại"; cột Trạng thái/Thao tác chỉnh để không bị bóp/tràn; tab Đồng bộ và trang Đăng bài báo rõ tài
+  khoản đang tắt. Đã chụp ảnh cả 3 trạng thái bằng Playwright.
+- Rà soát /code-review: sửa 6 điểm (db không tính từ chối của tài khoản tắt vào chuỗi lỗi liên tiếp, đóng trình duyệt
+  trong khoá, nút "Bật lại" kiểm tra hợp lệ, nhãn Page khi chủ tắt, chịu lỗi từng nút khi tìm menu, ghi chú
+  `mark_missed`). Giữ nguyên: ghi `runtime_config.json` không khoá (cách làm chung của file này). Suite 915 pass.
+

@@ -182,6 +182,25 @@ def get_session(account: AccountConfig) -> AccountSession:
     return _pool[account.account_id]
 
 
+async def close_idle_session(account_id: str) -> bool:
+    """Closes the account's browser if it has one and is not in the middle of a
+    task (used when an account is switched off, so it stops holding a Chrome
+    window). Keeps the pool entry — ensure_started() relaunches it lazily when
+    the account is switched back on. True if something was closed."""
+    session = _pool.get(account_id)
+    if session is None or session.lock.locked() or session.page is None:
+        return False
+    # Held while closing: a task starting at this moment waits for the close to
+    # finish (and then relaunches) instead of using a page that is torn down
+    # underneath it. (acquire() on a free lock does not yield, so nothing can
+    # slip in between the check above and this line.)
+    async with session.lock:
+        if session.page is None:
+            return False
+        await session.close()
+    return True
+
+
 def peek_session(account_id: str) -> AccountSession | None:
     """Read-only lookup for display purposes (the "sức khoẻ tài khoản"
     card on /admin's home page, 2026-10-02) — unlike get_session(), never

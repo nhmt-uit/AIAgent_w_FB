@@ -245,7 +245,7 @@ def _owner_session_usable(account) -> bool:
     """A Page's owner exists and is a personal account — a fallback to the
     owner's session can only succeed if so (a retry would fail identically)."""
     owner = get_all_accounts().get(account.owner_account_id)
-    return owner is not None and not owner.page_name
+    return owner is not None and not owner.page_name and owner.status == AccountStatus.ACTIVE
 
 
 @dataclass
@@ -281,6 +281,9 @@ async def _run_attempt(
             session_account = get_all_accounts().get(account.owner_account_id)
         if session_account is None or (use_owner and session_account.page_name):
             message = f"page_owner_missing:{account.owner_account_id}"
+        elif use_owner and session_account.status != AccountStatus.ACTIVE:
+            # The owner is switched off: its login/session is not to be used.
+            message = f"page_owner_off:{account.owner_account_id}"
         else:
             session = get_session(session_account)
             # One task at a time per browser page: the owner's session is shared
@@ -453,7 +456,7 @@ async def _run_attempt(
             # A refusal by the identity check made no attempt at the ACTION, so
             # it must not start the account's rate-limit gap (and throttle the
             # first real post after the owner fixes the session).
-            identity_refused = actions.is_identity_refusal(message) or message.startswith("page_owner_missing")
+            identity_refused = actions.is_identity_refusal(message) or message.startswith(("page_owner_missing", "page_owner_off"))
             if success or (session_survived and not identity_refused):
                 limiter.record(rate_limit_bucket, success)
         finally:
@@ -467,7 +470,12 @@ async def run_task(request: TaskRequest) -> TaskResult:
     account = get_account(request.account_id)
 
     if account.status != AccountStatus.ACTIVE:
-        message = f"account_paused:{request.account_id}"
+        # "account_disabled" = switched off on purpose (nothing wrong);
+        # "account_paused" = suspended for a suspected problem.
+        message = (
+            f"account_disabled:{request.account_id}" if account.status == AccountStatus.DISABLED
+            else f"account_paused:{request.account_id}"
+        )
         _log_result(request, False, message)
         return TaskResult(
             success=False,
@@ -477,10 +485,12 @@ async def run_task(request: TaskRequest) -> TaskResult:
         )
 
     if account.page_name:
-        # A Page shares its owner's Facebook login: if the owner is paused
-        # (e.g. a checkpoint), the Page must not keep driving that login.
+        # A Page shares its owner's Facebook login: if the owner is PAUSED
+        # (e.g. a checkpoint), the Page must not keep driving that login. An
+        # owner merely switched OFF only takes away the owner's SESSION (see
+        # _run_attempt()); a Page with its own session can still run.
         owner = get_all_accounts().get(account.owner_account_id)
-        if owner is not None and owner.status != AccountStatus.ACTIVE:
+        if owner is not None and owner.status == AccountStatus.PAUSED:
             message = f"account_paused:{owner.account_id} (owner of Page {request.account_id})"
             _log_result(request, False, message)
             return TaskResult(

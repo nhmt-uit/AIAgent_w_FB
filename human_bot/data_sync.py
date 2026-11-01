@@ -56,7 +56,7 @@ from typing import Any
 import httpx
 
 from human_bot import content_strategist, daily_limits, db, network_check, schedule_store, telegram_alerts, telegram_notify
-from human_bot.config import AccountConfig, GroupRef, get_account
+from human_bot.config import AccountConfig, AccountStatus, GroupRef, get_account
 from human_bot.data_sync_config import DataSyncConfig
 from human_bot.scheduling_config import SchedulingConfig
 from human_bot.runtime_config import (
@@ -2042,6 +2042,19 @@ async def fire_due_tasks(cfg: SchedulingConfig | None = None) -> dict[str, Any]:
         # comments_per_day check is now against a "business day" instead,
         # see that module's docstring for the full reasoning).
         account = get_account(task.account_id)
+        if account is not None and account.status in (AccountStatus.DISABLED, AccountStatus.PAUSED):
+            # The account is switched off (or paused). Don't let its due tasks
+            # fail (run_task() would refuse them) and don't leave them pending
+            # to burst out, stale, the moment it is switched back on — park
+            # them in "Task quá hạn" for the admin to reschedule, like an
+            # internet outage does.
+            state = "đang được tắt" if account.status == AccountStatus.DISABLED else "đang tạm dừng"
+            schedule_store.mark_missed(
+                task.task_id,
+                f"Tài khoản {task.account_id} {state} khi đến giờ đăng ({task.scheduled_at}). "
+                f"Cần admin duyệt lại sau khi bật lại/kích hoạt lại tài khoản.",
+            )
+            continue
         bucket = rate_limit_bucket_for(task.action)
         warning = None
         if account and bucket:

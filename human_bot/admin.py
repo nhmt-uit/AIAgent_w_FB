@@ -132,9 +132,11 @@ from human_bot.runtime_config import (
     save_registered_account,
     set_page_session_mode,
     delete_registered_account,
+    set_account_disabled,
     set_account_paused,
     set_account_removed,
     resume_account,
+    get_disabled_info,
     get_pause_info,
     get_resume_cooldown_info,
     clear_resume_cooldown,
@@ -2622,6 +2624,10 @@ def _account_warning_status(
     raises)."""
     kinds: set[str] = set()
     days_left: float | None = None
+    if account.status == AccountStatus.DISABLED:
+        # Switched off on purpose: silence and a stale session are expected,
+        # not warnings (and must not page anyone on Telegram).
+        return AccountWarningStatus(kinds=kinds, days_left=None)
     try:
         is_paused = account.status == AccountStatus.PAUSED
         is_resting = not is_paused and bool(get_resume_cooldown_info(aid))
@@ -2673,6 +2679,11 @@ def _account_health_signals(
     (_fmt_jst() — Telegram can't run the browser-local-time JS)."""
     severity = 2
     rows: list[tuple[str, str]] = []
+
+    if account.status == AccountStatus.DISABLED:
+        off_info = get_disabled_info(aid) or {}
+        since = f" từ {off_info['disabled_at']}" if off_info.get("disabled_at") else ""
+        return 2, [("⚪", f"Đã tắt (chủ động){since} — không chạy tác vụ nào")]
 
     is_paused = account.status == AccountStatus.PAUSED
     is_resting = False
@@ -3515,7 +3526,9 @@ def _sync_content_html(saved: bool = False, oob: bool = False) -> str:
         # status != ACTIVE), sync included — so it already can't run
         # regardless of this override, and the toggle is replaced with a
         # plain note instead of an actionable switch.
-        if is_paused:
+        if account.status == AccountStatus.DISABLED:
+            sync_cell = '<span class="row-url">đã tắt — không sync</span>'
+        elif is_paused:
             sync_cell = '<span class="row-url">tạm dừng — đã chặn sync</span>'
         else:
             sync_cell = _toggle_switch(
@@ -3674,10 +3687,10 @@ def _page_session_cell_html(aid: str, a, accounts: dict) -> str:
         # not only in the name column.
         status = '<span class="badge badge-bad">thiếu tài khoản cá nhân sở hữu / tên hồ sơ cá nhân — bot sẽ từ chối đăng</span>'
     elif a.page_session_mode == PAGE_MODE_OWNER_SESSION and owner.status != AccountStatus.ACTIVE:
-        word = "đang tạm dừng"
+        word = "đang tắt" if owner.status == AccountStatus.DISABLED else "đang tạm dừng"
         status = f'<span class="badge badge-warn">{owner_name} {word} — không dùng được phiên của tài khoản đó</span>'
     elif a.page_session_mode == PAGE_MODE_AUTO and not has_session and owner.status != AccountStatus.ACTIVE:
-        word = "đang tạm dừng"
+        word = "đang tắt" if owner.status == AccountStatus.DISABLED else "đang tạm dừng"
         status = f'<span class="badge badge-bad">chưa có phiên riêng và {owner_name} {word} — Page chưa chạy được</span>'
     elif a.page_session_mode == PAGE_MODE_OWNER_SESSION:
         status = (
@@ -3735,11 +3748,14 @@ def _accounts_content_html(saved: bool = False, error: str | None = None, oob: b
             )
         name_extras = _account_name_extras_html(aid, a, accounts)
         is_paused = a.status == AccountStatus.PAUSED
-        status_badge = (
-            '<span class="badge" style="background:#fef2f2;color:#dc2626;">⏸ Tạm dừng</span>'
-            if is_paused
-            else '<span class="badge" style="background:#ecfdf5;color:#059669;">● Hoạt động</span>'
-        )
+        is_off = a.status == AccountStatus.DISABLED
+        if is_paused:
+            status_badge = '<span class="badge" style="background:#fef2f2;color:#dc2626;">⏸ Tạm dừng</span>'
+        elif is_off:
+            status_badge = '<span class="badge" style="background:#f3f4f6;color:#4b5563;">⏻ Đã tắt</span>'
+        else:
+            status_badge = '<span class="badge" style="background:#ecfdf5;color:#059669;">● Hoạt động</span>'
+
         # Reason + timestamp of the pause, and (once resumed) the reduced-
         # limit cooldown window — shown right under the badge so a human
         # deciding whether it's actually safe to "Kích hoạt lại" has real
@@ -3749,14 +3765,18 @@ def _accounts_content_html(saved: bool = False, error: str | None = None, oob: b
         # external report of accounts getting re-flagged after resuming
         # full-speed too soon post-restriction).
         status_detail = ""
-        if is_paused:
+        if is_off:
+            off_info = get_disabled_info(aid) or {}
+            since = f" từ {_local_dt_html(off_info['disabled_at'])}" if off_info.get("disabled_at") else ""
+            status_detail = f'<div class="row-url" style="word-break:normal;">Tắt chủ động{since}</div>'
+        elif is_paused:
             info = get_pause_info(aid)
             if info:
                 reason_txt = html.escape(info["reason"] or "không rõ (tạm dừng thủ công)")
                 when_txt = _local_dt_html(info["paused_at"])
                 status_detail = f'<div class="row-url" style="word-break:normal;">từ {when_txt} — {reason_txt}</div>'
         else:
-            cooldown = get_resume_cooldown_info(aid)
+            cooldown = get_resume_cooldown_info(aid) if not is_off else None
             if cooldown:
                 until_txt = _local_dt_html(cooldown.get("until"))
                 reason_txt = html.escape(cooldown.get("reason") or "không rõ")
@@ -3781,20 +3801,35 @@ def _accounts_content_html(saved: bool = False, error: str | None = None, oob: b
         # human_bot/agent.py's run_task(). Resuming goes through
         # resume_account() (not set_account_paused directly) so the
         # post-resume cooldown above gets applied.
-        status_action = (
-            f"""<form method="post" action="/admin/accounts/resume" style="display:inline;"
-        hx-post="/admin/accounts/resume" hx-target="#accounts-content" hx-swap="outerHTML">
+        if is_paused:
+            status_action = f"""<form method="post" action="/admin/accounts/resume" style="display:inline;"
+        hx-post="/admin/accounts/resume" hx-target="#accounts-content" hx-swap="outerHTML"
+        title="Bật lại sau khi tạm dừng vì nghi vi phạm: tài khoản sẽ chạy giới hạn thấp vài ngày (hạ nhiệt) trước khi về mức bình thường.">
   <input type="hidden" name="account_id" value="{html.escape(aid)}">
   <button type="submit" class="btn-small">▶ Kích hoạt lại</button>
 </form>"""
-            if is_paused
-            else f"""<form method="post" action="/admin/accounts/pause" style="display:inline;"
-        hx-post="/admin/accounts/pause" hx-target="#accounts-content" hx-swap="outerHTML"
-        hx-confirm="Tạm dừng tài khoản {html.escape(aid)}? human_bot sẽ không đăng/comment/like gì cho tài khoản này cho tới khi bạn kích hoạt lại.">
+        elif is_off:
+            status_action = f"""<form method="post" action="/admin/accounts/enable" style="display:inline;"
+        hx-post="/admin/accounts/enable" hx-target="#accounts-content" hx-swap="outerHTML"
+        title="Bật lại ngay, chạy đủ giới hạn bình thường (không hạ nhiệt vì tài khoản không có vấn đề gì).">
   <input type="hidden" name="account_id" value="{html.escape(aid)}">
-  <button type="submit" class="btn-small btn-secondary">⏸ Tạm dừng</button>
+  <button type="submit" class="btn-small">▶ Bật lại</button>
 </form>"""
-        )
+        else:
+            status_action = f"""<form method="post" action="/admin/accounts/disable" style="display:inline;"
+        hx-post="/admin/accounts/disable" hx-target="#accounts-content" hx-swap="outerHTML"
+        hx-confirm="Tắt tài khoản {html.escape(aid)}? Sẽ không chạy tác vụ nào cho tới khi bạn bật lại; bài đến giờ trong lúc tắt sẽ chuyển sang &quot;Task quá hạn&quot; để bạn xếp lại. Bật lại là chạy ngay, không bị hạ nhiệt."
+        title="Tắt chủ động (không có vấn đề gì). Bật lại là chạy ngay đủ giới hạn.">
+  <input type="hidden" name="account_id" value="{html.escape(aid)}">
+  <button type="submit" class="btn-small btn-secondary">⏻ Tắt</button>
+</form>
+<form method="post" action="/admin/accounts/pause" style="display:inline;"
+        hx-post="/admin/accounts/pause" hx-target="#accounts-content" hx-swap="outerHTML"
+        hx-confirm="Tạm dừng tài khoản {html.escape(aid)} vì nghi bị Facebook hạn chế/vi phạm? Dùng khi có sự cố thật: khi kích hoạt lại, tài khoản sẽ phải chạy giới hạn thấp vài ngày (hạ nhiệt). Nếu chỉ muốn nghỉ thì dùng nút Tắt."
+        title="Dùng khi nghi tài khoản có vấn đề (checkpoint, bị hạn chế). Kích hoạt lại sẽ phải hạ nhiệt vài ngày.">
+  <input type="hidden" name="account_id" value="{html.escape(aid)}">
+  <button type="submit" class="btn-small btn-secondary">⚠ Tạm dừng</button>
+</form>"""
         is_runtime = aid in registered_ids
         source = "/admin/accounts" if is_runtime else "human_bot/config.py"
         # "Xoá" works on EVERY account now, code-level ones included (see
@@ -4032,6 +4067,56 @@ async def accounts_pause(request: Request, _: None = Depends(_require_login)):
     return RedirectResponse(url="/admin/accounts?saved=1", status_code=303)
 
 
+@router.post("/accounts/disable")
+async def accounts_disable(request: Request, _: None = Depends(_require_login)):
+    """"⏻ Tắt" — the operator switches an account off, no fault involved (see
+    runtime_config.set_account_disabled()). Also closes its idle browser so it
+    stops holding a Chrome window."""
+    form = await request.form()
+    account_id = str(form.get("account_id", "")).strip()
+    error = None
+    account = get_all_accounts().get(account_id)
+    if account is None:
+        error = "Không tìm thấy tài khoản"
+    elif account.status == AccountStatus.PAUSED:
+        error = "Tài khoản đang Tạm dừng — hãy Kích hoạt lại trước, hoặc để nguyên"
+    else:
+        set_account_disabled(account_id, True)
+        try:
+            await browser_pool.close_idle_session(account_id)
+        except Exception:  # noqa: BLE001 — switching off must never fail because a browser would not close
+            logger.exception("accounts_disable: could not close the browser of %s", account_id)
+    if _is_htmx(request):
+        return HTMLResponse(_accounts_content_html(saved=error is None, error=error))
+    if error:
+        from urllib.parse import urlencode
+        return RedirectResponse(url=f"/admin/accounts?{urlencode({'error': error})}", status_code=303)
+    return RedirectResponse(url="/admin/accounts?saved=1", status_code=303)
+
+
+@router.post("/accounts/enable")
+async def accounts_enable(request: Request, _: None = Depends(_require_login)):
+    """"▶ Bật lại" for a switched-off account: immediate, full limits — unlike
+    "Kích hoạt lại" (resume_account()) there is no cooldown, because nothing
+    was wrong with the account."""
+    form = await request.form()
+    account_id = str(form.get("account_id", "")).strip()
+    account = get_all_accounts().get(account_id)
+    error = None
+    if account is None:
+        error = "Không tìm thấy tài khoản"
+    elif account.status != AccountStatus.DISABLED:
+        error = "Tài khoản này không ở trạng thái tắt"
+    else:
+        set_account_disabled(account_id, False)
+    if _is_htmx(request):
+        return HTMLResponse(_accounts_content_html(saved=error is None, error=error))
+    if error:
+        from urllib.parse import urlencode
+        return RedirectResponse(url=f"/admin/accounts?{urlencode({'error': error})}", status_code=303)
+    return RedirectResponse(url="/admin/accounts?saved=1", status_code=303)
+
+
 @router.post("/accounts/resume")
 async def accounts_resume(request: Request, _: None = Depends(_require_login)):
     form = await request.form()
@@ -4138,6 +4223,7 @@ async def accounts_delete(request: Request, _: None = Depends(_require_login)):
     delete_registered_account(account_id)
     set_account_removed(account_id, True)
     set_account_paused(account_id, False)  # drop any stale pause override too
+    set_account_disabled(account_id, False)  # ...and a stale "switched off" flag
     set_account_sync_enabled(account_id, True)  # drop any stale sync opt-out too
     set_account_sponsored_only(account_id, False)  # drop any stale sponsored_only flag too
     save_joined_groups(account_id, [])
@@ -4299,7 +4385,12 @@ async def post_form(
     # fail with "account_paused" whenever something later tries to fire
     # it (found in the admin UI review that asked for this).
     pause_warning = ""
-    if accounts[account_id].status == AccountStatus.PAUSED:
+    if accounts[account_id].status == AccountStatus.DISABLED:
+        pause_warning = (
+            '<div class="warning">⏻ Tài khoản này đang <strong>tắt</strong> — bài lên lịch ở đây sẽ chuyển sang '
+            '"Task quá hạn" khi đến giờ, cho tới khi bạn <a href="/admin/accounts">bật lại</a>.</div>'
+        )
+    elif accounts[account_id].status == AccountStatus.PAUSED:
         pause_warning = (
             '<div class="error">⚠️ Tài khoản này đang <strong>Tạm dừng</strong> — bài lên lịch ở đây sẽ '
             'không tự đăng cho tới khi bạn <a href="/admin/accounts">kích hoạt lại</a>.</div>'
