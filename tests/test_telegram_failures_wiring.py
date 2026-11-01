@@ -1,6 +1,6 @@
 """How failure tickets are wired into the rest of the system (2026-11-01): the
 failed attempt → card, the Telegram calls (photo + caption edits), the listen
-loop (replies, /loi, button presses on photo messages) and the scheduler."""
+loop (replies, /error, button presses on photo messages) and the scheduler."""
 from __future__ import annotations
 
 import asyncio
@@ -294,7 +294,7 @@ async def test_replying_to_a_failure_card_requeues_with_the_new_text_and_refresh
 async def test_a_reply_to_something_else_falls_through_to_the_normal_handling(env, monkeypatch, isolated_runtime_config):  # noqa: F811
     add_telegram_recipient("12345", "Tu")
     sent = await _run_batch(monkeypatch, [_update(1, text="hello", reply_to_message={"message_id": 777})])
-    assert len(sent) == 1 and "/lich" in sent[0]                                          # the usual /help answer
+    assert len(sent) == 1 and "/schedule" in sent[0]                                          # the usual /help answer
 
 
 async def test_a_reply_from_a_group_chat_is_not_treated_as_an_edit(env, monkeypatch, isolated_runtime_config):  # noqa: F811
@@ -318,22 +318,22 @@ async def test_loi_sends_one_card_per_failure_and_remembers_each_message(env, mo
         return {"chat_id": chat_id, "message_id": 100 + len(cards), "photo": False}
 
     monkeypatch.setattr(telegram_notify, "send_ticket_to", send_ticket_to)
-    await _run_batch(monkeypatch, [_update(1, text="/loi")])
+    await _run_batch(monkeypatch, [_update(1, text="/error")])
     assert len(cards) == 2 and all(k for _t, k in cards)
     assert failure_tickets.find_by_message("12345", 101) is not None and failure_tickets.find_by_message("12345", 102) is not None
 
 
 async def test_loi_with_nothing_to_do_says_so(env, monkeypatch, isolated_runtime_config):  # noqa: F811
     add_telegram_recipient("12345", "Tu")
-    sent = await _run_batch(monkeypatch, [_update(1, text="/loi")])
+    sent = await _run_batch(monkeypatch, [_update(1, text="/error")])
     assert sent == ["✅ Không có lỗi nào đang chờ xử lý trong 48 giờ qua."]
 
 
 async def test_loi_is_listed_in_the_menu_and_refused_in_a_group(env, monkeypatch, isolated_runtime_config):  # noqa: F811
     from human_bot import telegram_commands
-    assert "loi" in [c for c, _d in telegram_commands.COMMANDS] and "/loi" in telegram_commands.help_text()
+    assert "error" in [c for c, _d in telegram_commands.COMMANDS] and "/error" in telegram_commands.help_text()
     add_telegram_recipient("12345", "Tu")
-    group = {"update_id": 1, "message": {"chat": {"id": "12345", "type": "group"}, "text": "/loi"}}
+    group = {"update_id": 1, "message": {"chat": {"id": "12345", "type": "group"}, "text": "/error"}}
     sent = await _run_batch(monkeypatch, [group])
     assert sent == ["Các nút thao tác chỉ dùng được trong chat riêng với bot."]
 

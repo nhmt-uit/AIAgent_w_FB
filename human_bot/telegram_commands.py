@@ -8,7 +8,7 @@ _telegram_listen_loop()/_telegram_daily_summary_loop() do the sending.
 "Hôm nay" everywhere means the BUSINESS day (02:00 → 02:00 JST,
 human_bot/daily_limits.py's business_day_start()), the same definition the
 daily posting caps use, so these numbers line up with "how many slots are
-left today". /suckhoe is built by service.py (it needs human_bot/admin.py's
+left today". /health is built by service.py (it needs human_bot/admin.py's
 health text, which this module deliberately doesn't import).
 
 Read-only: no command here changes any data.
@@ -27,31 +27,42 @@ from human_bot.telegram_alerts import jst_hhmm
 # (command, description) — Telegram only allows lowercase ASCII letters,
 # digits and "_" in the command itself, so no Vietnamese diacritics there.
 COMMANDS: list[tuple[str, str]] = [
-    ("lich", "Task sắp đăng hôm nay"),
-    ("quahan", "Task quá hạn — lên lịch lại / huỷ"),
-    ("loi", "Lỗi đăng/bình luận — lên lịch lại / bỏ qua"),
-    ("choduyet", "Job chờ duyệt — duyệt / bỏ qua"),
-    ("baocao", "Báo cáo hôm nay"),
-    ("suckhoe", "Sức khoẻ tài khoản"),
-    ("tamdung", "Tạm dừng tự động đăng"),
-    ("tieptuc", "Bật lại tự động đăng"),
+    ("schedule", "Task sắp đăng hôm nay"),
+    ("overdue", "Task quá hạn — lên lịch lại / huỷ"),
+    ("error", "Lỗi đăng/bình luận — lên lịch lại / bỏ qua"),
+    ("review", "Job chờ duyệt — duyệt / bỏ qua"),
+    ("report", "Báo cáo hôm nay"),
+    ("health", "Sức khoẻ tài khoản"),
+    ("pause", "Tạm dừng tự động đăng"),
+    ("resume", "Bật lại tự động đăng"),
     ("help", "Danh sách lệnh"),
 ]
 _COMMAND_NAMES = {c for c, _ in COMMANDS} | {"start"}
+# The commands used to have Vietnamese names (before 2026-11-01). They still work —
+# parse_command() maps them to the English name — but are no longer listed in the
+# bot menu or /help.
+_LEGACY_ALIASES = {
+    "lich": "schedule", "quahan": "overdue", "loi": "error", "choduyet": "review",
+    "baocao": "report", "suckhoe": "health", "tamdung": "pause", "tieptuc": "resume",
+}
 _MAX_LINES = 10  # list lines per reply (Telegram caps a message at 4096 chars)
 _JST = timedelta(hours=9)
 _CMD_RE = re.compile(r"^/([A-Za-z0-9_]+)(?:@(\S+))?(?:\s|$)")
 
 
 def parse_command(text: str | None) -> str | None:
-    """"/lich", "/lich@my_bot", "/lich arg" → "lich"; anything else
-    (plain text, or "/" followed by garbage) → None."""
+    """"/schedule", "/schedule@my_bot", "/schedule arg" → "schedule"; anything else
+    (plain text, or "/" followed by garbage) → None. An old Vietnamese name
+    ("/lich") gives its English name."""
     m = _CMD_RE.match((text or "").strip())
-    return m.group(1).lower() if m else None
+    if not m:
+        return None
+    name = m.group(1).lower()
+    return _LEGACY_ALIASES.get(name, name)
 
 
 def command_target(text: str | None) -> str | None:
-    """The "@bot_name" a command is addressed to ("/lich@my_bot" →
+    """The "@bot_name" a command is addressed to ("/schedule@my_bot" →
     "my_bot"), None when it carries no suffix (the normal private-chat
     case). Lets the caller ignore commands meant for another bot."""
     m = _CMD_RE.match((text or "").strip())
@@ -178,7 +189,7 @@ def _activity_block(since: datetime, until: datetime | None) -> str:
 
 def _queue_footer(now: datetime) -> str:
     """The queue AS OF NOW (not as of the day being reported) — labeled
-    "Hiện" for that reason. Counts the same way /lich does, so the two
+    "Hiện" for that reason. Counts the same way /schedule does, so the two
     never disagree: tasks overdue but still pending are included and
     called out."""
     _start, end = _day_bounds(now)

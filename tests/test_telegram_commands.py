@@ -20,11 +20,27 @@ def _isolated_state(tmp_path, monkeypatch):
 # --- parse_command -------------------------------------------------------------
 
 @pytest.mark.parametrize("text,expected", [
-    ("/lich", "lich"), ("/LICH", "lich"), ("/lich@my_bot", "lich"), ("/baocao hôm qua", "baocao"),
-    ("  /help ", "help"), ("lich", None), ("", None), (None, None), ("/", None), ("hello /lich", None),
+    ("/schedule", "schedule"), ("/SCHEDULE", "schedule"), ("/schedule@my_bot", "schedule"), ("/report hôm qua", "report"),
+    ("  /help ", "help"), ("schedule", None), ("", None), (None, None), ("/", None), ("hello /schedule", None),
 ])
 def test_parse_command(text, expected):
     assert telegram_commands.parse_command(text) == expected
+
+
+@pytest.mark.parametrize("old,new", [
+    ("lich", "schedule"), ("quahan", "overdue"), ("loi", "error"), ("choduyet", "review"),
+    ("baocao", "report"), ("suckhoe", "health"), ("tamdung", "pause"), ("tieptuc", "resume"),
+])
+def test_the_old_vietnamese_names_still_work_but_are_not_advertised(old, new):
+    assert telegram_commands.parse_command(f"/{old}") == new and telegram_commands.parse_command(f"/{old.upper()}@my_bot now") == new
+    assert telegram_commands.is_known_command(new) and not telegram_commands.is_known_command(old)
+    assert old not in [c for c, _d in telegram_commands.COMMANDS] and f"/{old}" not in telegram_commands.help_text()
+
+
+def test_every_command_name_is_english():
+    assert [c for c, _d in telegram_commands.COMMANDS] == [
+        "schedule", "overdue", "error", "review", "report", "health", "pause", "resume", "help",
+    ]
 
 
 def test_help_text_lists_every_command():
@@ -39,7 +55,7 @@ def test_command_names_are_valid_for_telegram():
         assert re.fullmatch(r"[a-z0-9_]{1,32}", command)
 
 
-# --- /lich, /quahan -------------------------------------------------------------
+# --- /schedule, /overdue -------------------------------------------------------------
 
 def _add(store, when, account_id="acc-a", action="post_to_group"):
     task = store.ScheduledTask(
@@ -95,7 +111,7 @@ def test_missed_text_shows_reason_tag_and_days(isolated_schedule_dirs):
     assert "1 task quá hạn" in text and "mất mạng" in text and "quá 2 ngày" in text
 
 
-# --- /baocao and the daily summary ---------------------------------------------
+# --- /report and the daily summary ---------------------------------------------
 
 class _Acc:
     pass
@@ -211,8 +227,8 @@ async def test_summary_catchup_after_midnight_for_a_late_evening_hour(monkeypatc
 
 
 def test_command_target_extracts_the_bot_suffix():
-    assert telegram_commands.command_target("/lich@other_bot") == "other_bot"
-    assert telegram_commands.command_target("/lich") is None
+    assert telegram_commands.command_target("/schedule@other_bot") == "other_bot"
+    assert telegram_commands.command_target("/schedule") is None
     assert telegram_commands.command_target("hello") is None
 
 

@@ -64,7 +64,7 @@ def _datas(keyboard):
 
 def test_quahan_items_have_reschedule_and_cancel_buttons(accounts):
     task = _missed()
-    [item] = telegram_actions.build_items("quahan")
+    [item] = telegram_actions.build_items("overdue")
     assert "Task quá hạn" in item.text and "mất mạng" in item.text and "nội dung" in item.text
     assert _datas(item.keyboard) == [f"rs|{task.task_id}", f"cm|{task.task_id}"]
 
@@ -72,21 +72,21 @@ def test_quahan_items_have_reschedule_and_cancel_buttons(accounts):
 def test_quahan_items_are_capped(accounts):
     for _ in range(telegram_actions.MAX_ITEMS + 3):
         _missed()
-    items = telegram_actions.build_items("quahan")
+    items = telegram_actions.build_items("overdue")
     assert len(items) == telegram_actions.MAX_ITEMS + 1  # the buttons, then a "còn N task nữa" note
     assert items[-1].keyboard is None and "còn 3 task quá hạn nữa" in items[-1].text
     assert all(i.keyboard for i in items[:-1])
 
 
 def test_quahan_with_nothing_overdue_says_so(accounts):
-    [item] = telegram_actions.build_items("quahan")
+    [item] = telegram_actions.build_items("overdue")
     assert "Không có task nào quá hạn" in item.text and item.keyboard is None
 
 
 def test_choduyet_items_and_empty_state(accounts):
-    assert "Không có job" in telegram_actions.build_items("choduyet")[0].text
+    assert "Không có job" in telegram_actions.build_items("review")[0].text
     review = _review()
-    [item] = telegram_actions.build_items("choduyet")
+    [item] = telegram_actions.build_items("review")
     assert "Thợ hàn" in item.text and "0.50" in item.text
     assert _datas(item.keyboard) == [f"ap|{review.review_id}", f"rj|{review.review_id}"]
 
@@ -95,24 +95,24 @@ def test_choduyet_tolerates_a_non_numeric_confidence(accounts):
     review = _review()
     review.confidence = "abc"
     schedule_store.add_needs_review(review)
-    assert "không rõ" in telegram_actions.build_items("choduyet")[0].text
+    assert "không rõ" in telegram_actions.build_items("review")[0].text
 
 
 def test_autofire_items_reflect_the_current_state(accounts):
     save_scheduling_overrides({"auto_fire_enabled": True})
-    [pause] = telegram_actions.build_items("tamdung")
+    [pause] = telegram_actions.build_items("pause")
     assert _datas(pause.keyboard) == ["af|off"]
-    [already_on] = telegram_actions.build_items("tieptuc")
+    [already_on] = telegram_actions.build_items("resume")
     assert already_on.keyboard is None and "BẬT sẵn" in already_on.text
     save_scheduling_overrides({"auto_fire_enabled": False})
-    [resume] = telegram_actions.build_items("tieptuc")
+    [resume] = telegram_actions.build_items("resume")
     assert _datas(resume.keyboard) == ["af|on"]
-    [already_off] = telegram_actions.build_items("tamdung")
+    [already_off] = telegram_actions.build_items("pause")
     assert already_off.keyboard is None and "TẮT sẵn" in already_off.text
 
 
 def test_commands_without_buttons_build_nothing(accounts):
-    assert telegram_actions.build_items("lich") == []
+    assert telegram_actions.build_items("schedule") == []
 
 
 # --- two-step flow --------------------------------------------------------------------

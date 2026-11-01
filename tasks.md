@@ -6711,3 +6711,42 @@ sửa nội dung bằng cách **trả lời (reply)** tin báo lỗi.
   CHƯA thử với bot thật. Giai đoạn 2/3 (gộp lỗi dồn dập + "Lên lịch lại tất cả", nút cho tin 3-lỗi-liên-tiếp, tự thử lại
   lỗi hạ tầng, tắt cảnh báo tạm) chưa làm.
 
+### Telegram: xử lý lỗi — giai đoạn 2 + đổi tên lệnh sang tiếng Anh (2026-11-01)
+
+Owner đã thử giai đoạn 1 với bot thật ("ổn"), yêu cầu làm giai đoạn 2 và đặt tên lệnh bằng tiếng Anh ("/bug" hay "/error").
+- **Đổi tên lệnh** (`telegram_commands.COMMANDS`): `lich→schedule`, `quahan→overdue`, `loi→error`, `choduyet→review`,
+  `baocao→report`, `suckhoe→health`, `tamdung→pause`, `tieptuc→resume` (+ `help`, `start`). Chọn `/error` (không `/bug`: đây
+  là lỗi đăng bài chứ không phải lỗi phần mềm). Tên cũ vẫn chạy qua `_LEGACY_ALIASES` (`parse_command` đổi về tên mới)
+  nhưng không có trong menu / `/help`. Chuỗi hướng dẫn trong bot và test đã đổi theo.
+- **Gộp lỗi dồn dập** (`telegram_batches.py`, thẻ kiểu "batch" trong `failure_tickets`): `attach()` chạy ngay sau khi tạo
+  phiếu lỗi; đủ `BURST_MIN=3` lỗi **an toàn** cùng `category` trong `BURST_WINDOW=15` phút (tính theo `failed_at`) thì từ lỗi
+  thứ 3 gửi MỘT thẻ chung, lỗi sau vào cùng thẻ và thẻ được sửa tại chỗ (không gửi tin mới). Hai thẻ đã gửi trước đó vẫn
+  còn và vẫn đồng bộ. **Chỉ gom lỗi an toàn**: lỗi chưa chắc/không thử lại được cần ảnh và quyết định riêng (review
+  /code-review: gom chúng làm mất ảnh của lỗi thứ 3 — đúng loại cần xem để tránh đăng trùng).
+- **"Lên lịch lại tất cả"** (`fb|ra`): mỗi lỗi an toàn đi qua `telegram_failures.requeue_for_bulk` (cùng bộ chặn của nút
+  đơn + bỏ qua lỗi quá cũ thay vì hỏi xác nhận từng cái), TUẦN TỰ nên mỗi bài một giờ riêng (`_suggest_reschedule_at` đếm cả
+  task đang chờ). Thẻ ghi rõ đã lên lịch bao nhiêu, bỏ qua bao nhiêu và vì sao (đã thử đủ 2 lần / quá cũ / tài khoản tắt /
+  bài đã đăng...). **Hoàn tác tất cả** (`fb|ua`) chỉ gỡ các task của lần bấm đó (task sắp/đã chạy thì giữ nguyên), nhiều lần
+  bấm thì gộp danh sách hoàn tác. **Bỏ qua tất cả** (`fb|sa` → `fb|sc`) hỏi xác nhận; không xoá gì. `/error` mở đầu bằng
+  thẻ tổng hợp khi có ≥ 3 lỗi an toàn (xoá thẻ nếu không ai nhận được).
+- **Nút cho tin "N lần LIÊN TIẾP"** (`telegram_streaks.py`, `fa|…`): Tắt (1 chạm, đóng trình duyệt rảnh qua
+  `CallbackResult.close_session_of`), Tạm dừng (xác nhận), Kích hoạt lại (xác nhận, hạ nhiệt), Bật lại, Đã biết. Thẻ dựng
+  lại từ trạng thái tài khoản THẬT; nút cũ không bao giờ đổi một tài khoản đã sang trạng thái khác. Không tạo được thẻ →
+  vẫn gửi tin chữ cũ.
+- **Sửa nền:** `CallbackResult.also_sync/close_session_of`; `failure_tickets` có `kind` (failure/batch/streak — đếm và
+  danh sách chỉ lấy "failure"), `get_many`, `delete`, `batches_containing`, dọn thẻ nhóm sau 3 ngày;
+  `telegram_failures.sync_with_groups` (xử lý 1 lỗi thì thẻ nhóm chứa nó cũng được cập nhật); `sync_copies` biết vẽ 3 loại thẻ.
+- **Rà soát /code-review vòng 1 (9 phát hiện, sửa cả 9):** lần bấm thứ hai không lên lịch lại được gì
+  từng xoá mất dữ liệu hoàn tác (tách `last_resched` / `last_dismiss`); gom cả lỗi "chưa chắc" (chỉ gom lỗi an toàn);
+  xử lý từng lỗi không cập nhật thẻ nhóm; `/error` quét 2 lần + để lại thẻ mồ côi + ghi file trong event loop;
+  tin báo đã GỬI được nhưng lưu vị trí lỗi → bị gửi thêm tin chữ trùng (ở thẻ lỗi, thẻ nhóm và cảnh báo liên tiếp);
+  tính trạng thái thẻ nhóm không khoá với lúc có lỗi mới nhập vào; đọc file nhiều lần mỗi lần vẽ thẻ.
+- **Vòng review thứ 2 (9 phát hiện, sửa 9):** lỗi `repeats_likely` (không thấy ô/nút, giao diện đổi) KHÔNG thử lại hàng
+  loạt (10 lần thử mù sẽ cùng hỏng, tốn lượt; nút 1 chạm trên thẻ riêng vẫn dùng được); không tạo 2 thẻ gộp chứa cùng
+  một lỗi; "Bỏ qua tất cả" gắn số lỗi đã hỏi vào nút xác nhận (có lỗi mới chen vào thì hỏi lại với số thật);
+  `announce` chỉ coi là đã báo khi ít nhất 1 bản thẻ thật sự được cập nhật (không thì lỗi đó có thẻ riêng); thẻ nhóm
+  khác chứa cùng thành viên cũng được cập nhật, mỗi thẻ đúng 1 lần (`sync_changed`); trả lời vào tin "liên tiếp" có câu
+  riêng; thẻ cảnh báo không ai nhận thì bị xoá; tên hàm dùng chung giữa module thành tên công khai.
+- Test: `tests/test_telegram_batches.py`, `test_telegram_streaks.py`, `test_telegram_phase2_wiring.py` (+ `test_telegram_commands.py`
+  cho tên cũ). Suite 1093 pass. **CHƯA thử giai đoạn 2 với bot thật.** Giai đoạn 3 (tự thử lại lỗi hạ tầng, tắt cảnh
+  báo tạm, ngắt nhóm hỏng liên tục) chưa làm.

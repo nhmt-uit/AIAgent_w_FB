@@ -218,31 +218,44 @@ async def _notify_failure_ticket(
     to the plain text report (a failure must never go unreported)."""
     if not telegram_notify.is_configured():
         return True  # nothing would be sent either way
-    from human_bot import failure_tickets, telegram_failures
+    from human_bot import failure_tickets, telegram_batches, telegram_failures
     try:
         # Disk/DB work (ticket store, account + group lookups) — off the event loop thread.
         def build():
-            return failure_tickets.create(**telegram_failures.ticket_fields_for_failure(
+            ticket = failure_tickets.create(**telegram_failures.ticket_fields_for_failure(
                 account_id=request.account_id, action=request.action, target_url=request.target_url,
                 content=request.content, message=message, task_id=request.scheduled_task_id, log_id=log_id,
                 screenshot=screenshot_path, retries=request.retries, source_kind=request.source_kind,
                 job_data=request.job_data if isinstance(request.job_data, dict) else None, source_id=request.source_id,
                 media_path=request.media_path, audience=request.audience,
             ))
+            try:
+                burst = telegram_batches.attach(ticket)  # the 3rd failure of one cause within minutes → one group card
+            except Exception:  # noqa: BLE001 — grouping is a convenience: without it the failure just gets its own card
+                logger.exception("could not group the failure into a burst")
+                burst = (None, False)
+            return ticket, burst
 
-        ticket = await asyncio.to_thread(build)
+        ticket, (burst, burst_is_new) = await asyncio.to_thread(build)
+        if burst is not None:
+            if await telegram_batches.announce(burst, burst_is_new):
+                return True
+            # nobody got the group card → give this failure a card of its own below
         refs = await telegram_notify.send_ticket(
             telegram_failures.render(ticket), telegram_failures.keyboard_for(ticket),
             photo_path=screenshot_path, silent=True,  # per-attempt reports are always silent (owner's rule)
         )
-        for ref in refs:
-            await asyncio.to_thread(failure_tickets.add_message, ticket["id"], ref["chat_id"], ref["message_id"], ref["photo"])
-        # Nobody got the card (every send failed, or there is no recipient) → report the
-        # plain way too; a failure must never go unreported.
-        return bool(refs)
     except Exception:  # noqa: BLE001 — a notification must never fail the task it reports on
         logger.exception("could not send the failure card — falling back to the plain report")
         return False
+    for ref in refs:
+        try:
+            await asyncio.to_thread(failure_tickets.add_message, ticket["id"], ref["chat_id"], ref["message_id"], ref["photo"])
+        except Exception:  # noqa: BLE001 — the card WAS delivered: a plain report on top would be a duplicate
+            logger.exception("could not remember where the failure card %s was sent", ticket["id"])
+    # Nobody got the card (every send failed, or there is no recipient) → report the
+    # plain way too; a failure must never go unreported.
+    return bool(refs)
 
 
 async def _notify_telegram_for_attempt(
@@ -283,11 +296,10 @@ async def _notify_telegram_for_attempt(
             request.account_id, request.action, max_rows=_CONSECUTIVE_FAILURE_ALERT_THRESHOLD + 1,
         )
         if streak == _CONSECUTIVE_FAILURE_ALERT_THRESHOLD:
-            await telegram_notify.send_message(
-                f"🔴 {request.account_id} · {request.action} thất bại {streak} lần LIÊN TIẾP\n"
-                f"Lần gần nhất: {message}",
-                silent=False,
-            )
+            # With [⏻ Tắt] [⚠ Tạm dừng] [👌 Đã biết] buttons (human_bot/telegram_streaks.py);
+            # falls back to the plain text if the card cannot be sent.
+            from human_bot import telegram_streaks  # local import — it imports modules that import this one
+            await telegram_streaks.send_alert(request.account_id, request.action, streak, message)
 
 
 def _owner_session_usable(account) -> bool:

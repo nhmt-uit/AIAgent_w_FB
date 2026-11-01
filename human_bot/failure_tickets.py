@@ -39,6 +39,15 @@ OPEN = "open"
 RESCHEDULED = "rescheduled"
 DISMISSED = "dismissed"
 POSTED = "posted"  # the operator confirmed the post was already live
+DONE = "done"  # a group card (kind "batch") with nothing left to decide
+
+# What a ticket is. "failure" = one failed post/comment (the original kind, and
+# what a ticket without a `kind` is); "batch" = one card for SEVERAL failures
+# (a burst of the same cause, or a /error summary); "streak" = the "N failures in
+# a row" alert of one account. Only "failure" tickets are failures: counts and
+# listings must not mix the others in.
+FAILURE, BATCH, STREAK = "failure", "batch", "streak"
+KEEP_GROUP_CARDS_DAYS = 3  # batch/streak cards are short-lived: nobody acts on one days later
 
 _lock = threading.RLock()
 
@@ -87,6 +96,9 @@ def _prune(tickets: dict[str, dict[str, Any]]) -> None:
     cutoff = (datetime.now(timezone.utc) - timedelta(days=KEEP_RESOLVED_DAYS)).isoformat()
     for tid in [t for t, v in tickets.items() if v.get("status") != OPEN and v.get("updated_at", v.get("created_at", "")) < cutoff]:
         tickets.pop(tid, None)
+    group_cutoff = (datetime.now(timezone.utc) - timedelta(days=KEEP_GROUP_CARDS_DAYS)).isoformat()
+    for tid in [t for t, v in tickets.items() if v.get("kind", FAILURE) != FAILURE and v.get("created_at", "") < group_cutoff]:
+        tickets.pop(tid, None)
     if len(tickets) > MAX_TICKETS:  # drop the oldest resolved first, then the oldest overall
         order = sorted(tickets, key=lambda t: (tickets[t].get("status") == OPEN, tickets[t].get("created_at", "")))
         for tid in order[: len(tickets) - MAX_TICKETS]:
@@ -116,6 +128,28 @@ def get(ticket_id: str) -> dict[str, Any] | None:
         return _load().get(ticket_id)
 
 
+def get_many(ticket_ids: list[str]) -> list[dict[str, Any]]:
+    """The tickets that still exist, in the order asked — ONE read of the store."""
+    with _lock:
+        tickets = _load()
+    return [tickets[i] for i in ticket_ids if i in tickets]
+
+
+def delete(ticket_id: str) -> None:
+    """Removes a ticket (a group card that never reached anybody)."""
+    with _lock:
+        tickets = _load()
+        if tickets.pop(ticket_id, None) is not None:
+            _save(tickets)
+
+
+def batches_containing(ticket_ids: "str | list[str] | set[str]") -> list[dict[str, Any]]:
+    """The group cards (kind "batch") that list ANY of these failures as a member — ONE read."""
+    wanted = {ticket_ids} if isinstance(ticket_ids, str) else set(ticket_ids)
+    with _lock:
+        return [t for t in _load().values() if t.get("kind") == BATCH and wanted & set(t.get("members") or [])]
+
+
 def update(ticket_id: str, **fields: Any) -> dict[str, Any] | None:
     with _lock:
         tickets = _load()
@@ -136,7 +170,7 @@ def add_message(ticket_id: str, chat_id: str, message_id: int, photo: bool = Fal
             return
         messages = ticket.setdefault("messages", [])
         messages.append({"chat_id": str(chat_id), "message_id": int(message_id), "photo": bool(photo)})
-        # /loi adds a fresh copy each time it is used: keep the newest few PER CHAT
+        # /error adds a fresh copy each time it is used: keep the newest few PER CHAT
         # (older copies' buttons still work — callbacks carry only the ticket id;
         # only replying to / refreshing a very old copy stops being tracked).
         keep: list[dict] = []
@@ -178,10 +212,11 @@ def find_by_task(task_id: str) -> dict[str, Any] | None:
     return max(matches, key=lambda t: t.get("created_at", "")) if matches else None
 
 
-def list_open(since: datetime | None = None) -> list[dict[str, Any]]:
-    """Open tickets, newest first."""
+def list_open(since: datetime | None = None, kind: str | None = FAILURE) -> list[dict[str, Any]]:
+    """Open tickets of one `kind` (failures by default; None = every kind),
+    newest first."""
     with _lock:
-        items = [t for t in _load().values() if t.get("status") == OPEN]
+        items = [t for t in _load().values() if t.get("status") == OPEN and (kind is None or t.get("kind", FAILURE) == kind)]
     if since is not None:
         items = [t for t in items if t.get("created_at", "") >= since.isoformat()]
     return sorted(items, key=lambda t: t.get("created_at", ""), reverse=True)

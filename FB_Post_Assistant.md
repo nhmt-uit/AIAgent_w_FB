@@ -1051,10 +1051,10 @@ bấm):
 11. **Báo khi có task rơi vào "Task quá hạn"** (ví dụ do mất mạng) + tin khi mạng
     có lại + báo khi tab "Chờ duyệt" có job mới — ưu tiên cao, nối thẳng với
     tính năng kiểm tra mạng vừa làm.
-12. **Lệnh `/`** (`/lich`, `/quahan`, `/baocao`, `/suckhoe`) và **tóm tắt đầu/cuối
+12. **Lệnh `/`** (`/schedule`, `/overdue`, `/report`, `/health`) và **tóm tắt đầu/cuối
     ngày tự gửi** — ưu tiên cao, rẻ.
 13. **Nút bấm dưới tin nhắn** (Duyệt/Bỏ qua job chờ duyệt, Lên lịch lại/Huỷ task
-    quá hạn, Hoãn task sắp đăng) và **`/tamdung`, `/tieptuc`** để dừng/bật tự
+    quá hạn, Hoãn task sắp đăng) và **`/pause`, `/resume`** để dừng/bật tự
     đăng từ xa. Cần phân quyền trước (người chỉ xem vs người được điều khiển —
     hiện danh sách người nhận chưa phân biệt), nên chốt với owner trước khi làm.
 14. **Cảnh báo "service ngừng hẳn"** (cần bên ngoài giám sát, vì bot không tự báo
@@ -1064,17 +1064,17 @@ bấm):
 
 *Vòng 1 — ĐÃ LÀM XONG (13/10, chưa thử với bot thật):* báo task vào "Task quá hạn" (khi mất
 mạng thì gửi 1 tin gom sau khi có mạng lại, vì lúc mất mạng Telegram cũng không
-gửi được), báo job mới vào "Chờ duyệt", các lệnh `/lich` `/quahan` `/baocao`
-`/suckhoe` `/help` (tin không phải lệnh chỉ trả hướng dẫn), và tóm tắt tự động
+gửi được), báo job mới vào "Chờ duyệt", các lệnh `/schedule` `/overdue` `/report`
+`/health` `/help` (tin không phải lệnh chỉ trả hướng dẫn), và tóm tắt tự động
 6h sáng mỗi ngày về ngày hôm trước (bật/tắt và đổi giờ ở trang cấu hình). Lệnh
-`/lich` tách riêng các task "đã đến giờ nhưng chưa chạy" — khi thử trên dữ liệu thật
+`/schedule` tách riêng các task "đã đến giờ nhưng chưa chạy" — khi thử trên dữ liệu thật
 đã thấy hàng chờ có task từ 09/10 chưa chạy (service đã tắt mấy ngày). Lưu ý: task
 đã vào "Task quá hạn" vì mất mạng không tự chạy lại, vẫn cần admin lên lịch lại.
 *Để sau:* nhắc lại job chờ duyệt quá lâu.
 
 *Vòng 2 — ĐÃ LÀM (16/10, chưa thử với bot thật):* bot giờ có **nút bấm** ngay dưới tin nhắn.
-`/quahan` gửi từng task quá hạn kèm nút "Lên lịch lại" / "Huỷ"; `/choduyet` gửi từng job
-chờ duyệt kèm nút "Duyệt" / "Bỏ qua"; `/tamdung` và `/tieptuc` tạm dừng / bật lại tự động
+`/overdue` gửi từng task quá hạn kèm nút "Lên lịch lại" / "Huỷ"; `/review` gửi từng job
+chờ duyệt kèm nút "Duyệt" / "Bỏ qua"; `/pause` và `/resume` tạm dừng / bật lại tự động
 đăng. Theo quyết định của owner, **bất kỳ ai trong danh sách người nhận ở trang quản trị
 đều thao tác được**. Để tránh bấm nhầm trên điện thoại, mọi nút đều hỏi lại một lần
 ("Xác nhận / Quay lại"), và việc tạm dừng / bật lại tự đăng được báo cho tất cả người nhận
@@ -1132,8 +1132,22 @@ Telegram dùng nội dung đã soạn sẵn; muốn sửa chữ vẫn phải và
   hệ thống tự chọn giờ phù hợp với giới hạn của tài khoản; bấm nhầm thì có nút **"Hoàn tác"**. Muốn đăng lại với nội dung
   khác thì chỉ cần **trả lời (reply) tin đó bằng nội dung mới**. Nếu lỗi kiểu "chưa chắc đã đăng" thì bot hỏi lại trước
   khi cho đăng lại, để khỏi đăng trùng; tài khoản đang tắt hay tạm dừng thì có sẵn nút bật lại ngay trong tin. Lệnh
-  `/loi` liệt kê các lỗi chưa xử lý trong 48 giờ gần nhất. Dữ liệu thật cho thấy lý do cần làm: trong 55 lần lỗi chỉ có
+  `/error` liệt kê các lỗi chưa xử lý trong 48 giờ gần nhất. Dữ liệu thật cho thấy lý do cần làm: trong 55 lần lỗi chỉ có
   4 lần từng được thử lại, và 41 bài lỗi đang nằm im — vì trước đây phải mở trang quản trị mới xử lý được.
+- **Gộp lỗi dồn dập, "Lên lịch lại tất cả", nút cho tin "3 lần liên tiếp" (01/11, giai đoạn 2).** Mất mạng một
+  buổi tối từng biến 10 bài thành 10 tin lỗi, mỗi tin phải bấm riêng. Nay khi **3 lỗi AN TOÀN cùng nguyên nhân** (chưa
+  đăng gì) xảy ra trong vòng 15 phút, từ lỗi thứ 3 bot chỉ gửi **một thẻ chung** và tự cập nhật số lượng ngay trên
+  thẻ đó khi có thêm lỗi, không gửi tin mới. Thẻ có **"Lên lịch lại tất cả"** (mỗi bài một giờ riêng, không dồn vào
+  cùng một giờ) kèm **"Hoàn tác"** cho cả nhóm, và **"Bỏ qua tất cả"** (hỏi xác nhận trước). Lệnh `/error` cũng mở đầu
+  bằng một thẻ tổng hợp như vậy khi có từ 3 lỗi an toàn đang chờ. Lỗi **chưa chắc đã đăng** hoặc lỗi cần sửa nguyên
+  nhân thì KHÔNG bao giờ bị gộp hay thử lại hàng loạt (mỗi lỗi giữ thẻ và ảnh riêng để kiểm tra bài đã lên chưa).
+  Lỗi kiểu "không thấy ô/nút cần bấm" (thường do Facebook đổi giao diện) có gộp thành một thẻ cho đỡ rối, nhưng cũng
+  không thử lại hàng loạt vì sẽ cùng hỏng lại — thử từng lỗi ở `/error`.
+  Tin báo đỏ **"N lần thất bại LIÊN TIẾP"** nay có nút **"Tắt"** (một chạm, bật lại là chạy ngay), **"Tạm dừng"**
+  (hỏi xác nhận, vì kích hoạt lại phải hạ nhiệt) và **"Đã biết"**; tin tự đổi theo trạng thái thật của tài khoản.
+- **Đổi tên lệnh Telegram sang tiếng Anh (01/11).** `/schedule` (lịch), `/overdue` (quá hạn), `/error` (lỗi),
+  `/review` (chờ duyệt), `/report` (báo cáo), `/health` (sức khoẻ), `/pause` và `/resume` (tạm dừng / bật lại tự động
+  đăng), `/help`. Tên tiếng Việt cũ vẫn chạy nhưng không còn hiện trong menu của bot.
 
 Cố tình không đề xuất: soạn/đăng bài thật từ Telegram (rủi ro tin nhắn bị chuyển
 tiếp, tăng bề mặt rủi ro) và hỏi đáp ngôn ngữ tự nhiên qua AI (tốn chi phí, dễ

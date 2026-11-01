@@ -1,9 +1,9 @@
 """
 Purpose of this file / Muc dich cua file nay:
 EN: Telegram Vòng 2 (2026-10-16) — action BUTTONS under bot messages:
-  - /quahan  → each overdue task with [🔄 Lên lịch lại] [🗑 Huỷ]
-  - /choduyet → each job waiting for review with [✅ Duyệt] [🗑 Bỏ qua]
-  - /tamdung, /tieptuc → [⏸ Tạm dừng tự đăng] / [▶️ Bật lại tự đăng]
+  - /overdue  → each overdue task with [🔄 Lên lịch lại] [🗑 Huỷ]
+  - /review → each job waiting for review with [✅ Duyệt] [🗑 Bỏ qua]
+  - /pause, /resume → [⏸ Tạm dừng tự đăng] / [▶️ Bật lại tự đăng]
 Owner decision: everyone in the admin-managed recipient list may act (no
 separate roles). Pure logic only — building the messages and executing a
 button press; no Telegram I/O (human_bot/service.py does the sending), so it
@@ -61,6 +61,8 @@ class CallbackResult:
     keyboard: Keyboard | None = None
     broadcast: str | None = None  # also tell every recipient (high-impact toggles)
     ticket_id: str | None = None  # a failure ticket this press changed → refresh every recipient's copy
+    also_sync: tuple[str, ...] = ()  # more tickets this press changed (a group card's members) → refresh their copies too
+    close_session_of: str | None = None  # an account just switched off/paused → close its idle browser
     alert: bool = False  # show `toast` as a popup that stays until dismissed (for refusals worth reading)
 
 
@@ -125,16 +127,16 @@ def _review_item(review) -> Item:
 
 def _autofire_item(command: str) -> Item:
     on = get_scheduling_config().auto_fire_enabled
-    if command == "tamdung":
+    if command == "pause":
         if not on:
-            return Item("⏸ Tự động đăng đang TẮT sẵn rồi. Dùng /tieptuc để bật lại.")
+            return Item("⏸ Tự động đăng đang TẮT sẵn rồi. Dùng /resume để bật lại.")
         return Item(
             "Tự động đăng đang BẬT. Tạm dừng sẽ giữ MỌI task đến giờ ở lại hàng chờ "
             "(không đăng) cho tới khi bật lại — nút \"Đăng ngay\" thủ công ở /admin vẫn dùng được.",
             _main_keyboard("af", "off"),
         )
     if on:
-        return Item("▶️ Tự động đăng đang BẬT sẵn rồi. Dùng /tamdung để tạm dừng.")
+        return Item("▶️ Tự động đăng đang BẬT sẵn rồi. Dùng /pause để tạm dừng.")
     return Item(
         "Tự động đăng đang TẮT. Bật lại thì các task đã đến giờ trong hàng chờ sẽ được đăng ngay "
         "(theo giới hạn tốc độ của từng tài khoản).",
@@ -145,15 +147,15 @@ def _autofire_item(command: str) -> Item:
 def build_items(command: str) -> list[Item]:
     """Interactive messages for a command, in addition to (or instead of)
     the plain text reply. Empty list = nothing interactive for it."""
-    if command == "quahan":
+    if command == "overdue":
         missed = schedule_store.list_missed()
         if not missed:
             return [Item("✅ Không có task nào quá hạn.")]
         items = [_missed_item(t) for t in missed[:MAX_ITEMS]]
         if len(missed) > MAX_ITEMS:
-            items.append(Item(f"…còn {len(missed) - MAX_ITEMS} task quá hạn nữa — xử lý xong các task trên rồi gõ lại /quahan, hoặc vào /admin/schedule."))
+            items.append(Item(f"…còn {len(missed) - MAX_ITEMS} task quá hạn nữa — xử lý xong các task trên rồi gõ lại /overdue, hoặc vào /admin/schedule."))
         return items
-    if command == "choduyet":
+    if command == "review":
         reviews = schedule_store.list_needs_review()
         if not reviews:
             return [Item("✅ Không có job nào đang chờ duyệt.")]
@@ -161,7 +163,7 @@ def build_items(command: str) -> list[Item]:
         if len(reviews) > MAX_ITEMS:
             items.append(Item(f"…còn {len(reviews) - MAX_ITEMS} job chờ duyệt nữa (xem ở /admin/schedule, tab \"Chờ duyệt\")."))
         return items
-    if command in ("tamdung", "tieptuc"):
+    if command in ("pause", "resume"):
         return [_autofire_item(command)]
     return []
 
@@ -256,7 +258,7 @@ def _execute(verb: str, ident: str, original: str, actor: str) -> CallbackResult
         logger.warning("telegram: %s set auto_fire_enabled=%s", actor, want_on)
         line = (
             f"▶️ {actor} đã BẬT LẠI tự động đăng." if want_on
-            else f"⏸ {actor} đã TẠM DỪNG tự động đăng — mọi task đến giờ sẽ nằm lại hàng chờ. Dùng /tieptuc để bật lại."
+            else f"⏸ {actor} đã TẠM DỪNG tự động đăng — mọi task đến giờ sẽ nằm lại hàng chờ. Dùng /resume để bật lại."
         )
         return CallbackResult(toast="Đã bật lại" if want_on else "Đã tạm dừng", text=f"{original}\n\n{line}", keyboard=[], broadcast=line)
     return CallbackResult(toast="Nút không hợp lệ")
@@ -268,12 +270,21 @@ def handle_callback(data: str, original_text: str, actor: str) -> CallbackResult
     label). Never raises for a malformed/stale `data`."""
     verb, _, rest = (data or "").partition("|")
     original_text = original_text or ""
-    if verb == "fx":  # failure tickets (human_bot/telegram_failures.py) — they re-render their own card
-        from human_bot import telegram_failures  # local import — it imports this module
+    if verb in ("fx", "fb", "fa"):
+        # Failure cards re-render their own text and buttons: fx = one failure
+        # (telegram_failures), fb = a group of failures (telegram_batches),
+        # fa = the "N failures in a row" alert (telegram_streaks). Local imports:
+        # each of those modules imports this one.
         try:
-            return telegram_failures.handle_callback(rest, actor)
+            if verb == "fx":
+                from human_bot import telegram_failures as handler
+            elif verb == "fb":
+                from human_bot import telegram_batches as handler
+            else:
+                from human_bot import telegram_streaks as handler
+            return handler.handle_callback(rest, actor)
         except Exception:  # noqa: BLE001 — a bad ticket must still answer the tap
-            logger.exception("telegram_actions: failure-ticket callback %r failed", data)
+            logger.exception("telegram_actions: failure-card callback %r failed", data)
             return CallbackResult(toast="Có lỗi khi xử lý phiếu lỗi — thử lại hoặc dùng /admin.", alert=True)
     try:
         if verb == "bk":

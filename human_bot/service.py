@@ -52,7 +52,7 @@ import time  # noqa: E402
 from urllib.parse import quote  # noqa: E402
 from datetime import datetime, timedelta, timezone  # noqa: E402
 
-from human_bot import data_sync, db, schedule_store, screenshots, failure_tickets, telegram_actions, telegram_alerts, telegram_commands, telegram_failures, telegram_notify  # noqa: E402
+from human_bot import data_sync, db, schedule_store, screenshots, failure_tickets, telegram_actions, telegram_alerts, telegram_batches, telegram_commands, telegram_failures, telegram_notify  # noqa: E402
 from human_bot.admin import (  # noqa: E402
     NotLoggedIn,
     _SESSION_EXPIRY_WARNING_DAYS,
@@ -62,7 +62,7 @@ from human_bot.admin import (  # noqa: E402
     router as admin_router,
 )
 from human_bot.agent import TaskRequest, run_task  # noqa: E402
-from human_bot.browser_pool import close_all, warm_up  # noqa: E402
+from human_bot.browser_pool import close_all, close_idle_session, warm_up  # noqa: E402
 from human_bot.config import AccountStatus, get_all_accounts  # noqa: E402
 from human_bot.logging_setup import configure_logging  # noqa: E402
 from human_bot import runtime_config  # noqa: E402
@@ -427,7 +427,7 @@ async def _telegram_health_check_loop() -> None:
 
 
 def _telegram_reply_for(command: str) -> str:
-    if command == "suckhoe":
+    if command == "health":
         sync_statuses = data_sync.get_all_sync_statuses()
         last_success_map = db.last_successful_action_per_account()
         return "\n\n".join(
@@ -435,9 +435,9 @@ def _telegram_reply_for(command: str) -> str:
             for aid, a in get_all_accounts().items()
             if not a.uses_owner_session
         ) or "Chưa có tài khoản nào."
-    if command == "lich":
+    if command == "schedule":
         return telegram_commands.schedule_text()
-    if command == "baocao":
+    if command == "report":
         return telegram_commands.report_text()
     if command in _TELEGRAM_BUTTON_ONLY_COMMANDS:
         return ""  # the reply is the interactive message(s) from telegram_actions.build_items()
@@ -445,23 +445,35 @@ def _telegram_reply_for(command: str) -> str:
 
 
 # Commands whose whole answer is the button messages (no summary text first).
-_TELEGRAM_BUTTON_ONLY_COMMANDS = {"quahan", "choduyet", "tamdung", "tieptuc", "loi"}
+_TELEGRAM_BUTTON_ONLY_COMMANDS = {"overdue", "review", "pause", "resume", "error"}
 
 
 async def _send_failure_list(chat_id: str) -> None:
-    """/loi — one card per unresolved failure (last 48h), with its buttons; each
+    """/error — one card per unresolved failure (last 48h), with its buttons; each
     sent card is remembered on its ticket so replies/updates find it."""
-    items, overflow = await asyncio.to_thread(telegram_failures.build_list)
+    def scan():  # ONE scan of the failed tasks serves both the single cards and the summary card
+        tickets = telegram_failures.open_failures()
+        items, overflow = telegram_failures.build_list(tickets=tickets)
+        return items, overflow, (telegram_batches.build_list_batch(tickets) if items else None)
+
+    items, overflow, batch = await asyncio.to_thread(scan)
     if not items:
         await telegram_notify.send_message_to(chat_id, telegram_failures.empty_list_item().text, silent=True)
         return
+    if batch is not None:  # several safe failures waiting → one card to re-queue them all, before the single cards
+        text, keyboard = await asyncio.to_thread(telegram_batches.card, batch)
+        ref = await telegram_notify.send_ticket_to(chat_id, text, keyboard, silent=True)
+        if ref:
+            await asyncio.to_thread(failure_tickets.add_message, batch["id"], ref["chat_id"], ref["message_id"], ref["photo"])
+        else:
+            await asyncio.to_thread(failure_tickets.delete, batch["id"])  # nobody holds this card — do not leave it behind
     for ticket, text, keyboard, photo in items:
         ref = await telegram_notify.send_ticket_to(chat_id, text, keyboard, photo_path=photo, silent=True)
         if ref:
-            failure_tickets.add_message(ticket["id"], ref["chat_id"], ref["message_id"], ref["photo"])
+            await asyncio.to_thread(failure_tickets.add_message, ticket["id"], ref["chat_id"], ref["message_id"], ref["photo"])
     if overflow:
         await telegram_notify.send_message_to(
-            chat_id, f"…còn {overflow} lỗi nữa — xử lý các lỗi trên rồi gõ lại /loi.", silent=True,
+            chat_id, f"…còn {overflow} lỗi nữa — xử lý các lỗi trên rồi gõ lại /error.", silent=True,
         )
 
 
@@ -479,7 +491,7 @@ async def _handle_failure_reply(chat_id: str, message: dict, recipient: dict) ->
     else:
         await telegram_notify.send_message_to(chat_id, outcome.message, silent=True)
     if outcome.ticket_id:
-        await telegram_failures.sync_copies(outcome.ticket_id)  # every copy, incl. the one replied to
+        await telegram_failures.sync_with_groups(outcome.ticket_id)  # every copy, incl. the one replied to, and its group cards
     return True
 
 
@@ -524,8 +536,18 @@ async def _handle_telegram_callback(callback: dict, recipients_by_id: dict[str, 
     if message_id and (new_text is not None or result.keyboard is not None):
         await telegram_notify.edit_message(chat_id, message_id, text=new_text, keyboard=result.keyboard, photo=is_photo)
     if result.ticket_id:
-        # Someone dealt with a failure card — bring every OTHER recipient's copy up to date.
-        await telegram_failures.sync_copies(result.ticket_id, skip=(chat_id, message_id))
+        # Someone dealt with a failure card — bring every OTHER recipient's copy up to date,
+        # and the group cards it belongs to (their counts changed too).
+        await telegram_failures.sync_with_groups(result.ticket_id, skip=(chat_id, message_id))
+    if result.also_sync:
+        # a group card acted on its members: the members' own cards (every copy, incl. this chat's) and any
+        # OTHER group card holding them are stale too — each refreshed once
+        await telegram_failures.sync_changed(list(result.also_sync), exclude=(result.ticket_id,) if result.ticket_id else ())
+    if result.close_session_of:
+        try:
+            await close_idle_session(result.close_session_of)  # same as the admin's "⏻ Tắt": stop holding a Chrome window
+        except Exception:  # noqa: BLE001 — switching off must never fail because a browser would not close
+            logger.exception("could not close the browser of %s", result.close_session_of)
     if result.broadcast:
         await telegram_notify.send_message(result.broadcast, silent=False)
     return True
@@ -692,7 +714,7 @@ async def _telegram_listen_loop() -> None:
                     target_bot = telegram_commands.command_target(message.get("text"))
                     my_username = telegram_notify.get_cached_bot_username()
                     if target_bot and (not my_username or target_bot.lower() != my_username.lower()):
-                        continue  # "/lich@some_other_bot" — meant for a different bot in a shared chat (fails closed while our own username is still unknown)
+                        continue  # "/schedule@some_other_bot" — meant for a different bot in a shared chat (fails closed while our own username is still unknown)
                     command = telegram_commands.parse_command(message.get("text"))
                     if (
                         command is None and message.get("reply_to_message") and message.get("text")
@@ -712,7 +734,7 @@ async def _telegram_listen_loop() -> None:
                         )
                         replied_to_anything = True
                         continue
-                    if command == "loi":
+                    if command == "error":
                         await _send_failure_list(chat_id)
                         replied_to_anything = True
                         continue
@@ -721,8 +743,8 @@ async def _telegram_listen_loop() -> None:
                         replies_by_command[command] = await asyncio.to_thread(_telegram_reply_for, command)
                     if replies_by_command[command]:
                         await telegram_notify.send_message_to(chat_id, replies_by_command[command], silent=True)
-                    # Vòng 2: messages with action buttons (/quahan, /choduyet,
-                    # /tamdung, /tieptuc) — built per message, not cached: each
+                    # Vòng 2: messages with action buttons (/overdue, /review,
+                    # /pause, /resume) — built per message, not cached: each
                     # carries buttons bound to the current items.
                     for item in await asyncio.to_thread(telegram_actions.build_items, command):
                         if item.keyboard:

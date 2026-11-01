@@ -1,6 +1,6 @@
 """Tests for Telegram failure tickets (2026-11-01): classification, the ticket
 store, the card, the one-tap "Lên lịch lại" + undo, skip/posted, reply-to-edit,
-/loi, and how a failed attempt turns into a card."""
+/error, and how a failed attempt turns into a card."""
 from __future__ import annotations
 
 import os
@@ -546,7 +546,7 @@ def test_a_reply_to_an_uncertain_failure_warns_about_a_possible_duplicate(env):
     assert "có thể đã lên" in telegram_failures.apply_reply(t, "Bản mới", "Tu").message
 
 
-# --- /loi ---------------------------------------------------------------------------------------------------------------
+# --- /error ---------------------------------------------------------------------------------------------------------------
 
 def test_open_failures_lists_recent_unresolved_ones_and_makes_tickets_on_the_fly(env):
     fresh = _failed_task("error:Page.goto: Timeout 30000ms exceeded.", age_hours=2)

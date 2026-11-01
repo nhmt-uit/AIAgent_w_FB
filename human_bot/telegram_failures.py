@@ -56,7 +56,7 @@ _action_lock = threading.RLock()
 MAX_RETRIES = 2  # re-queues allowed per task from Telegram (3 attempts in all)
 STALE_HOURS_POST = 48
 STALE_HOURS_COMMENT = 24
-LIST_WINDOW_HOURS = 48  # /loi shows failures from this far back
+LIST_WINDOW_HOURS = 48  # /error shows failures from this far back
 UNDO_CUTOFF_SECONDS = 60  # no undo once the re-queued task is due within this long
 MAX_LIST_ITEMS = 5
 MAX_REPLY_CHARS = 4000
@@ -71,6 +71,10 @@ def _parse(iso: str | None) -> datetime | None:
     except ValueError:
         return None
     return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+
+
+def parse_iso(iso: str | None) -> datetime | None:
+    return _parse(iso)
 
 
 def _action_label(action: str) -> str:
@@ -202,6 +206,9 @@ def _rescheduled_task_pending(ticket: dict[str, Any]) -> bool:
     return bool(r.get("task_id")) and schedule_store.get(r["task_id"]) is not None
 
 
+rescheduled_task_pending = _rescheduled_task_pending  # public name for the group cards
+
+
 def _result(ticket: dict[str, Any], toast: str = "", *, keyboard=None) -> CallbackResult:
     return CallbackResult(
         toast=toast, text=render(ticket), keyboard=keyboard if keyboard is not None else keyboard_for(ticket),
@@ -224,6 +231,7 @@ def _stale_limit(ticket: dict[str, Any]) -> int:
 class _Refusal:
     toast: str
     keyboard: list | None = None
+    code: str = "other"  # a stable reason, for the bulk flow's "skipped because…" summary
 
 
 def _blocking_account(ticket: dict[str, Any]):
@@ -246,11 +254,11 @@ def _blocking_account(ticket: dict[str, Any]):
 def _check_can_requeue(ticket: dict[str, Any], *, check_duplicate: bool) -> _Refusal | None:
     info = failure_info.classify(ticket.get("message"))
     if not info.retryable:
-        return _Refusal(f"Không thử lại được: {info.cause}.")
+        return _Refusal(f"Không thử lại được: {info.cause}.", code="no_retry")
     if int(ticket.get("retries") or 0) >= MAX_RETRIES:
-        return _Refusal(f"Đã thử lại {MAX_RETRIES} lần mà vẫn lỗi — nên kiểm tra tay thay vì thử tiếp.")
+        return _Refusal(f"Đã thử lại {MAX_RETRIES} lần mà vẫn lỗi — nên kiểm tra tay thay vì thử tiếp.", code="limit")
     if get_all_accounts().get(ticket.get("account_id", "")) is None:
-        return _Refusal("Tài khoản này không còn trong hệ thống.")
+        return _Refusal("Tài khoản này không còn trong hệ thống.", code="missing_account")
     blocker = _blocking_account(ticket)
     if blocker is not None:
         whose = "Tài khoản" if blocker.account_id == ticket.get("account_id") else "Tài khoản cá nhân sở hữu Page"
@@ -258,10 +266,12 @@ def _check_can_requeue(ticket: dict[str, Any], *, check_duplicate: bool) -> _Ref
             return _Refusal(
                 f"{whose} {blocker.account_id} đang TẠM DỪNG. Kích hoạt lại sẽ phải chạy giới hạn thấp vài ngày (hạ nhiệt).",
                 [[_btn("▶ Kích hoạt lại (hạ nhiệt)", f"fx|rv|{ticket['id']}")], [_btn("🗑 Bỏ qua", f"fx|sk|{ticket['id']}")]],
+                code="blocked",
             )
         return _Refusal(
             f"{whose} {blocker.account_id} đang TẮT. Bật lại rồi bấm Lên lịch lại.",
             [[_btn("▶ Bật lại", f"fx|en|{ticket['id']}")], [_btn("🗑 Bỏ qua", f"fx|sk|{ticket['id']}")]],
+            code="blocked",
         )
     if check_duplicate:
         since = ticket.get("failed_at") or ticket.get("created_at") or ""
@@ -270,7 +280,7 @@ def _check_can_requeue(ticket: dict[str, Any], *, check_duplicate: bool) -> _Ref
             source_id=ticket.get("source_id"), source_kind=ticket.get("source_kind"),
         )
         if done is not None:
-            return _Refusal(f"Bài này đã được đăng thành công vào lúc {jst_hhmm(done['created_at'])} — không lên lịch lại để khỏi đăng trùng.")
+            return _Refusal(f"Bài này đã được đăng thành công vào lúc {jst_hhmm(done['created_at'])} — không lên lịch lại để khỏi đăng trùng.", code="duplicate")
     return None
 
 
@@ -415,6 +425,45 @@ def _resume_account(ticket: dict[str, Any], actor: str) -> CallbackResult:
     return _result(ticket, f"Đã kích hoạt lại {blocker.account_id} (đang hạ nhiệt) — bấm Lên lịch lại")
 
 
+# --- for the group cards (human_bot/telegram_batches.py) ----------------------------------------------
+# These do ONE ticket of a bulk action. The caller holds action_lock() around the whole loop.
+
+def action_lock() -> threading.RLock:
+    return _action_lock
+
+
+def requeue_for_bulk(ticket: dict[str, Any], actor: str) -> tuple[dict[str, Any] | None, str]:
+    """Re-queues one failure as part of "Lên lịch lại tất cả". Stricter than the single
+    tap: ONLY a failure known to have happened before anything was submitted (safe)
+    is re-queued in bulk — a blind bulk retry of an uncertain one could double-post —
+    and a stale one is skipped instead of asking for a confirmation per item.
+    Also skipped: a cause that tends to fail the same way again (the one-tap card still offers it).
+    Returns (updated ticket, "") or (None, reason code)."""
+    info = failure_info.classify(ticket.get("message"))
+    if info.safety != failure_info.SAFE:
+        return None, "uncertain" if info.retryable else "no_retry"
+    if info.repeats_likely:
+        return None, "repeats"  # e.g. Facebook changed its page: ten blind retries would just fail ten more times
+    refusal = _check_can_requeue(ticket, check_duplicate=True)
+    if refusal is not None:
+        return None, refusal.code
+    if _stale_hours(ticket) > _stale_limit(ticket):
+        return None, "stale"
+    updated, _toast = _requeue(ticket, actor)
+    return (updated, "") if updated is not None else (None, "error")
+
+
+def undo_requeue(ticket: dict[str, Any], actor: str) -> dict[str, Any]:
+    """Puts a re-queued failure back (the card's [↩ Hoàn tác]); the ticket as it is afterwards."""
+    _undo(ticket, actor)
+    return failure_tickets.get(ticket["id"]) or ticket
+
+
+def dismiss_ticket(ticket: dict[str, Any], actor: str) -> dict[str, Any]:
+    _dismiss(ticket, actor, posted=False)
+    return failure_tickets.get(ticket["id"]) or ticket
+
+
 def handle_callback(rest: str, actor: str) -> CallbackResult:
     """`rest` = "<verb>|<ticket_id>" (the part after "fx|")."""
     with _action_lock:
@@ -482,6 +531,11 @@ def apply_reply(ticket: dict[str, Any], new_text: str, actor: str) -> ReplyOutco
     """The operator replied to a card with replacement text. Open ticket → re-queue
     with that text; already re-queued and not yet fired → swap the text in the
     queued task. Anything else is explained."""
+    kind = ticket.get("kind", failure_tickets.FAILURE)
+    if kind == failure_tickets.BATCH:
+        return ReplyOutcome(None, "Đây là thẻ tổng hợp nhiều lỗi — gõ /error rồi trả lời vào thẻ của TỪNG lỗi để đổi nội dung.")
+    if kind != failure_tickets.FAILURE:
+        return ReplyOutcome(None, "Đây là cảnh báo lỗi liên tiếp của một tài khoản, không có nội dung bài để đổi.")
     with _action_lock:
         ticket = failure_tickets.get(ticket["id"]) or ticket  # the state NOW, not when the reply arrived
         return _apply_reply_locked(ticket, new_text, actor)
@@ -527,7 +581,7 @@ def _apply_reply_locked(ticket: dict[str, Any], new_text: str, actor: str) -> Re
     )
 
 
-# --- listing (/loi) ----------------------------------------------------------------------------------
+# --- listing (/error) ----------------------------------------------------------------------------------
 
 def _ticket_for_failed_task(task: schedule_store.ScheduledTask, index: dict[str, dict[str, Any]]) -> dict[str, Any]:
     existing = index.get(task.task_id)
@@ -586,30 +640,68 @@ def open_failure_count() -> int:
         return 0
 
 
-def build_list(now: datetime | None = None) -> tuple[list[tuple[dict[str, Any], str, list, str | None]], int]:
-    """For /loi: ((ticket, card text, keyboard, screenshot path) for up to
-    MAX_LIST_ITEMS open failures, how many more there are)."""
-    tickets = open_failures(now)
+def build_list(
+    now: datetime | None = None, tickets: list[dict[str, Any]] | None = None,
+) -> tuple[list[tuple[dict[str, Any], str, list, str | None]], int]:
+    """For /error: ((ticket, card text, keyboard, screenshot path) for up to
+    MAX_LIST_ITEMS open failures, how many more there are). `tickets` = the open
+    failures when the caller already computed them (open_failures())."""
+    if tickets is None:
+        tickets = open_failures(now)
     items = [(t, render(t), keyboard_for(t), t.get("screenshot")) for t in tickets[:MAX_LIST_ITEMS]]
     return items, max(0, len(tickets) - MAX_LIST_ITEMS)
 
 
-async def sync_copies(ticket_id: str, *, skip: tuple[str, Any] | None = None) -> None:
+async def sync_copies(ticket_id: str, *, skip: tuple[str, Any] | None = None) -> int:
     """Re-renders the card in EVERY chat that holds a copy of it (except `skip`,
     the message that was just edited by the caller), so once one recipient has
-    acted nobody else is left with stale buttons. Best-effort."""
+    acted nobody else is left with stale buttons. Best-effort; returns how many
+    copies were actually updated."""
     from human_bot import telegram_notify
     ticket = failure_tickets.get(ticket_id)
     if ticket is None:
-        return
-    text, keyboard = render(ticket), keyboard_for(ticket)
+        return 0
+    kind = ticket.get("kind", failure_tickets.FAILURE)
+    if kind == failure_tickets.BATCH:
+        from human_bot import telegram_batches  # local import — it imports this module
+        text, keyboard = telegram_batches.card(ticket)
+    elif kind == failure_tickets.STREAK:
+        from human_bot import telegram_streaks
+        text, keyboard = telegram_streaks.render(ticket), telegram_streaks.keyboard_for(ticket)
+    else:
+        text, keyboard = render(ticket), keyboard_for(ticket)
+    updated = 0
     for m in ticket.get("messages", []):
         if skip is not None and (m.get("chat_id"), m.get("message_id")) == (str(skip[0]), skip[1]):
             continue
         try:
-            await telegram_notify.edit_message(m["chat_id"], m["message_id"], text=text, keyboard=keyboard, photo=bool(m.get("photo")))
+            if await telegram_notify.edit_message(m["chat_id"], m["message_id"], text=text, keyboard=keyboard, photo=bool(m.get("photo"))):
+                updated += 1
         except Exception:  # noqa: BLE001 — a stale copy must not break the others
             logger.exception("sync_copies: could not refresh %s/%s", m.get("chat_id"), m.get("message_id"))
+    return updated
+
+
+async def sync_with_groups(ticket_id: str, *, skip: tuple[str, Any] | None = None) -> None:
+    """sync_copies() for a failure AND for every group card it is a member of (their counts and
+    buttons change when one member does)."""
+    await sync_copies(ticket_id, skip=skip)
+    for batch in failure_tickets.batches_containing(ticket_id):
+        if batch.get("messages"):
+            await sync_copies(batch["id"])
+
+
+async def sync_changed(ticket_ids: list[str], *, exclude: tuple[str, ...] = ()) -> None:
+    """After a group card acted on several failures: refresh the cards of the members that have
+    one, and every OTHER group card holding any of them — each exactly once (`exclude` = the group
+    card the caller has just edited itself)."""
+    members = failure_tickets.get_many(list(ticket_ids))
+    for member in members:
+        if member.get("messages"):
+            await sync_copies(member["id"])
+    for batch in failure_tickets.batches_containing(ticket_ids):
+        if batch["id"] not in exclude and batch.get("messages"):
+            await sync_copies(batch["id"])
 
 
 def empty_list_item() -> Item:
