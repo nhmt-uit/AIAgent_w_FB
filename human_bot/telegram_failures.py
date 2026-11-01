@@ -96,6 +96,9 @@ def _group_label(account_id: str, target_url: str | None) -> str:
     return name or target_url.rstrip("/").rsplit("/", 1)[-1]
 
 
+group_label = _group_label  # public name for the alerts (human_bot/telegram_streaks.py)
+
+
 def _subject(source_kind: str | None, job_data: dict | None) -> str:
     title = (job_data or {}).get("title") if isinstance(job_data, dict) else None
     return f'Tin: "{title}"' if source_kind == "job" and title else ""

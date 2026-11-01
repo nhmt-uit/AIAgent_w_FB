@@ -6783,3 +6783,34 @@ dữ liệu thật (đọc, không ghi) trước khi sửa. Chỉ đổi cách t
   cửa sổ gộp không lùi về trước; popup quá 200 ký tự được rút gọn có chủ ý; `send_ticket` thật sự cô lập từng người nhận.
 - Test: cập nhật các test cũ theo chữ mới + test mới trong `tests/test_telegram_commands.py`, `test_telegram_actions.py`,
   `test_telegram_batches.py`, `test_telegram_failures.py`, `test_telegram_streaks.py`. Suite 1117 pass. Chưa commit.
+
+### Telegram: xử lý lỗi — giai đoạn 3 (2026-11-01)
+
+Dữ liệu thật trước khi hỏi owner (read-only, 241 lượt, 57 lỗi thật): 30 lỗi (53%) là loại "chưa đăng gì" do hạ tầng
+(Facebook tải chậm 16, mất mạng 9, trình duyệt đóng lúc mở trang 5); 12 lỗi UI timeout; 9 mục tiêu từng có ≥ 3 lỗi liên tiếp.
+**Quyết định của owner:**
+- **KHÔNG tự thử lại lỗi hạ tầng** (giữ nguyên: mọi lỗi chờ owner bấm "Lên lịch lại" / "Lên lịch lại tất cả"). Owner không nêu lý do.
+  Không code gì cho mục này.
+- **Nhóm hỏng liên tục: CHỈ BÁO, KHÔNG NGƯNG** — bot vẫn thử các bài sau của nhóm đó theo lịch.
+- **Tạm im cảnh báo: CÓ** — nút "Im 1 giờ" và "Im đến 6h sáng".
+Đã làm (`telegram_streaks.py`, mở rộng từ giai đoạn 2):
+- **Cảnh báo nhóm** (`🟠 Nhóm "…" lỗi 3 lần liên tiếp — <tài khoản>`): `db.target_failure_streak(account, target, action)` đếm các lượt
+  liên tiếp của đúng (tài khoản, nhóm, việc) — bỏ qua lượt bị từ chối sớm (chưa chạm Facebook) và **lỗi hạ tầng** (mất mạng, tải chậm,
+  trình duyệt đóng: `failure_info.is_infrastructure`) vì chúng không nói gì về nhóm; một lượt thành công thì dừng đếm. Báo ĐÚNG MỘT
+  LẦN khi chuỗi chạm 3 (cùng cách với tin "N lần liên tiếp"), kèm nguyên nhân gần nhất, các khả năng (bị nhóm chặn / bài chờ quản
+  trị viên duyệt / nhóm đổi quyền đăng) và chỗ sửa/xoá nhóm (/admin/groups). Chỉ áp dụng cho `post_to_group`. Nếu tin "tài khoản N lần
+  liên tiếp" cũng vừa nổ ở cùng lượt lỗi thì KHÔNG gửi tin nhóm (tin tài khoản nay ghi "Nhóm gần nhất: …").
+- **Nút Im** trên cả hai loại tin (chỉ ảnh hưởng đúng tài khoản + việc, hoặc đúng tài khoản + nhóm; lỗi vẫn ghi và xử lý bình
+  thường): không chạy bộ đếm giờ nào — bản ghi "im đến" nằm trong kho phiếu (`kind="snooze"`); hết giờ, lần lỗi kế tiếp mà chuỗi
+  vẫn ≥ ngưỡng thì báo lại một lần, chuỗi đã kết thúc thì bản ghi bị xoá lặng lẽ. "Im đến 6h sáng" = 06:00 JST kế tiếp, nhưng ít nhất 1
+  giờ nữa.
+- Thẻ đã im có nút **"🔔 Báo lại bình thường"** (xoá bản ghi im) và thẻ tài khoản vẫn giữ nút Tắt / Tạm dừng khi đã im.
+- **Rà soát /code-review (8 phát hiện):** sửa — lỗi hạ tầng xảy ra SAU khi đã báo nhóm giữ chuỗi nhóm ở 3 nên làm báo LẶP (nay chỉ lượt
+  lỗi tự nó được tính mới được báo); khối kiểm tra cảnh báo mới có thể ném lỗi ra khỏi `run_task` (nay bọc try/except, `should_alert`
+  coi bản ghi hỏng là đã hết hạn); tin tài khoản của lệnh BÌNH LUẬN in nhầm id bài là "Nhóm gần nhất" (chỉ `post_to_group` mới có);
+  hai lần bấm Im cùng lúc có thể để lại 2 bản ghi (khoá); chuỗi < ngưỡng không còn đọc đĩa; không có cách bỏ im (đã thêm nút).
+  **Giữ nguyên có chủ ý:** nếu tin tài khoản "N lần liên tiếp" nổ cùng lượt với chuỗi nhóm thì tin nhóm không gửi nữa (tin tài khoản
+  đã ghi tên nhóm; chuỗi nhóm sau đó đã vượt 3 nên im) — tránh hai tin đỏ cho cùng một sự cố.
+- Test: `tests/test_telegram_streaks.py`, `test_telegram_phase2_wiring.py`, `test_telegram_failures.py`. Suite 1140 pass.
+  **CHƯA thử với bot thật.**
+

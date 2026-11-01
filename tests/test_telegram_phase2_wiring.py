@@ -93,7 +93,7 @@ async def test_the_streak_alert_is_a_loud_card_with_buttons(attempt):
     await _fail_once(attempt, 3, "something else entirely")
     loud = [s for s in sent if s["silent"] is False]
     assert len(loud) == 1 and "thất bại 3 lần LIÊN TIẾP" in loud[0]["text"]
-    assert [b["callback_data"].split("|")[1] for row in loud[0]["keyboard"] for b in row] == ["off", "ps", "ok"]
+    assert [b["callback_data"].split("|")[1] for row in loud[0]["keyboard"] for b in row] == ["off", "ps", "ok", "sn1", "snm"]
     [alert] = failure_tickets.list_open(kind=failure_tickets.STREAK)
     assert alert["account_id"] == ACC and alert["messages"]
 
@@ -316,3 +316,107 @@ async def test_handling_a_member_through_the_listen_loop_refreshes_the_group_car
     group = [e for e in edits if e[:2] == ("12345", 50)]
     assert len(group) == 1 and "Còn chờ: 2 · đã lên lịch lại: 1" in group[0][2]       # the group card now counts the member
     assert len([e for e in edits if e[:2] == ("12345", 61)]) == 1                     # and the clicked message is edited once
+
+
+# --- phase 3: "this group keeps failing" and muting ---------------------------------------------------------------------------
+
+GROUP_A, GROUP_B = "https://facebook.com/groups/111", "https://facebook.com/groups/222"
+UI_FAIL = 'error:Locator.wait_for: Timeout 30000ms exceeded.\nCall log:\n  - waiting for get_by_role("dialog")'
+
+
+async def _post(attempt, target, ok, message="", n=[0]):  # noqa: B006 — a counter for unique task ids
+    sent, set_result = attempt
+    set_result(ok, message)
+    n[0] += 1
+    await agent.run_task(TaskRequest(action="post_to_group", account_id=ACC, target_url=target, content=f"Bài {n[0]}", scheduled_task_id=f"G{n[0]}"))
+    return sent
+
+
+def _alerts(sent, mark):
+    return [s for s in sent if s["silent"] is False and s["text"].startswith(mark)]
+
+
+async def test_a_group_that_keeps_failing_gets_one_loud_card_while_the_account_is_fine_elsewhere(attempt):
+    sent = None
+    for target, ok in ((GROUP_A, False), (GROUP_B, True), (GROUP_A, False), (GROUP_B, True)):
+        sent = await _post(attempt, target, ok, "" if ok else UI_FAIL)
+    assert _alerts(sent, "🟠") == []                                                 # two failures of the group so far
+    sent = await _post(attempt, GROUP_A, False, UI_FAIL)
+    [card] = _alerts(sent, "🟠")
+    assert "lỗi 3 lần liên tiếp" in card["text"] and "/admin/groups" in card["text"]
+    assert [b["callback_data"].split("|")[1] for row in card["keyboard"] for b in row] == ["ok", "sn1", "snm"]
+    assert _alerts(sent, "🔴") == []                                                 # the account itself is not failing in a row
+    sent = await _post(attempt, GROUP_B, True)
+    sent = await _post(attempt, GROUP_A, False, UI_FAIL)
+    assert len(_alerts(sent, "🟠")) == 1                                             # exactly once, not on every later failure
+    [ticket] = [t for t in failure_tickets.list_open(kind=failure_tickets.STREAK) if t.get("scope") == "group"]
+    assert ticket["target_url"] == GROUP_A and ticket["messages"]
+
+
+async def test_failures_that_say_nothing_about_the_group_do_not_make_it_look_bad(attempt):
+    slow = "error:Page.goto: Timeout 30000ms exceeded."
+    sent = None
+    for target, ok in ((GROUP_A, False), (GROUP_B, True), (GROUP_A, False), (GROUP_B, True), (GROUP_A, False)):
+        sent = await _post(attempt, target, ok, "" if ok else slow)
+    assert _alerts(sent, "🟠") == [] and _alerts(sent, "🔴") == []
+
+
+async def test_when_the_account_alert_fires_the_group_alert_stays_quiet(attempt):
+    sent = None
+    for _ in range(3):
+        sent = await _post(attempt, GROUP_A, False, UI_FAIL)                         # 3 in a row for the account AND for the group
+    assert len(_alerts(sent, "🔴")) == 1 and _alerts(sent, "🟠") == []
+    assert "Nhóm gần nhất:" in _alerts(sent, "🔴")[0]["text"]                        # ...so the one alert says which group it was
+
+
+async def test_a_muted_group_stays_quiet_and_alerts_again_when_the_time_is_up(attempt):
+    from datetime import datetime, timedelta, timezone
+    from human_bot import telegram_streaks
+    telegram_streaks.snooze(telegram_streaks.group_key(ACC, GROUP_A), datetime.now(timezone.utc) + timedelta(hours=1))
+    sent = None
+    for target, ok in ((GROUP_A, False), (GROUP_B, True), (GROUP_A, False), (GROUP_B, True), (GROUP_A, False)):
+        sent = await _post(attempt, target, ok, "" if ok else UI_FAIL)
+    assert _alerts(sent, "🟠") == []                                                 # muted
+    [record] = failure_tickets.list_open(kind=telegram_streaks.SNOOZE)
+    failure_tickets.update(record["id"], until=(datetime.now(timezone.utc) - timedelta(minutes=1)).isoformat())   # the hour is up
+    sent = await _post(attempt, GROUP_B, True)
+    sent = await _post(attempt, GROUP_A, False, UI_FAIL)
+    assert len(_alerts(sent, "🟠")) == 1                                             # still failing → told again
+    assert failure_tickets.list_open(kind=telegram_streaks.SNOOZE) == []
+
+
+async def test_a_network_failure_after_the_group_alert_does_not_send_it_again(attempt):
+    sent = None
+    for target, ok in ((GROUP_A, False), (GROUP_B, True), (GROUP_A, False), (GROUP_B, True), (GROUP_A, False)):
+        sent = await _post(attempt, target, ok, "" if ok else UI_FAIL)
+    assert len(_alerts(sent, "🟠")) == 1
+    for _ in range(3):                                                                # the network drops: each failure leaves the group's streak at 3
+        sent = await _post(attempt, GROUP_A, False, "error:Page.goto: net::ERR_INTERNET_DISCONNECTED at x")
+    assert len(_alerts(sent, "🟠")) == 1
+
+
+async def test_a_comment_failure_alert_does_not_pretend_a_post_url_is_a_group(attempt, monkeypatch):
+    sent, set_result = attempt
+
+    async def fail(page, req):
+        from human_bot.actions import ActionResult
+        return ActionResult(success=False, message=UI_FAIL)
+
+    monkeypatch.setitem(agent._ACTION_DISPATCH, "comment_on_group_post", ("comment", fail))
+    for i in range(3):
+        await agent.run_task(TaskRequest(action="comment_on_group_post", account_id=ACC, target_url="https://facebook.com/groups/1/posts/456", content="c", scheduled_task_id=f"C{i}"))
+    [card] = _alerts(sent, "🔴")
+    assert "Nhóm gần nhất" not in card["text"] and "456" not in card["text"]
+
+
+async def test_a_problem_while_checking_the_alerts_never_breaks_the_task(attempt, monkeypatch):
+    from human_bot import telegram_streaks
+
+    def broken(*a, **k):
+        raise ValueError("damaged record")
+
+    monkeypatch.setattr(telegram_streaks, "should_alert", broken)
+    sent, set_result = attempt
+    set_result(False, UI_FAIL)
+    result = await agent.run_task(TaskRequest(action="post_to_group", account_id=ACC, target_url=GROUP_A, content="c", scheduled_task_id="X1"))
+    assert result.success is False                                                    # the task's own result still comes back

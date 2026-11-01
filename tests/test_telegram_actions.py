@@ -66,7 +66,8 @@ def test_quahan_items_have_reschedule_and_cancel_buttons(accounts):
     task = _missed()
     [item] = telegram_actions.build_items("overdue")
     assert "Bài lỡ giờ đăng" in item.text and "Lý do: mất mạng" in item.text and "nội dung" in item.text
-    assert "Việc: Bình luận" in item.text and "(hôm nay)" in item.text and "post_to" not in item.text and "comment_on" not in item.text
+    assert "Việc: Bình luận" in item.text and "post_to" not in item.text and "comment_on" not in item.text
+    assert "(hôm nay)" in item.text or "(hôm qua)" in item.text       # the task is 2 hours old: which one depends on the JST time of day (exact labels are tested below)
     assert _datas(item.keyboard) == [f"rs|{task.task_id}", f"cm|{task.task_id}"]
 
 

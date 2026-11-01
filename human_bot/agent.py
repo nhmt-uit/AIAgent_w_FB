@@ -17,7 +17,7 @@ from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from typing import Awaitable, Callable
 
-from human_bot import actions, daily_limits, db, media, screenshots, telegram_notify
+from human_bot import actions, daily_limits, db, failure_info, media, screenshots, telegram_notify
 from human_bot.actions import ActionResult, _group_id_from_url
 from human_bot.browser_pool import get_session
 from human_bot.config import get_all_accounts, AccountStatus, get_account
@@ -34,6 +34,7 @@ _MEDIA_CAPABLE_ACTIONS = {"post_to_own_profile", "post_to_group"}
 # request) — same (account_id, action) failing this many times in a row
 # is treated as "something is actually broken", not 1 random blip.
 _CONSECUTIVE_FAILURE_ALERT_THRESHOLD = 3
+_GROUP_FAILURE_ALERT_THRESHOLD = 3  # the same group failing this many times in a row (for one account)
 
 
 @dataclass
@@ -287,19 +288,48 @@ async def _notify_telegram_for_attempt(
     else:
         await telegram_notify.send_message(report, silent=True)
 
-    # Alert type 3/5 ("N lần fail liên tiếp") — loud, fires exactly once
-    # right when the streak reaches the threshold (see
-    # db.consecutive_failure_streak()'s own docstring for why this can't
-    # just check ">=").
+    # Alert types 3/5 ("N lần fail liên tiếp", account-level) and the group one ("this group keeps failing") —
+    # both loud cards with buttons that fall back to plain text (human_bot/telegram_streaks.py) and that
+    # can be muted. should_alert() fires when the streak REACHES the threshold (see
+    # db.consecutive_failure_streak()'s docstring for why that cannot just be ">="), or once more when a
+    # mute has run out and the streak is still going. Never lets a problem in here escape: the task has
+    # already run and been logged.
     if not success:
-        streak = db.consecutive_failure_streak(
-            request.account_id, request.action, max_rows=_CONSECUTIVE_FAILURE_ALERT_THRESHOLD + 1,
+        try:
+            await _alert_on_streaks(request, message)
+        except Exception:  # noqa: BLE001 — a notification must never fail the task it reports on
+            logger.exception("could not check or send the failure-streak alerts")
+
+
+async def _alert_on_streaks(request: TaskRequest, message: str) -> None:
+    from human_bot import telegram_streaks  # local import — it imports modules that import this one
+    streak = db.consecutive_failure_streak(
+        request.account_id, request.action, max_rows=_CONSECUTIVE_FAILURE_ALERT_THRESHOLD + 1,
+    )
+    # (disk reads in the checks below — off the event loop thread)
+    is_group_post = request.action == "post_to_group" and bool(request.target_url)
+    if await asyncio.to_thread(
+        telegram_streaks.should_alert, telegram_streaks.account_key(request.account_id, request.action),
+        streak, _CONSECUTIVE_FAILURE_ALERT_THRESHOLD,
+    ):
+        # (a comment's target is a post, not a group - only a group post names its group)
+        await telegram_streaks.send_alert(
+            request.account_id, request.action, streak, message, target_url=request.target_url if is_group_post else None,
         )
-        if streak == _CONSECUTIVE_FAILURE_ALERT_THRESHOLD:
-            # With [⏻ Tắt] [⚠ Tạm dừng] [👌 Đã biết] buttons (human_bot/telegram_streaks.py);
-            # falls back to the plain text if the card cannot be sent.
-            from human_bot import telegram_streaks  # local import — it imports modules that import this one
-            await telegram_streaks.send_alert(request.account_id, request.action, streak, message)
+        return  # one alert for this failure: the account card already names the group (a later group streak past 3 stays quiet)
+    # Is it ONE GROUP that keeps failing? Failures that say nothing about the group (no network, slow Facebook,
+    # a dead browser) are not counted - and such a failure must not repeat an alert either: it leaves the
+    # streak where it was, so only a failure that itself counts can alert.
+    if is_group_post and not failure_info.is_infrastructure(message):
+        group_streak = await asyncio.to_thread(
+            db.target_failure_streak, request.account_id, request.target_url, request.action,
+            _GROUP_FAILURE_ALERT_THRESHOLD + 1, failure_info.is_infrastructure,
+        )
+        if await asyncio.to_thread(
+            telegram_streaks.should_alert, telegram_streaks.group_key(request.account_id, request.target_url),
+            group_streak, _GROUP_FAILURE_ALERT_THRESHOLD,
+        ):
+            await telegram_streaks.send_group_alert(request.account_id, request.target_url, group_streak, message)
 
 
 def _owner_session_usable(account) -> bool:

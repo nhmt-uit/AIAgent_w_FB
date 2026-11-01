@@ -765,3 +765,36 @@ def consecutive_failure_streak(account_id: str, action: str, max_rows: int = 50)
         return streak
     finally:
         conn.close()
+
+
+def target_failure_streak(
+    account_id: str, target_url: str, action: str, max_rows: int = 50, ignore_message=None,
+) -> int:
+    """How many consecutive genuine attempts at this exact (account, target, action) failed,
+    newest first, until a success (2026-11-01, the "this group keeps failing" alert). Early-exit
+    refusals never count (they never reached Facebook). `ignore_message(message) -> bool` names
+    failures that say nothing about the TARGET (no network, slow Facebook...): they neither count
+    nor end the run. Capped at `max_rows` like consecutive_failure_streak() — callers pass the
+    threshold + 1 and alert only when the result EQUALS the threshold."""
+    conn = _connect()
+    try:
+        cur = conn.execute(
+            "SELECT success, message FROM action_log WHERE account_id = ? AND action = ? AND target_url = ? "
+            "ORDER BY created_at DESC, id DESC LIMIT ?",
+            (account_id, action, target_url, max_rows * _RAW_ROW_FETCH_MULTIPLIER * 2),
+        )
+        streak = 0
+        for row in cur.fetchall():
+            message = row["message"] or ""
+            if message.startswith(_EARLY_EXIT_MESSAGE_PREFIXES):
+                continue
+            if row["success"]:
+                break
+            if ignore_message is not None and ignore_message(message):
+                continue
+            streak += 1
+            if streak >= max_rows:
+                break
+        return streak
+    finally:
+        conn.close()

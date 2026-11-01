@@ -42,6 +42,15 @@ class FailureInfo:
         return self.safety != NO_RETRY
 
 
+# Causes that say nothing about the TARGET (the machine's network, Facebook being slow, the browser dying):
+# a group that "fails" for these reasons is not a bad group.
+INFRASTRUCTURE_CODES = frozenset({"network", "network_mid", "slow_load", "browser_closed", "browser_closed_mid"})
+
+
+def is_infrastructure(message: str | None) -> bool:
+    return classify(message).code in INFRASTRUCTURE_CODES
+
+
 def technical_line(message: str, limit: int = 110) -> str:
     """First line of the raw message, trimmed — kept as a small footnote, not the headline."""
     first = (message or "").strip().splitlines()[0] if (message or "").strip() else ""

@@ -704,3 +704,34 @@ def test_a_field_that_cannot_be_written_fails_cleanly_without_leaving_a_temp_fil
         failure_tickets.create(account_id="a", weird=pathlib.Path("/x"))                         # not JSON-serialisable
     assert not list(failure_tickets.STORE_PATH.parent.glob("*.tmp"))
     assert failure_tickets.create(account_id="a")["id"]                                           # and the store still works
+
+
+# --- phase 3: what counts as a failure of the TARGET ---------------------------------------------------------------------------
+
+def test_infrastructure_failures_say_nothing_about_the_target():
+    for message in ("error:Page.goto: net::ERR_INTERNET_DISCONNECTED at https://www.facebook.com/",
+                    "error:Page.goto: Timeout 30000ms exceeded.", "error:Page.goto: Target page, context or browser has been closed",
+                    "error:Page.wait_for_timeout: Target page, context or browser has been closed"):
+        assert failure_info.is_infrastructure(message)
+    for message in ('error:Locator.wait_for: Timeout 30000ms exceeded.\nCall log:\n  - waiting for get_by_role("dialog")',
+                    "post_button_still_visible_after_click", "target_content_unavailable", "something else entirely", None):
+        assert not failure_info.is_infrastructure(message)
+
+
+def test_target_failure_streak_counts_only_this_targets_own_failures(isolated_db):
+    A, B = "https://www.facebook.com/groups/1", "https://www.facebook.com/groups/2"
+    UI = "error:Locator.wait_for: Timeout 30000ms exceeded."
+    NET = "error:Page.goto: net::ERR_INTERNET_DISCONNECTED at x"
+
+    def log(url, ok, message="", account="a"):
+        db.log_action(account_id=account, action="post_to_group", success=ok, target_url=url, message=message)
+
+    for url, ok, message in ((A, False, UI), (B, True, ""), (A, False, NET), (A, False, "account_paused:a"), (A, False, UI), (B, False, UI), (A, False, UI)):
+        log(url, ok, message)
+    ignore = failure_info.is_infrastructure
+    assert db.target_failure_streak("a", A, "post_to_group", 4, ignore) == 3          # the network failure is ignored, the early-exit refusal never counts
+    assert db.target_failure_streak("a", A, "post_to_group", 4) == 4                  # without the filter the network failure counts (capped at max_rows)
+    assert db.target_failure_streak("a", B, "post_to_group", 4, ignore) == 1          # B: a success, then one failure
+    assert db.target_failure_streak("other", A, "post_to_group", 4, ignore) == 0     # another account's history is separate
+    log(A, True)
+    assert db.target_failure_streak("a", A, "post_to_group", 4, ignore) == 0          # a success ends the run

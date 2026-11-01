@@ -1145,6 +1145,12 @@ Telegram dùng nội dung đã soạn sẵn; muốn sửa chữ vẫn phải và
   không thử lại hàng loạt vì sẽ cùng hỏng lại — thử từng lỗi ở `/error`.
   Tin báo đỏ **"N lần thất bại LIÊN TIẾP"** nay có nút **"Tắt"** (một chạm, bật lại là chạy ngay), **"Tạm dừng"**
   (hỏi xác nhận, vì kích hoạt lại phải hạ nhiệt) và **"Đã biết"**; tin tự đổi theo trạng thái thật của tài khoản.
+- **Cảnh báo "nhóm hỏng liên tục" và nút "Im" (01/11, giai đoạn 3).** Khi cùng một tài khoản đăng vào cùng một nhóm lỗi 3 lần
+  liên tiếp (không tính lỗi do mạng, Facebook chậm hay trình duyệt đóng, vì những lỗi đó không nói gì về nhóm), bot gửi **một tin báo**:
+  nhóm nào, lỗi gì, có thể do tài khoản bị nhóm chặn, bài đang chờ quản trị viên duyệt hoặc nhóm đổi quyền đăng, và chỗ sửa hoặc xoá
+  nhóm. Theo quyết định của chủ dự án, bot **chỉ báo, không tự ngưng** nhóm đó, và cũng **không tự thử lại** các lỗi do hạ tầng
+  (mọi lỗi vẫn chờ bạn bấm). Cả tin "N lần thất bại liên tiếp" lẫn tin nhóm đều có nút **"Im 1 giờ"** và **"Im đến 6h sáng"**:
+  bot ngừng báo đúng loại đó trong thời gian chọn, hết giờ mà còn lỗi thì báo lại một lần.
 - **Phản hồi của bot dễ đọc hơn (01/11).** Tin trả lời các lệnh nay dùng chữ thường ngày thay cho tên nội bộ (ví dụ "Đăng bài"
   thay vì `post_to_group`), ghi rõ giờ Nhật (JST), chia mục có biểu tượng và nói thẳng bước tiếp theo. `/help` chia thành
   "Xem nhanh", "Xử lý (có nút bấm)" và "Tự động đăng", kèm mẹo trả lời tin lỗi để đăng lại bằng nội dung mới. `/report` và bản
