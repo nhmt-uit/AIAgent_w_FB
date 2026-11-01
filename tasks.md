@@ -6814,3 +6814,48 @@ Dữ liệu thật trước khi hỏi owner (read-only, 241 lượt, 57 lỗi th
 - Test: `tests/test_telegram_streaks.py`, `test_telegram_phase2_wiring.py`, `test_telegram_failures.py`. Suite 1140 pass.
   **CHƯA thử với bot thật.**
 
+### /admin/accounts: giao diện gọn hơn — mỗi tài khoản một dòng (2026-11-01)
+
+Owner: "UI vẫn xấu, có những cái thừa không cần thiết". Mình xem trang thật (dữ liệu mẫu có cá nhân đang tắt, Page, tạm dừng), liệt kê 7
+điểm thừa và đề xuất 2 mức (A đầy đủ / B dọn nhẹ); owner chọn **A**.
+- **Bỏ:** lặp tiêu đề "Tài khoản" 4 lần (menu, H1, tab con, thẻ "Tài khoản hiện có"), đoạn giới thiệu dài về `bootstrap_login.py` (đã nằm
+  trong hộp "Đăng ký"), cột **Tuổi tài khoản** và **Nguồn** (nay là 1 dòng nhỏ ở cuối menu ⋯ "Mức giới hạn: … · nguồn"), 3 chip/dòng chữ
+  lặp thông tin Page ↔ chủ ("Page: …", "↳ chủ", "Hồ sơ cá nhân: …" — nay là tooltip của tên Page), nút "Cách tạo phiên riêng" lúc nào cũng
+  hiện (chỉ hiện khi Page thiếu phiên riêng và chế độ cần), chữ kỹ thuật `storage_state.json` ("chưa đăng nhập"). Bảng 6 cột → danh sách.
+- **Bố cục:** mỗi tài khoản 1 dòng 3 vùng (ai · tình trạng · việc cần làm); **Page nằm ngay dưới tài khoản chủ** (Page không có chủ hợp lệ
+  được liệt riêng ở cuối kèm cảnh báo); đầu thẻ chỉ "N tài khoản · M cần chú ý" (tạm dừng / chưa đăng nhập / Page cấu hình thiếu —
+  tài khoản tắt chủ động KHÔNG tính); **MỘT nút chính chỉ khi có việc cần làm** (▶ Kích hoạt lại / ▶ Bật lại / 🌐 Đăng nhập), còn lại trong
+  menu **⋯**: Giới hạn tốc độ, Đăng nhập (lại) & lưu phiên (tài khoản cá nhân), Tắt, Tạm dừng — mỗi mục có 1 dòng hậu quả —, Xoá (đỏ, vẫn
+  xác nhận). Tên tài khoản là link tới báo cáo. Trên điện thoại các vùng xếp dọc.
+- **Giữ nguyên hành vi:** mọi route / xác nhận / lý do tạm dừng / thời gian hạ nhiệt / chọn cách chạy của Page; chỉ đổi cách dựng HTML
+  (`_acct_row_html`, `_status_cell`, `_page_session_note`…) + CSS `.acct-*`. Menu là `<details>` (không cần JS), 1 script nhỏ đóng menu khi bấm ra ngoài.
+- Đã chạy thật trên trình duyệt + route thật: mở/đóng menu, "Tắt" → hộp xác nhận → "⏻ Đã tắt" + nút "▶ Bật lại" → "● Hoạt động", "Giới hạn" mở hộp
+  thoại và đóng menu; ảnh chụp desktop (menu mở) và điện thoại 390px.
+- **Rà soát /code-review:** tài khoản cá nhân đang tắt/tạm dừng mà chưa có phiên không còn lối đăng nhập (nút chính là Bật lại, mục đăng nhập bị ẩn)
+  → mục đăng nhập luôn có trong menu của tài khoản cá nhân; script đóng menu chống đăng ký 2 lần. Cùng đợt sửa 2 điểm của giai đoạn 3 (chưa commit):
+  bấm Tắt/Tạm dừng trên thẻ đang "im" làm mất nút bỏ im mà bản ghi im vẫn còn → hành động trên tài khoản kết thúc lượt im của thẻ đó; "Báo lại bình
+  thường" trên thẻ cũ gỡ nhầm lượt im của thẻ mới → bản ghi im nhớ thẻ tạo ra nó. **Biết, chưa đổi:** khoá nhóm so sánh URL đúng từng ký tự (nhóm
+  ghi 2 kiểu URL sẽ đếm riêng) — danh sách nhóm của hệ thống dùng một kiểu thống nhất nên hiếm gặp.
+- Test: `tests/test_admin_accounts_list.py` (mới, 14 test) + sửa 2 test Page cũ. Suite 1157 pass.
+
+### /admin/accounts: làm tương tự cho tab "Đồng bộ" và "Tài khoản Telegram" (2026-11-01)
+
+Owner: "Tốt, tương tự với màn hình Tài khoản tab Đồng bộ và Tài khoản Telegram". Xem trang thật trước (ảnh chụp), rồi dọn các điểm thừa:
+- **Đồng bộ:** bỏ tiêu đề lặp "Đồng bộ dữ liệu bên B theo tài khoản", 2 gạch đầu dòng giải thích dài + đoạn cấu hình luôn hiện. Nay: dòng đầu
+  "N tài khoản · tự nhận job / ứng viên mới từ bên B" + nút "⚙️ Cấu hình chu kỳ & ngưỡng lọc"; giải thích hai công tắc gói trong
+  "Hai công tắc này làm gì?" (mở khi cần) và tooltip ⓘ ở tiêu đề cột; **vẫn là bảng** (ma trận công tắc nên bảng hợp lý hơn danh sách) nhưng
+  Page nằm ngay dưới tài khoản chủ (thụt vào, 📄) giống tab Tài khoản; "lần đồng bộ gần nhất" là 1 badge + giờ + 1 dòng số liệu
+  ("67 job · 6 ứng viên lấy về · 12 bài + 0 bình luận mới lên lịch"; "candidate" → "ứng viên"). Tài khoản tắt/tạm dừng vẫn hiện ghi chú thay công tắc.
+- **Telegram:** bảng 3 cột × 3 nút/dòng → danh sách "tên + Chat ID" với menu **⋯** (✏️ Sửa tên · 🧪 Gửi tin thử · 🗑 Xoá — Xoá vẫn xác nhận);
+  đầu thẻ "N người nhận tin từ bot · báo động, tóm tắt và các lệnh /schedule, /error…" + nút "➕ Thêm thủ công"; người mới nhắn bot thành
+  hộp vàng "🔔 N người mới nhắn vào bot, chưa được thêm" với nút Thêm từng người (đoạn hướng dẫn dài nói "danh sách phía trên" kể cả khi không có
+  gì → gói vào "Cách thêm người nhận", mở khi cần).
+- **Dùng chung:** menu ⋯ thành thành phần chung (`_row_menu_html`, `_menu_form`, `_menu_button`, CSS `.row-menu*`), thứ tự "Page dưới chủ" chung
+  (`_account_rows_in_order`) cho cả 3 danh sách.
+- Đã chạy thật trên trình duyệt + route thật: bật/tắt công tắc đồng bộ (hộp xác nhận), thêm nhanh người mới nhắn bot, mở "Sửa tên" (menu tự đóng), xoá
+  người nhận (xác nhận); ảnh chụp desktop + điện thoại.
+- **Rà soát /code-review (6 phát hiện):** sửa — menu ⋯ trên điện thoại mở ra NGOÀI màn hình (nút căn trái nhưng hộp neo phải; nay neo theo dòng, rộng
+  tối đa bằng màn hình); số "cần chú ý" tính cả Page đã tắt chủ động; nút "Đăng nhập" lặp ở menu khi nút chính đã là Đăng nhập; tham số thừa; ghi rõ ở docstring
+  rằng `label/small/confirm` của menu là HTML do người gọi dựng (phải html.escape). **Bỏ có chủ ý:** câu "tài khoản đăng ký ở đây dùng rate limit /
+  nhóm mặc định, chỉnh ở /admin/config và /admin/groups" khỏi đầu trang (mức giới hạn nay là mục đầu của menu ⋯, nhóm có tab riêng trên thanh menu).
+- Test: thêm vào `tests/test_admin_accounts_list.py` (nay 24 test), sửa 1 test Telegram. Suite 1167 pass.

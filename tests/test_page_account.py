@@ -375,7 +375,8 @@ def test_the_accounts_list_shows_the_page_and_personal_names(client):
         "account_id": "page_donkysu", "display_name": "D", "page_name": PAGE, "personal_name": ME, "owner_account_id": "tu_iizuki",
     })
     html = client.get("/admin/accounts").text
-    assert f"Page: {PAGE}" in html and f"Hồ sơ cá nhân: {ME}" in html and "↳ " in html
+    assert f"Page: {PAGE}" in html and f"hồ sơ cá nhân: {ME}" in html          # kept as the name's tooltip, not three lines of text
+    assert "acct-child" in html and "Các Page:" not in html and "Hồ sơ cá nhân:" not in html
 
 
 def test_a_plain_account_has_no_page_or_personal_name(client):
@@ -461,8 +462,8 @@ def test_a_page_cannot_be_the_owner_of_another_page(client):
 def test_the_list_links_a_page_to_its_owner_and_the_owner_to_its_pages(client):
     _register(client)
     html = client.get("/admin/accounts").text
-    assert 'href="/admin/reports?account_id=tu_iizuki"' in html and "Xem báo cáo của tài khoản cá nhân sở hữu Page này" in html
-    assert "Các Page:" in html and 'href="/admin/reports?account_id=page_donkysu"' in html
+    assert 'href="/admin/reports?account_id=tu_iizuki"' in html and 'href="/admin/reports?account_id=page_donkysu"' in html
+    assert html.index('data-account="tu_iizuki"') < html.index('data-account="page_donkysu"')     # the Page sits right under its owner
     from human_bot.config import pages_of
     assert [a.account_id for a in pages_of("tu_iizuki")] == ["page_donkysu"]
     assert pages_of("page_donkysu") == []

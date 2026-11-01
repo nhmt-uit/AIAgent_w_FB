@@ -461,14 +461,14 @@ def test_edit_button_present_on_each_recipient_row(client):
 
 # --- "Thêm thủ công" moved to the top (owner follow-up, 2026-10-05) --------
 
-def test_manual_add_button_appears_before_the_recipients_table(client):
+def test_manual_add_button_appears_before_the_recipients_list(client):
     add_telegram_recipient("931000937", "Tu")
     resp = client.get("/admin/accounts?tab=telegram")
     telegram_panel_start = resp.text.index('id="tab-telegram"')
     telegram_panel_html = resp.text[telegram_panel_start:]
     add_btn_pos = telegram_panel_html.index("➕ Thêm thủ công")
-    table_pos = telegram_panel_html.index('<table class="data-table">')
-    assert add_btn_pos < table_pos
+    list_pos = telegram_panel_html.index('<div class="tg-list">')
+    assert add_btn_pos < list_pos
 
 
 def test_manual_add_button_appears_before_the_pending_senders_section(client):

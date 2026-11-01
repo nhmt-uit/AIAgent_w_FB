@@ -1145,6 +1145,13 @@ Telegram dùng nội dung đã soạn sẵn; muốn sửa chữ vẫn phải và
   không thử lại hàng loạt vì sẽ cùng hỏng lại — thử từng lỗi ở `/error`.
   Tin báo đỏ **"N lần thất bại LIÊN TIẾP"** nay có nút **"Tắt"** (một chạm, bật lại là chạy ngay), **"Tạm dừng"**
   (hỏi xác nhận, vì kích hoạt lại phải hạ nhiệt) và **"Đã biết"**; tin tự đổi theo trạng thái thật của tài khoản.
+- **Trang Tài khoản gọn hơn (01/11).** Thay bảng sáu cột bằng danh sách: mỗi tài khoản một dòng, **Page nằm ngay dưới tài khoản cá nhân
+  chủ của nó**, đầu trang cho biết có bao nhiêu tài khoản và bao nhiêu cái cần chú ý. Mỗi dòng chỉ có **một nút chính khi có việc cần
+  làm** (Đăng nhập, Bật lại hoặc Kích hoạt lại); mọi thứ còn lại (giới hạn tốc độ, Tắt, Tạm dừng, Xoá) nằm trong menu "⋯" kèm một dòng
+  nói rõ hậu quả. Bỏ các phần chỉ gây rối: cột tuổi tài khoản và nguồn (chuyển xuống cuối menu), các thẻ lặp thông tin Page, chữ kỹ thuật
+  về file phiên. Cách các nút hoạt động không đổi. Hai tab còn lại của trang được dọn theo cùng kiểu: **Đồng bộ** giữ dạng bảng công tắc nhưng
+  bớt lời giải thích (nằm trong mục "Hai công tắc này làm gì?") và đặt Page dưới tài khoản chủ; **Tài khoản Telegram** thành danh sách người nhận
+  với menu "⋯" (Sửa tên, Gửi tin thử, Xoá), những người mới nhắn vào bot hiện thành một hộp nổi bật để thêm bằng một cú bấm.
 - **Cảnh báo "nhóm hỏng liên tục" và nút "Im" (01/11, giai đoạn 3).** Khi cùng một tài khoản đăng vào cùng một nhóm lỗi 3 lần
   liên tiếp (không tính lỗi do mạng, Facebook chậm hay trình duyệt đóng, vì những lỗi đó không nói gì về nhóm), bot gửi **một tin báo**:
   nhóm nào, lỗi gì, có thể do tài khoản bị nhóm chặn, bài đang chờ quản trị viên duyệt hoặc nhóm đổi quyền đăng, và chỗ sửa hoặc xoá

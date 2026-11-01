@@ -1039,16 +1039,62 @@ _PAGE_STYLE = """
   .badge-warn { @apply bg-amber-50 text-amber-800; }
   .badge-bad { @apply bg-red-50 text-red-700; }
 
-  /* Facebook-Page accounts (2026-10-31): small tags under an account's name
-     and a compact mode picker, so a Page's link to its owner and its run
-     mode read at a glance instead of as long sentences in a narrow column. */
-  .chip-row { @apply flex flex-wrap gap-1.5 mt-1.5; }
-  .chip { @apply inline-flex items-center gap-1 text-xs font-semibold px-2 py-0.5 rounded-full bg-sky-50 text-sky-700 border border-sky-100 no-underline; }
-  a.chip:hover { @apply bg-sky-100 no-underline; }
-  .chip-owner { @apply bg-gray-50 text-gray-600 border-gray-200 font-medium; }
-  a.chip-owner:hover { @apply bg-gray-100; }
-  .chip-warn { @apply bg-amber-50 text-amber-800 border-amber-200; }
-  select.mode-select { @apply w-auto max-w-full text-xs py-1 px-2 mt-1; }
+  /* /admin/accounts list (2026-11-01 redesign): one row per account, a Page nested under its
+     owner, one contextual button and a "⋯" menu for the rest. */
+  .acct-head { @apply flex flex-wrap items-center justify-between gap-3 mb-3; }
+  .acct-count { @apply text-sm font-semibold text-gray-900; }
+  .acct-attn { @apply text-sm font-semibold text-amber-700; }
+  .acct-list { @apply list-none p-0 m-0; }
+  .acct-row { @apply grid items-start gap-x-4 gap-y-2 py-3.5 border-t border-gray-100; grid-template-columns: minmax(0, 1.2fr) minmax(0, 1.3fr) 180px; }
+  .acct-row:first-child { @apply border-t-0; }
+  .acct-child .acct-who { @apply ml-4 pl-4 border-l-2 border-gray-100; }
+  .acct-title { @apply flex flex-wrap items-baseline gap-x-2; }
+  .acct-name { @apply font-semibold text-gray-900 no-underline; }
+  a.acct-name:hover { @apply text-indigo-600; }
+  .acct-aid { @apply text-xs text-gray-400; }
+  .acct-meta { @apply mt-1 text-xs text-gray-500; }
+  .acct-meta.warn { @apply text-amber-700; }
+  .acct-mode { @apply inline-flex items-center gap-1.5 m-0; }
+  .acct-note { @apply mt-1 text-xs text-gray-500; word-break: normal; }
+  .acct-sess { @apply font-medium; }
+  .acct-sess-ok { @apply text-emerald-700; }
+  .acct-sess-warn { @apply text-amber-700; }
+  .acct-sess-bad { @apply text-red-700; }
+  .acct-actions { @apply flex items-center justify-end gap-1.5; }
+  .st { @apply inline-block text-xs font-semibold px-2.5 py-0.5 rounded-full; }
+  .st-ok { @apply bg-emerald-50 text-emerald-700; }
+  .st-off { @apply bg-gray-100 text-gray-600; }
+  .st-paused { @apply bg-red-50 text-red-700; }
+  details.row-menu { @apply relative; }
+  details.row-menu > summary { @apply list-none cursor-pointer select-none w-8 h-8 inline-flex items-center justify-center rounded-lg border border-gray-200 bg-white text-gray-600 text-lg leading-none; }
+  details.row-menu > summary::-webkit-details-marker { display: none; }
+  details.row-menu > summary:hover, details.row-menu[open] > summary { @apply bg-gray-50 text-gray-900; }
+  .row-menu-pop { @apply absolute right-0 top-full mt-1 z-30 bg-white border border-gray-200 rounded-xl shadow-lg p-1.5; width: min(18rem, calc(100vw - 2rem)); }
+  .row-menu-pop form { @apply m-0; }
+  button.menu-item { @apply block w-full text-left bg-transparent text-gray-900 border-0 rounded-lg px-3 py-2 text-[13px] font-semibold; }
+  button.menu-item:hover { @apply bg-gray-50 text-gray-900; }
+  button.menu-item small { @apply block text-[11px] font-normal text-gray-500 mt-0.5; }
+  button.menu-item.danger { @apply text-red-700; }
+  button.menu-item.danger:hover { @apply bg-red-50 text-red-700; }
+  .row-menu-sep { @apply border-0 border-t border-gray-100 my-1; }
+  .row-menu-info { @apply px-3 pt-1.5 pb-1 text-[11px] text-gray-400; }
+  .sync-table tr.sync-child td:first-child { @apply pl-9; }
+  .sync-table td { @apply align-top; }
+  .tg-list { @apply mt-1; }
+  .tg-row { @apply flex items-center justify-between gap-3 py-3 border-t border-gray-100; }
+  .tg-list > .tg-row:first-child { @apply border-t-0; }
+  .tg-pending { @apply bg-amber-50 border border-amber-200 rounded-xl px-4 py-3 mb-3; }
+  .tg-pending .tg-row { @apply border-amber-100 py-2; }
+  .tg-pending .acct-count + .tg-row { @apply border-t-0; }
+  @media (max-width: 720px) {
+    .acct-row { grid-template-columns: minmax(0, 1fr); }
+    .acct-actions { justify-content: flex-start; }
+    .acct-actions { position: relative; }
+    .acct-actions details.row-menu { position: static; }
+    .acct-actions .row-menu-pop { left: 0; right: auto; }
+    .acct-child .acct-who { @apply ml-2 pl-3; }
+  }
+  select.mode-select { @apply w-auto max-w-full text-xs py-1 px-2; }
   .mini-help { @apply mt-1.5 text-xs text-gray-500; }
   .mini-help summary { @apply cursor-pointer text-indigo-600 font-medium; }
   .mini-help code { @apply block bg-gray-50 border border-gray-200 rounded-md px-2 py-1 mt-1 text-[11px] text-gray-700 break-all whitespace-pre-wrap; }
@@ -2355,73 +2401,64 @@ def _telegram_recipients_content_html(flash: str | None = None, error: str | Non
             cid_esc = html.escape(cid)
             name_esc = html.escape(info["name"])
             pending_rows.append(f"""
-<tr>
-  <td>{cid_esc}</td>
-  <td>{name_esc}</td>
-  <td class="col-actions">
-    <form method="post" action="/admin/accounts/telegram/add" hx-post="/admin/accounts/telegram/add"
-          hx-target="#modal-root" hx-swap="innerHTML" style="display:inline;">
-      <input type="hidden" name="chat_id" value="{cid_esc}">
-      <input type="hidden" name="label" value="{name_esc}">
-      <button type="submit" class="btn-small">➕ Thêm</button>
-    </form>
-  </td>
-</tr>""")
+<div class="tg-row">
+  <div><span class="acct-name">{name_esc}</span> <span class="acct-aid">{cid_esc}</span></div>
+  <form method="post" action="/admin/accounts/telegram/add" hx-post="/admin/accounts/telegram/add"
+        hx-target="#modal-root" hx-swap="innerHTML" style="margin:0;">
+    <input type="hidden" name="chat_id" value="{cid_esc}">
+    <input type="hidden" name="label" value="{name_esc}">
+    <button type="submit" class="btn-small">➕ Thêm</button>
+  </form>
+</div>""")
         pending_html = f"""
-<p class="page-desc" style="margin:0 0 6px;">🔔 {len(pending)} người mới nhắn vào bot, chưa được thêm — bấm "➕ Thêm" để thêm ngay, không cần gõ tay Chat ID:</p>
-<div class="table-scroll" style="margin-bottom:16px;">
-  <table class="data-table">
-    <thead><tr><th>Chat ID</th><th>Tên (Telegram)</th><th>Thao tác</th></tr></thead>
-    <tbody>{"".join(pending_rows)}</tbody>
-  </table>
+<div class="tg-pending">
+  <div class="acct-count">🔔 {len(pending)} người mới nhắn vào bot, chưa được thêm</div>
+  {"".join(pending_rows)}
 </div>"""
 
     if not recipients:
-        rows_html = '<tr><td colspan="3" class="muted">Chưa có ai nhận báo động Telegram.</td></tr>'
+        rows_html = '<div class="empty-state">Chưa có ai nhận báo động Telegram.</div>'
     else:
         rows = []
         for r in recipients:
             cid = html.escape(r["chat_id"])
             label = html.escape(r["label"])
-            rows.append(f"""
-<tr>
-  <td>{cid}</td>
-  <td>{label}</td>
-  <td class="col-actions">
-    <button type="button" class="btn-small"
-            hx-get="/admin/accounts/telegram/{cid}/edit-modal" hx-target="#modal-root" hx-swap="innerHTML">✏️ Sửa</button>
-    <form method="post" action="/admin/accounts/telegram/{cid}/test" style="display:inline;"
-          hx-post="/admin/accounts/telegram/{cid}/test" hx-target="#telegram-recipients-content" hx-swap="outerHTML">
-      <button type="submit" class="btn-small">🧪 Gửi thử</button>
-    </form>
-    <form method="post" action="/admin/accounts/telegram/{cid}/delete" style="display:inline;"
-          hx-post="/admin/accounts/telegram/{cid}/delete" hx-target="#telegram-recipients-content" hx-swap="outerHTML"
-          hx-confirm="Xoá người nhận '{label}' (chat ID {cid})? Người này sẽ không còn nhận báo động/trả lời hỏi-đáp từ bot nữa.">
-      <button type="submit" class="btn-secondary btn-small">Xoá</button>
-    </form>
-  </td>
-</tr>""")
+            menu = _row_menu_html([
+                _menu_button(
+                    f'hx-get="/admin/accounts/telegram/{cid}/edit-modal" hx-target="#modal-root" hx-swap="innerHTML"',
+                    "✏️ Sửa tên", "Đổi tên gợi nhớ (Chat ID giữ nguyên)",
+                ),
+                _menu_form(
+                    f"/admin/accounts/telegram/{cid}/test", {}, "🧪 Gửi tin thử", "Gửi một tin test tới người này để kiểm tra",
+                    target="#telegram-recipients-content",
+                ),
+                '<hr class="row-menu-sep">',
+                _menu_form(
+                    f"/admin/accounts/telegram/{cid}/delete", {}, "🗑 Xoá", "Người này không còn nhận báo động / trả lời từ bot",
+                    target="#telegram-recipients-content", danger=True,
+                    confirm=f"Xoá người nhận '{label}' (chat ID {cid})? Người này sẽ không còn nhận báo động/trả lời hỏi-đáp từ bot nữa.",
+                ),
+            ])
+            rows.append(
+                f'<div class="tg-row"><div><span class="acct-name">{label}</span> <span class="acct-aid">{cid}</span></div>{menu}</div>'
+            )
         rows_html = "".join(rows)
-
-    add_manual_btn = (
-        '<button type="button" hx-get="/admin/accounts/telegram/add-modal" '
-        'hx-target="#modal-root" hx-swap="innerHTML">➕ Thêm thủ công</button>'
-    )
 
     return f"""
 <div class="card" id="telegram-recipients-content">
   {flash_html}{err_html}
-  <div style="margin-bottom:14px;">{add_manual_btn}</div>
-  {pending_html}
-  <p class="page-desc" style="margin-top:0;">{len(recipients)} người đang nhận báo động/có thể hỏi-đáp qua bot
-    Telegram. Cách thêm người mới: bảo họ nhắn bất kỳ gì vào {_telegram_bot_link_html()} —
-    trong vài giây họ sẽ hiện ở danh sách "chưa được thêm" phía trên, bấm "➕ Thêm" là xong, không cần gõ tay.</p>
-  <div class="table-scroll">
-    <table class="data-table">
-      <thead><tr><th>Chat ID</th><th>Tên gợi nhớ</th><th>Thao tác</th></tr></thead>
-      <tbody>{rows_html}</tbody>
-    </table>
+  <div class="acct-head">
+    <div><span class="acct-count">{len(recipients)} người nhận tin từ bot</span>
+      <span class="acct-aid">· báo động, tóm tắt và các lệnh /schedule, /error…</span></div>
+    <button type="button" class="btn-small" hx-get="/admin/accounts/telegram/add-modal"
+            hx-target="#modal-root" hx-swap="innerHTML">➕ Thêm thủ công</button>
   </div>
+  {pending_html}
+  <div class="tg-list">{rows_html}</div>
+  <details class="mini-help" style="margin-top:12px;"><summary>Cách thêm người nhận</summary>
+    <div class="hint">Bảo họ nhắn bất kỳ gì vào {_telegram_bot_link_html()} — trong vài giây họ sẽ hiện ở mục
+      "người mới nhắn vào bot", bấm "➕ Thêm" là xong, không cần gõ tay Chat ID.</div>
+  </details>
 </div>"""
 
 
@@ -3520,24 +3557,24 @@ def _sync_content_html(saved: bool = False, oob: bool = False) -> str:
         )
 
     rows = []
-    for aid, account in accounts.items():
+    for aid, account, child in _account_rows_in_order(accounts):
         is_paused = account.status == AccountStatus.PAUSED
         # Paused blocks EVERY action (agent.py's run_task() rejects any
         # status != ACTIVE), sync included — so it already can't run
         # regardless of this override, and the toggle is replaced with a
         # plain note instead of an actionable switch.
         if account.status == AccountStatus.DISABLED:
-            sync_cell = '<span class="row-url">đã tắt — không sync</span>'
+            sync_cell = '<span class="acct-note">đã tắt — không sync</span>'
         elif is_paused:
-            sync_cell = '<span class="row-url">tạm dừng — đã chặn sync</span>'
+            sync_cell = '<span class="acct-note">tạm dừng — đã chặn sync</span>'
         else:
             sync_cell = _toggle_switch(
                 aid=aid, checked=aid not in sync_disabled_ids,
                 enable_url="/admin/accounts/sync-enable", disable_url="/admin/accounts/sync-disable",
-                title="Tự động lấy job/candidate mới từ bên B cho tài khoản này",
+                title="Tự động lấy job/ứng viên mới từ bên B cho tài khoản này",
                 confirm_on_uncheck=(
                     f"Tắt đồng bộ dữ liệu bên B cho tài khoản {aid}? Tài khoản vẫn hoạt động bình thường "
-                    "(đăng tay, comment...) — chỉ riêng việc tự lấy job/candidate mới từ bên B bị bỏ qua."
+                    "(đăng tay, comment...) — chỉ riêng việc tự lấy job/ứng viên mới từ bên B bị bỏ qua."
                 ),
             )
 
@@ -3558,23 +3595,23 @@ def _sync_content_html(saved: bool = False, oob: bool = False) -> str:
 
         entry = statuses.get(aid)
         if entry is None:
-            last_run_cell = '<span class="row-url">chưa chạy lần nào</span>'
+            last_run_cell = '<span class="acct-note">chưa chạy lần nào</span>'
         elif entry.get("status") == "ok":
             last_run_cell = (
-                f'<span class="badge" style="background:#ecfdf5;color:#059669;">✅ OK</span> '
-                f'{_local_dt_html(entry.get("last_run_at"))} — '
-                f'{entry.get("jobs_fetched", 0)} job, {entry.get("candidates_fetched", 0)} candidate lấy về, '
-                f'{entry.get("scheduled_posts", 0)} bài + {entry.get("scheduled_comments", 0)} comment mới lên lịch'
+                f'<span class="st st-ok">✅ OK</span> <span class="acct-aid">{_local_dt_html(entry.get("last_run_at"))}</span>'
+                f'<div class="acct-note">{entry.get("jobs_fetched", 0)} job · {entry.get("candidates_fetched", 0)} ứng viên lấy về · '
+                f'{entry.get("scheduled_posts", 0)} bài + {entry.get("scheduled_comments", 0)} bình luận mới lên lịch</div>'
             )
         else:
             last_run_cell = (
-                f'<span class="badge" style="background:#fef2f2;color:#dc2626;">⚠️ Lỗi</span> '
-                f'{_local_dt_html(entry.get("last_run_at"))} — {html.escape(str(entry.get("error", "")))}'
+                f'<span class="st st-paused">⚠️ Lỗi</span> <span class="acct-aid">{_local_dt_html(entry.get("last_run_at"))}</span>'
+                f'<div class="acct-note acct-sess-bad">{html.escape(str(entry.get("error", "")))}</div>'
             )
 
+        name = f'{"📄 " if account.page_name else ""}{html.escape(account.display_name)}'
         rows.append(f"""
-<tr>
-  <td>{html.escape(account.display_name)}<div class="row-url">{html.escape(aid)}</div></td>
+<tr class="{'sync-child' if child else ''}">
+  <td><span class="acct-name">{name}</span> <span class="acct-aid">{html.escape(aid)}</span></td>
   <td>{sync_cell}</td>
   <td>{sponsored_cell}</td>
   <td>{last_run_cell}</td>
@@ -3582,22 +3619,30 @@ def _sync_content_html(saved: bool = False, oob: bool = False) -> str:
 
     table = f"""
 <div class="table-scroll">
-  <table class="data-table">
-    <thead><tr><th>Tài khoản</th><th>Đồng bộ dữ liệu bên B</th><th>Chỉ đăng sponsored</th><th>Lần sync gần nhất</th></tr></thead>
+  <table class="data-table sync-table">
+    <thead><tr>
+      <th>Tài khoản</th>
+      <th title="Tắt thì tài khoản này ngừng tự lấy job/ứng viên mới từ bên B — vẫn đăng/bình luận bình thường qua /admin/post.">Đồng bộ ⓘ</th>
+      <th title="Bật thì tài khoản này CHỈ nhận job có sponsored_by (tin trả tiền), không bao giờ nhận job thường.">Chỉ sponsored ⓘ</th>
+      <th>Lần đồng bộ gần nhất</th>
+    </tr></thead>
     <tbody>{"".join(rows) or '<tr><td colspan="4" class="empty-state">Chưa có tài khoản nào</td></tr>'}</tbody>
   </table>
 </div>"""
 
     oob_attr = ' hx-swap-oob="true"' if oob else ""
+    count = f'<span class="acct-count">{len(accounts)} tài khoản</span>' if accounts else ""
     return f"""<div id="sync-content"{oob_attr}>
 {flash}
 <div class="card">
-  <h2>🔄 Đồng bộ dữ liệu bên B theo tài khoản</h2>
-  <ul class="page-desc" style="margin:0 0 12px;padding-left:20px;">
-    <li><strong>Đồng bộ dữ liệu bên B</strong>: tắt thì tài khoản này ngừng tự lấy job/candidate mới từ bên B — vẫn đăng/comment bình thường qua /admin/post, chỉ riêng bước tự lấy dữ liệu mới bị bỏ qua.</li>
-    <li><strong>Chỉ đăng sponsored</strong>: bật thì tài khoản này CHỈ nhận job có <code>sponsored_by</code> (tin trả tiền) — không bao giờ nhận job thường, dù còn dư hạn mức ngày. Dùng để luôn chừa sẵn chỗ, phản ứng ngay khi có job sponsored đến gấp.</li>
-  </ul>
-  <p class="page-desc">Cấu hình chu kỳ, khoảng cách, ngưỡng lọc, giới hạn tràn ngày... ở <a href="/admin/config?tab=sync">Cấu hình → Đồng bộ dữ liệu</a>.</p>
+  <div class="acct-head">
+    <div>{count} <span class="acct-aid">· tự nhận job / ứng viên mới từ bên B</span></div>
+    <a class="btn btn-secondary btn-small" href="/admin/config?tab=sync">⚙️ Cấu hình chu kỳ &amp; ngưỡng lọc</a>
+  </div>
+  <details class="mini-help" style="margin:0 0 10px;"><summary>Hai công tắc này làm gì?</summary>
+    <div class="hint"><strong>Đồng bộ</strong>: tắt thì tài khoản ngừng tự lấy job/ứng viên mới từ bên B — vẫn đăng/bình luận bình thường qua /admin/post.<br>
+    <strong>Chỉ sponsored</strong>: bật thì tài khoản CHỈ nhận job có <code>sponsored_by</code> (tin trả tiền), không bao giờ nhận job thường dù còn dư hạn mức ngày — để luôn chừa sẵn chỗ cho job sponsored đến gấp.</div>
+  </details>
   {table}
 </div>
 </div>"""
@@ -3641,90 +3686,275 @@ _PAGE_MODE_TEXT: dict[str, tuple[str, str]] = {
 }
 
 
-def _account_name_extras_html(aid: str, a, accounts: dict) -> str:
-    """Tags under an account's name: a Page shows what it is and which personal
-    account owns it; a personal account lists its Pages (each linking to that
-    account's report, so a Page's problems are traceable from its owner)."""
-    if a.page_name:
-        owner = accounts.get(a.owner_account_id)
-        if owner:
-            owner_chip = (
-                f'<a class="chip chip-owner" href="/admin/reports?account_id={html.escape(owner.account_id)}" '
-                f'title="Xem báo cáo của tài khoản cá nhân sở hữu Page này">↳ {html.escape(owner.display_name)}</a>'
-            )
-        else:
-            owner_chip = '<span class="chip chip-warn">⚠ chưa liên kết tài khoản cá nhân</span>'
-        who = (
-            f'<div class="row-url" style="word-break:normal;">Hồ sơ cá nhân: {html.escape(a.personal_name)}</div>'
-            if a.personal_name else
-            '<div class="row-url" style="color:#b45309; word-break:normal;">⚠ chưa khai báo tên hồ sơ cá nhân — bot sẽ từ chối đăng</div>'
-        )
-        return (
-            f'<div class="chip-row"><span class="chip" title="Tài khoản này chạy bằng danh tính Facebook Page">'
-            f'📄 Page: {html.escape(a.page_name)}</span>{owner_chip}</div>{who}'
-        )
-    children = pages_of(aid, accounts)
-    if not children:
-        return ""
-    chips = "".join(
-        f'<a class="chip" href="/admin/reports?account_id={html.escape(p.account_id)}" '
-        f'title="Xem báo cáo của Page {html.escape(p.page_name)}">📄 {html.escape(p.page_name)}</a>'
-        for p in children
+def _row_menu_html(items: list[str]) -> str:
+    """The "⋯" menu at the end of a row (a <details>: no JS to open it; the page's small script closes it on an outside click)."""
+    return (
+        '<details class="row-menu"><summary aria-label="Thêm thao tác" title="Thêm thao tác">⋯</summary>'
+        f'<div class="row-menu-pop">{"".join(items)}</div></details>'
     )
-    return f'<div class="chip-row" title="Các Page tạo từ tài khoản này"><span class="hint" style="margin:0;align-self:center;">Các Page:</span>{chips}</div>'
 
 
-def _page_session_cell_html(aid: str, a, accounts: dict) -> str:
-    """Session column of a Page account: what its login state means for the
-    chosen mode, the mode picker, and (when it has no own session) how to
-    create one. No "Đăng nhập" button: that flow logs in as the PERSONAL
-    profile, which is exactly what a Page's own session must not be."""
+def _menu_form(
+    url: str, hidden: dict[str, str], label: str, small: str, *, target: str = "#accounts-content",
+    confirm: str = "", danger: bool = False, title: str = "",
+) -> str:
+    """One item of a "⋯" menu: a POST (htmx swaps `target`), optionally confirmed first. `url`, `label`,
+    `small` and `confirm` are HTML the CALLER built — html.escape() every name or user-supplied text you put in
+    them; `title` and the hidden inputs are escaped here."""
+    attrs = f' hx-confirm="{confirm}"' if confirm else ""
+    tip = f' title="{html.escape(title)}"' if title else ""
+    inputs = "".join(f'<input type="hidden" name="{html.escape(k)}" value="{html.escape(v)}">' for k, v in hidden.items())
+    return (
+        f'<form method="post" action="{url}" hx-post="{url}" hx-target="{target}" hx-swap="outerHTML"{attrs}>{inputs}'
+        f'<button type="submit" class="menu-item{" danger" if danger else ""}"{tip}>{label}<small>{small}</small></button></form>'
+    )
+
+
+def _menu_button(attrs: str, label: str, small: str) -> str:
+    """A "⋯" menu item that opens something (a modal) instead of posting; closes the menu behind it.
+    `attrs`, `label` and `small` are HTML the CALLER built (escape any name you put in them)."""
+    return (
+        f'<button type="button" class="menu-item" {attrs} onclick="this.closest(\'details\').removeAttribute(\'open\')">'
+        f'{label}<small>{small}</small></button>'
+    )
+
+
+def _account_rows_in_order(accounts: dict) -> list[tuple[str, Any, bool]]:
+    """(account_id, account, nested?) — a Page sits right under the personal account that owns it; a Page
+    without a usable owner (missing, or itself a Page) comes last, on its own. Shared by every
+    per-account list on the Tài khoản page so they read the same."""
+    out: list[tuple[str, Any, bool]] = []
+    nested: set[str] = set()
+    for aid, a in accounts.items():
+        if a.page_name:
+            continue
+        out.append((aid, a, False))
+        for page in pages_of(aid, accounts):
+            nested.add(page.account_id)
+            out.append((page.account_id, page, True))
+    out.extend((aid, a, False) for aid, a in accounts.items() if a.page_name and aid not in nested)
+    return out
+
+
+def _session_note(tone: str, text_html: str) -> str:
+    """`text_html` is already HTML-safe (static text, or built with html.escape'd names)."""
+    return f'<span class="acct-sess acct-sess-{tone}">{text_html}</span>'
+
+
+def _page_session_note(a, accounts: dict) -> tuple[str, bool]:
+    """What a Page's login state means for the chosen mode, as (one short line, whether it needs
+    attention). The identity guard refuses every action without an owner / personal name, so that
+    is said here too, not only in the name cell."""
     has_session = a.storage_state_path.exists()
     owner = accounts.get(a.owner_account_id)
     owner_name = html.escape(owner.display_name) if owner else "tài khoản cá nhân"
     if owner is None or owner.page_name or not a.personal_name:
-        # The identity guard refuses every action without these — say so here,
-        # not only in the name column.
-        status = '<span class="badge badge-bad">thiếu tài khoản cá nhân sở hữu / tên hồ sơ cá nhân — bot sẽ từ chối đăng</span>'
-    elif a.page_session_mode == PAGE_MODE_OWNER_SESSION and owner.status != AccountStatus.ACTIVE:
+        return _session_note("bad", "thiếu tài khoản cá nhân sở hữu / tên hồ sơ cá nhân — bot sẽ từ chối đăng"), True
+    if a.page_session_mode == PAGE_MODE_OWNER_SESSION and owner.status != AccountStatus.ACTIVE:
         word = "đang tắt" if owner.status == AccountStatus.DISABLED else "đang tạm dừng"
-        status = f'<span class="badge badge-warn">{owner_name} {word} — không dùng được phiên của tài khoản đó</span>'
-    elif a.page_session_mode == PAGE_MODE_AUTO and not has_session and owner.status != AccountStatus.ACTIVE:
+        return _session_note("warn", f"{owner_name} {word} — không dùng được phiên của tài khoản đó"), True
+    if a.page_session_mode == PAGE_MODE_AUTO and not has_session and owner.status != AccountStatus.ACTIVE:
         word = "đang tắt" if owner.status == AccountStatus.DISABLED else "đang tạm dừng"
-        status = f'<span class="badge badge-bad">chưa có phiên riêng và {owner_name} {word} — Page chưa chạy được</span>'
-    elif a.page_session_mode == PAGE_MODE_OWNER_SESSION:
-        status = (
-            f'<span class="badge badge-ok">dùng phiên của {owner_name}</span>' if has_session
-            else f'<span class="badge badge-bad">{owner_name} chưa có phiên đăng nhập</span>'
-        )
-    elif has_session:
-        status = '<span class="badge badge-ok">phiên riêng OK</span>'
-    elif a.page_session_mode == PAGE_MODE_AUTO:
-        status = f'<span class="badge badge-warn">chưa có phiên riêng — đang dùng phiên của {owner_name}</span>'
-    else:
-        status = '<span class="badge badge-bad">chưa có phiên riêng</span>'
+        return _session_note("bad", f"chưa có phiên riêng và {owner_name} {word} — Page chưa chạy được"), True
+    if a.page_session_mode == PAGE_MODE_OWNER_SESSION:
+        if has_session:
+            return _session_note("ok", f"dùng phiên của {owner_name}"), False
+        return _session_note("bad", f"{owner_name} chưa có phiên đăng nhập"), True
+    if has_session:
+        return _session_note("ok", "phiên riêng OK"), False
+    if a.page_session_mode == PAGE_MODE_AUTO:
+        return _session_note("warn", f"chưa có phiên riêng — đang dùng phiên của {owner_name}"), False
+    return _session_note("bad", "chưa có phiên riêng"), True
+
+
+def _page_howto_html(aid: str, a) -> str:
+    """How to create the Page's OWN session — only while it is missing and the mode could use one."""
+    if a.storage_state_path.exists() or a.page_session_mode == PAGE_MODE_OWNER_SESSION or not a.owner_account_id:
+        return ""
+    # shlex.quote: page_name is free text and these lines are meant to be
+    # copy-pasted into a terminal (ids are pattern-restricted, quoted anyway).
+    q_owner, q_aid, q_page = shlex.quote(a.owner_account_id), shlex.quote(aid), shlex.quote(a.page_name)
+    return (
+        '<details class="mini-help"><summary>Cách tạo phiên riêng cho Page</summary>'
+        f'<code>{html.escape(f"python3 -m human_bot.smoke_test.check_page_identity switch --account {q_owner} --page {q_page}")}</code>'
+        f'<code>{html.escape(f"mkdir -p accounts/{q_aid} && cp accounts/{q_owner}/_page_probe_state.json accounts/{q_aid}/storage_state.json")}</code>'
+        '</details>'
+    )
+
+
+def _page_mode_picker_html(aid: str, a) -> str:
     options = "".join(
         f'<option value="{m}"{" selected" if m == a.page_session_mode else ""} title="{html.escape(desc)}">{html.escape(title)}</option>'
         for m, (title, desc) in _PAGE_MODE_TEXT.items()
     )
-    picker = (
-        f'<div class="hint" style="margin-top:8px;">Cách chạy tác vụ:</div>'
-        f'<form method="post" action="/admin/accounts/page-mode">'
+    return (
+        f'<form method="post" action="/admin/accounts/page-mode" class="acct-mode">'
         f'<input type="hidden" name="account_id" value="{html.escape(aid)}">'
-        f'<select class="mode-select" name="mode" aria-label="Cách chạy" onchange="this.form.submit()">{options}</select></form>'
+        f'<label class="acct-aid" for="mode-{html.escape(aid)}">Cách chạy</label>'
+        f'<select class="mode-select" id="mode-{html.escape(aid)}" name="mode" aria-label="Cách chạy" onchange="this.form.submit()">{options}</select></form>'
     )
+
+
+def _status_cell(aid: str, a) -> str:
+    """The status badge plus the one note a person needs before acting: why it is paused / since
+    when it is off / the cooldown window after a resume (docs/skills/anomaly-detection.md and
+    human_bot/safety_cooldown_config.py for why a resume must not jump straight back to full speed)."""
+    if a.status == AccountStatus.PAUSED:
+        badge = '<span class="st st-paused">⏸ Tạm dừng</span>'
+        info = get_pause_info(aid)
+        note = ""
+        if info:
+            reason_txt = html.escape(info["reason"] or "không rõ (tạm dừng thủ công)")
+            note = f'<div class="acct-note">từ {_local_dt_html(info["paused_at"])} — {reason_txt}</div>'
+        return badge + note
+    if a.status == AccountStatus.DISABLED:
+        off_info = get_disabled_info(aid) or {}
+        since = f" từ {_local_dt_html(off_info['disabled_at'])}" if off_info.get("disabled_at") else ""
+        return f'<span class="st st-off">⏻ Đã tắt</span><div class="acct-note">Tắt chủ động{since}</div>'
+    badge = '<span class="st st-ok">● Hoạt động</span>'
+    cooldown = get_resume_cooldown_info(aid)
+    if not cooldown:
+        return badge
+    week = cooldown.get("week")
+    base_tier_label = ACCOUNT_AGE_TIERS.get(cooldown.get("base_tier"), (cooldown.get("base_tier") or "?", None))[0]
+    week_txt = f"tuần {week}/2 — mức sàn thấp nhất" if week == 1 else f"tuần {week}/2 — đã nhích lên 1 bậc"
+    return badge + (
+        f'<div class="acct-note">🧊 Đang hạ nhiệt ({html.escape(str(week_txt))}), xong vào {_local_dt_html(cooldown.get("until"))}, '
+        f'sẽ quay về mức "{html.escape(base_tier_label)}" — lần trước bị dừng vì: {html.escape(cooldown.get("reason") or "không rõ")}</div>'
+    )
+
+
+def _acct_row_html(aid: str, a, accounts: dict, registered_ids: set, *, child: bool) -> tuple[str, bool]:
+    """One account = one row: who (name, id, and for a Page how it runs), how it is doing (status +
+    one note), and what to do (ONE contextual button when something needs doing, plus a "⋯"
+    menu for the rest). Returns (html, needs attention)."""
+    esc = html.escape
+    is_page = bool(a.page_name)
+    attention = False
+
+    # --- who
+    title_tip = f"Xem báo cáo của {a.display_name}"
+    if is_page:
+        title_tip = f"Page: {a.page_name}" + (f" · hồ sơ cá nhân: {a.personal_name}" if a.personal_name else "") + " — xem báo cáo"
+    meta = ""
+    if is_page:
+        owner = accounts.get(a.owner_account_id)
+        warn = []
+        if owner is None or owner.page_name:
+            warn.append("⚠ chưa liên kết tài khoản cá nhân")
+        if not a.personal_name:
+            warn.append("⚠ chưa khai báo tên hồ sơ cá nhân — bot sẽ từ chối đăng")
+        meta = f'<div class="acct-meta">{_page_mode_picker_html(aid, a)}</div>'
+        if warn:
+            meta += f'<div class="acct-meta warn">{esc(" · ".join(warn))}</div>'
+            attention = True
+    who = (
+        f'<div class="acct-title">{"📄 " if is_page else ""}'
+        f'<a class="acct-name" href="/admin/reports?account_id={esc(aid)}" title="{esc(title_tip)}">{esc(a.display_name)}</a>'
+        f'<span class="acct-aid">{esc(aid)}</span></div>{meta}'
+    )
+
+    # --- how it is doing
+    status = _status_cell(aid, a)
     howto = ""
-    if not has_session and a.page_session_mode != PAGE_MODE_OWNER_SESSION and a.owner_account_id:
-        # shlex.quote: page_name is free text and these lines are meant to be
-        # copy-pasted into a terminal (ids are pattern-restricted, quoted anyway).
-        q_owner, q_aid, q_page = shlex.quote(a.owner_account_id), shlex.quote(aid), shlex.quote(a.page_name)
-        howto = (
-            '<details class="mini-help"><summary>Cách tạo phiên riêng cho Page</summary>'
-            f'<code>{html.escape(f"python3 -m human_bot.smoke_test.check_page_identity switch --account {q_owner} --page {q_page}")}</code>'
-            f'<code>{html.escape(f"mkdir -p accounts/{q_aid} && cp accounts/{q_owner}/_page_probe_state.json accounts/{q_aid}/storage_state.json")}</code>'
-            '</details>'
+    needs_login = False
+    if is_page:
+        note, page_attn = _page_session_note(a, accounts)
+        attention = attention or page_attn
+        howto = _page_howto_html(aid, a)
+    elif a.storage_state_path.exists():
+        note = _session_note("ok", "phiên đăng nhập OK")
+    else:
+        note = _session_note("bad", "chưa đăng nhập")
+        needs_login = True
+    if a.status == AccountStatus.PAUSED or (needs_login and a.status == AccountStatus.ACTIVE):
+        attention = True
+    if a.status == AccountStatus.DISABLED:
+        attention = False  # switched off on purpose: nothing for anybody to look at
+    session_line = f'<div class="acct-note">{note}</div>'
+
+    # --- what to do
+    login_get = (
+        f'hx-get="/admin/accounts/bootstrap-login-modal?account_id={esc(aid)}" hx-target="#modal-root" hx-swap="innerHTML"'
+    )
+    if a.status == AccountStatus.PAUSED:
+        # Resuming goes through resume_account() so the post-resume cooldown applies.
+        primary = (
+            f'<form method="post" action="/admin/accounts/resume" hx-post="/admin/accounts/resume" hx-target="#accounts-content" '
+            f'hx-swap="outerHTML" style="margin:0;" title="Bật lại sau khi tạm dừng vì nghi vi phạm: tài khoản sẽ chạy giới hạn thấp '
+            f'vài ngày (hạ nhiệt) trước khi về mức bình thường."><input type="hidden" name="account_id" value="{esc(aid)}">'
+            f'<button type="submit" class="btn-small">▶ Kích hoạt lại</button></form>'
         )
-    return f"{status}{picker}{howto}"
+    elif a.status == AccountStatus.DISABLED:
+        primary = (
+            f'<form method="post" action="/admin/accounts/enable" hx-post="/admin/accounts/enable" hx-target="#accounts-content" '
+            f'hx-swap="outerHTML" style="margin:0;" title="Bật lại ngay, chạy đủ giới hạn bình thường (không hạ nhiệt vì tài khoản '
+            f'không có vấn đề gì)."><input type="hidden" name="account_id" value="{esc(aid)}">'
+            f'<button type="submit" class="btn-small">▶ Bật lại</button></form>'
+        )
+    elif needs_login:
+        primary = f'<button type="button" class="btn-small" {login_get}>🌐 Đăng nhập</button>'
+    else:
+        primary = ""
+
+    items = [_menu_button(
+        f'hx-get="/admin/accounts/rate-limits-modal?account_id={esc(aid)}" hx-target="#modal-root" hx-swap="innerHTML"',
+        "⏱ Giới hạn tốc độ", "Số bài / bình luận tối đa mỗi ngày và khoảng nghỉ",
+    )]
+    if not is_page and not (needs_login and a.status == AccountStatus.ACTIVE):
+        # Reachable for every personal account — including one that is off / paused and has no session (its
+        # button shows Resume / Enable instead). Only skipped when the row's own button already is "Đăng nhập".
+        items.append(_menu_button(
+            login_get,
+            "🌐 Đăng nhập &amp; lưu phiên" if needs_login else "🌐 Đăng nhập lại &amp; lưu phiên",
+            "Chưa có phiên đăng nhập — cần để bot dùng tài khoản này" if needs_login else "Khi phiên hết hạn hoặc muốn đổi tài khoản Facebook",
+        ))
+    if a.status == AccountStatus.ACTIVE:
+        items.append(_menu_form(
+            "/admin/accounts/disable", {"account_id": aid}, "⏻ Tắt", "Nghỉ có chủ đích · bật lại là chạy ngay, không hạ nhiệt",
+            confirm=(
+                f"Tắt tài khoản {esc(aid)}? Sẽ không chạy tác vụ nào cho tới khi bạn bật lại; bài đến giờ trong lúc tắt sẽ "
+                "chuyển sang &quot;Task quá hạn&quot; để bạn xếp lại. Bật lại là chạy ngay, không bị hạ nhiệt."
+            ),
+            title="Tắt chủ động (không có vấn đề gì). Bật lại là chạy ngay đủ giới hạn.",
+        ))
+        items.append(_menu_form(
+            "/admin/accounts/pause", {"account_id": aid}, "⚠ Tạm dừng", "Nghi bị Facebook hạn chế · kích hoạt lại phải hạ nhiệt vài ngày",
+            confirm=(
+                f"Tạm dừng tài khoản {esc(aid)} vì nghi bị Facebook hạn chế/vi phạm? Dùng khi có sự cố thật: khi kích hoạt lại, "
+                "tài khoản sẽ phải chạy giới hạn thấp vài ngày (hạ nhiệt). Nếu chỉ muốn nghỉ thì dùng nút Tắt."
+            ),
+            title="Dùng khi nghi tài khoản có vấn đề (checkpoint, bị hạn chế). Kích hoạt lại sẽ phải hạ nhiệt vài ngày.",
+        ))
+    # "Xoá" works on EVERY account, code-level ones included (see human_bot/runtime_config.py's
+    # set_account_removed) — a code-level entry can't actually be deleted from a running process,
+    # but this hides it from every list/lookup the same way, undoable by registering the same
+    # account_id again.
+    is_runtime = aid in registered_ids
+    delete_confirm = (
+        f"Xoá tài khoản {esc(aid)} khỏi danh sách? Sẽ huỷ mọi bài đang chờ lịch của tài khoản này "
+        "và xoá danh sách nhóm đã lưu. File storage_state.json (phiên đăng nhập) sẽ KHÔNG bị xoá."
+        if is_runtime
+        else f"Ẩn tài khoản {esc(aid)} (khai báo trong human_bot/config.py) khỏi human_bot? "
+        "Sẽ huỷ mọi bài đang chờ lịch và xoá danh sách nhóm đã lưu. Muốn dùng lại: đăng ký lại đúng "
+        "account_id này ở đây. File storage_state.json sẽ KHÔNG bị xoá."
+    )
+    items.append('<hr class="row-menu-sep">')
+    items.append(_menu_form(
+        "/admin/accounts/delete", {"account_id": aid}, "🗑 Xoá", "Bỏ khỏi danh sách (không xoá file phiên đăng nhập)",
+        confirm=delete_confirm, danger=True,
+    ))
+    source = "đăng ký ở /admin/accounts" if is_runtime else "khai báo trong human_bot/config.py"
+    items.append(f'<div class="row-menu-info">Mức giới hạn: {esc(_account_age_tier_label(a.rate_limits))} · {esc(source)}</div>')
+    menu = _row_menu_html(items)
+
+    row = (
+        f'<li class="acct-row{" acct-child" if child else ""}" data-account="{esc(aid)}">'
+        f'<div class="acct-who">{who}</div>'
+        f'<div class="acct-state">{status}{session_line}{howto}</div>'
+        f'<div class="acct-actions">{primary}{menu}</div></li>'
+    )
+    return row, attention
 
 
 def _accounts_content_html(saved: bool = False, error: str | None = None, oob: bool = False) -> str:
@@ -3733,158 +3963,29 @@ def _accounts_content_html(saved: bool = False, error: str | None = None, oob: b
     flash = '<p class="flash">✅ Đã lưu.</p>' if saved else ""
     err = f'<p class="error">⚠️ {html.escape(error)}</p>' if error else ""
 
-    rows = []
-    for aid, a in accounts.items():
-        if a.page_name:
-            session_cell = _page_session_cell_html(aid, a, accounts)
-        elif a.storage_state_path.exists():
-            session_cell = '<span class="badge badge-ok">phiên OK</span>'
-        else:
-            session_cell = (
-                '<span class="badge badge-bad">chưa có storage_state.json</span> '
-                f'<button type="button" class="btn-small btn-secondary" '
-                f'hx-get="/admin/accounts/bootstrap-login-modal?account_id={html.escape(aid)}" '
-                f'hx-target="#modal-root" hx-swap="innerHTML">🌐 Đăng nhập &amp; lưu phiên</button>'
-            )
-        name_extras = _account_name_extras_html(aid, a, accounts)
-        is_paused = a.status == AccountStatus.PAUSED
-        is_off = a.status == AccountStatus.DISABLED
-        if is_paused:
-            status_badge = '<span class="badge" style="background:#fef2f2;color:#dc2626;">⏸ Tạm dừng</span>'
-        elif is_off:
-            status_badge = '<span class="badge" style="background:#f3f4f6;color:#4b5563;">⏻ Đã tắt</span>'
-        else:
-            status_badge = '<span class="badge" style="background:#ecfdf5;color:#059669;">● Hoạt động</span>'
+    rows, attention = [], 0
+    for aid, a, child in _account_rows_in_order(accounts):
+        row, attn = _acct_row_html(aid, a, accounts, registered_ids, child=child)
+        rows.append(row)
+        attention += int(attn)
 
-        # Reason + timestamp of the pause, and (once resumed) the reduced-
-        # limit cooldown window — shown right under the badge so a human
-        # deciding whether it's actually safe to "Kích hoạt lại" has real
-        # context instead of a bare status dot. See
-        # docs/skills/anomaly-detection.md and
-        # human_bot/safety_cooldown_config.py for the reasoning (a real
-        # external report of accounts getting re-flagged after resuming
-        # full-speed too soon post-restriction).
-        status_detail = ""
-        if is_off:
-            off_info = get_disabled_info(aid) or {}
-            since = f" từ {_local_dt_html(off_info['disabled_at'])}" if off_info.get("disabled_at") else ""
-            status_detail = f'<div class="row-url" style="word-break:normal;">Tắt chủ động{since}</div>'
-        elif is_paused:
-            info = get_pause_info(aid)
-            if info:
-                reason_txt = html.escape(info["reason"] or "không rõ (tạm dừng thủ công)")
-                when_txt = _local_dt_html(info["paused_at"])
-                status_detail = f'<div class="row-url" style="word-break:normal;">từ {when_txt} — {reason_txt}</div>'
-        else:
-            cooldown = get_resume_cooldown_info(aid) if not is_off else None
-            if cooldown:
-                until_txt = _local_dt_html(cooldown.get("until"))
-                reason_txt = html.escape(cooldown.get("reason") or "không rõ")
-                week = cooldown.get("week")
-                base_tier_key = cooldown.get("base_tier")
-                base_tier_label = ACCOUNT_AGE_TIERS.get(base_tier_key, (base_tier_key or "?", None))[0]
-                week_txt = (
-                    f"tuần {week}/2 — mức sàn thấp nhất"
-                    if week == 1
-                    else f"tuần {week}/2 — đã nhích lên 1 bậc"
-                )
-                status_detail = (
-                    f'<div class="row-url">🧊 Đang hạ nhiệt ({html.escape(str(week_txt))}), '
-                    f'xong vào {until_txt}, sẽ quay về mức "{html.escape(base_tier_label)}" '
-                    f'— lần trước bị dừng vì: {reason_txt}</div>'
-                )
-        # Pausing is a runtime override that applies to ANY account
-        # (code-level or registered here) — see human_bot/config.py's
-        # get_all_accounts() and human_bot/runtime_config.py's
-        # set_account_paused(). Also set automatically the moment
-        # human_bot/safety.py's AnomalyDetected fires on a real post — see
-        # human_bot/agent.py's run_task(). Resuming goes through
-        # resume_account() (not set_account_paused directly) so the
-        # post-resume cooldown above gets applied.
-        if is_paused:
-            status_action = f"""<form method="post" action="/admin/accounts/resume" style="display:inline;"
-        hx-post="/admin/accounts/resume" hx-target="#accounts-content" hx-swap="outerHTML"
-        title="Bật lại sau khi tạm dừng vì nghi vi phạm: tài khoản sẽ chạy giới hạn thấp vài ngày (hạ nhiệt) trước khi về mức bình thường.">
-  <input type="hidden" name="account_id" value="{html.escape(aid)}">
-  <button type="submit" class="btn-small">▶ Kích hoạt lại</button>
-</form>"""
-        elif is_off:
-            status_action = f"""<form method="post" action="/admin/accounts/enable" style="display:inline;"
-        hx-post="/admin/accounts/enable" hx-target="#accounts-content" hx-swap="outerHTML"
-        title="Bật lại ngay, chạy đủ giới hạn bình thường (không hạ nhiệt vì tài khoản không có vấn đề gì).">
-  <input type="hidden" name="account_id" value="{html.escape(aid)}">
-  <button type="submit" class="btn-small">▶ Bật lại</button>
-</form>"""
-        else:
-            status_action = f"""<form method="post" action="/admin/accounts/disable" style="display:inline;"
-        hx-post="/admin/accounts/disable" hx-target="#accounts-content" hx-swap="outerHTML"
-        hx-confirm="Tắt tài khoản {html.escape(aid)}? Sẽ không chạy tác vụ nào cho tới khi bạn bật lại; bài đến giờ trong lúc tắt sẽ chuyển sang &quot;Task quá hạn&quot; để bạn xếp lại. Bật lại là chạy ngay, không bị hạ nhiệt."
-        title="Tắt chủ động (không có vấn đề gì). Bật lại là chạy ngay đủ giới hạn.">
-  <input type="hidden" name="account_id" value="{html.escape(aid)}">
-  <button type="submit" class="btn-small btn-secondary">⏻ Tắt</button>
-</form>
-<form method="post" action="/admin/accounts/pause" style="display:inline;"
-        hx-post="/admin/accounts/pause" hx-target="#accounts-content" hx-swap="outerHTML"
-        hx-confirm="Tạm dừng tài khoản {html.escape(aid)} vì nghi bị Facebook hạn chế/vi phạm? Dùng khi có sự cố thật: khi kích hoạt lại, tài khoản sẽ phải chạy giới hạn thấp vài ngày (hạ nhiệt). Nếu chỉ muốn nghỉ thì dùng nút Tắt."
-        title="Dùng khi nghi tài khoản có vấn đề (checkpoint, bị hạn chế). Kích hoạt lại sẽ phải hạ nhiệt vài ngày.">
-  <input type="hidden" name="account_id" value="{html.escape(aid)}">
-  <button type="submit" class="btn-small btn-secondary">⚠ Tạm dừng</button>
-</form>"""
-        is_runtime = aid in registered_ids
-        source = "/admin/accounts" if is_runtime else "human_bot/config.py"
-        # "Xoá" works on EVERY account now, code-level ones included (see
-        # human_bot/runtime_config.py's set_account_removed) — a
-        # code-level entry can't actually be deleted from a running
-        # process, but this hides it from every list/lookup the same way,
-        # undoable by registering the same account_id again here.
-        delete_confirm = (
-            f"Xoá tài khoản {html.escape(aid)} khỏi danh sách? Sẽ huỷ mọi bài đang chờ lịch của tài khoản này "
-            "và xoá danh sách nhóm đã lưu. File storage_state.json (phiên đăng nhập) sẽ KHÔNG bị xoá."
-            if is_runtime
-            else f"Ẩn tài khoản {html.escape(aid)} (khai báo trong human_bot/config.py) khỏi human_bot? "
-            "Sẽ huỷ mọi bài đang chờ lịch và xoá danh sách nhóm đã lưu. Muốn dùng lại: đăng ký lại đúng "
-            "account_id này ở đây. File storage_state.json sẽ KHÔNG bị xoá."
-        )
-        delete_btn = f"""<form method="post" action="/admin/accounts/delete" style="display:inline;"
-        hx-post="/admin/accounts/delete" hx-target="#accounts-content" hx-swap="outerHTML"
-        hx-confirm="{delete_confirm}">
-  <input type="hidden" name="account_id" value="{html.escape(aid)}">
-  <button type="submit" class="btn-secondary btn-small">Xoá</button>
-</form>"""
-        rate_limits_btn = (
-            f'<button type="button" class="btn-small btn-secondary" '
-            f'hx-get="/admin/accounts/rate-limits-modal?account_id={html.escape(aid)}" '
-            f'hx-target="#modal-root" hx-swap="innerHTML">⏱️ Giới hạn</button>'
-        )
-        age_tier_label = html.escape(_account_age_tier_label(a.rate_limits))
-        rows.append(f"""
-<tr>
-  <td style="min-width:230px;">{html.escape(a.display_name)}<div class="row-url">{html.escape(aid)}</div>{name_extras}</td>
-  <td style="min-width:150px;">{status_badge}{status_detail}</td>
-  <td>{session_cell}</td>
-  <td><span class="badge">{age_tier_label}</span></td>
-  <td class="row-url">{html.escape(source)}</td>
-  <td class="col-actions" style="white-space:normal; width:250px;">{status_action} {rate_limits_btn} {delete_btn}</td>
-</tr>""")
-
-    table = f"""
-<div class="table-scroll">
-  <table class="data-table">
-    <thead><tr><th>Tài khoản</th><th>Trạng thái</th><th>Phiên đăng nhập</th><th>Tuổi tài khoản</th><th>Nguồn</th><th></th></tr></thead>
-    <tbody>{"".join(rows) or '<tr><td colspan="6" class="empty-state">Chưa có tài khoản nào</td></tr>'}</tbody>
-  </table>
-</div>"""
-
+    count = f'<span class="acct-count">{len(accounts)} tài khoản</span>' if accounts else ""
+    attn = f' · <span class="acct-attn">{attention} cần chú ý</span>' if attention else ""
+    body = (
+        f'<ul class="acct-list">{"".join(rows)}</ul>' if rows
+        else '<div class="empty-state">Chưa có tài khoản nào — bấm “Đăng ký tài khoản mới” để thêm.</div>'
+    )
     oob_attr = ' hx-swap-oob="true"' if oob else ""
     return f"""<div id="accounts-content"{oob_attr}>
 {flash}{err}
 
 <div class="card">
-  <h2>👤 Tài khoản hiện có <span class="badge">{len(accounts)}</span>
-    <button type="button" class="btn-small" style="margin-left:auto;"
+  <div class="acct-head">
+    <div>{count}{attn}</div>
+    <button type="button" class="btn-small"
             hx-get="/admin/accounts/add-modal" hx-target="#modal-root" hx-swap="innerHTML">➕ Đăng ký tài khoản mới</button>
-  </h2>
-  {table}
+  </div>
+  {body}
 </div>
 </div>"""
 
@@ -3939,7 +4040,7 @@ async def accounts_page(
 
     return _layout(f"""
 <h1>Tài khoản</h1>
-<p class="page-desc">Đăng ký tài khoản mới sau khi đã chạy <code>python3 human_bot/bootstrap_login.py &lt;account_id&gt;</code> trên máy này để lưu phiên đăng nhập — không cần sửa human_bot/config.py hay khởi động lại service. Tài khoản đăng ký ở đây dùng rate limit / nhóm mặc định, chỉnh thêm ở /admin/config và /admin/groups nếu cần.</p>
+<p class="page-desc">Các tài khoản Facebook mà bot dùng để đăng bài và bình luận.</p>
 
 <div data-tabs>
   <div class="tab-bar">
@@ -3960,6 +4061,15 @@ async def accounts_page(
     {_telegram_recipients_content_html(flash=telegram_flash, error=telegram_err)}
   </div>
 </div>
+<script>
+  /* close an open "⋯" menu when clicking anywhere else */
+  if (!window.__rowMenuCloser) {{
+    window.__rowMenuCloser = true;
+    document.addEventListener("click", function (e) {{
+      document.querySelectorAll("details.row-menu[open]").forEach(function (d) {{ if (!d.contains(e.target)) d.removeAttribute("open"); }});
+    }});
+  }}
+</script>
 """, active="accounts", current_user=_build_current_user(request))
 
 
