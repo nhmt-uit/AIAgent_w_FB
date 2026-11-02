@@ -58,7 +58,7 @@ def test_five_numbers_each_a_link_to_where_you_deal_with_them(home):
     page = home()
     expected = {
         "Chờ đăng hôm nay": "/admin/schedule", "Kết quả hôm nay": "/admin/reports", "Quá hạn": "/admin/schedule?tab=missed",
-        "Chờ duyệt": "/admin/schedule?tab=needs_review", "Lỗi chưa xử lý": "/admin/reports",
+        "Chờ duyệt": "/admin/schedule?tab=needs_review", "Lỗi chưa xử lý": "/admin/reports?tab=failures&days=7",     # the Báo cáo "Lỗi" tab (7 days: it lists every failure, not only the unhandled ones)
     }
     for label, href in expected.items():
         assert f'href="{href}"><span class="stat-label">{label}</span>' in page
@@ -89,7 +89,7 @@ def test_the_failures_number_is_read_only_and_matches_what_telegram_would_list(h
     t = _task(when)
     schedule_store.mark_failed(t.task_id, "error:Page.goto: Timeout 30000ms exceeded.")
     page = home()
-    assert '<span class="stat-num">1</span>' in _tile(page, "Lỗi chưa xử lý") and "gõ /error trên Telegram" in _tile(page, "Lỗi chưa xử lý")
+    assert '<span class="stat-num">1</span>' in _tile(page, "Lỗi chưa xử lý") and "xem lỗi 7 ngày qua · xử lý: gõ /error" in _tile(page, "Lỗi chưa xử lý")
     assert failure_tickets.list_open(kind=None) == []                                         # viewing the page filed nothing
     assert telegram_failures.open_failure_count() == 1                                       # ...and Telegram's own count agrees (and DOES file the card)
     assert len(failure_tickets.list_open()) == 1
@@ -311,6 +311,6 @@ def test_telegram_uses_the_same_definition_of_today_and_the_same_split_of_the_qu
 
 def test_hovering_an_amber_tile_still_shows_it_is_clickable():
     css = admin_module._PAGE_STYLE
-    assert "a.stat:hover, a.stat.stat-attn:hover { @apply border-indigo-400; }" in css and css.index("a.stat.stat-attn {") < css.index("a.stat:hover, a.stat.stat-attn:hover")
+    assert "a.stat:hover, a.stat.stat-attn:hover { @apply border-indigo-400; }" in css and css.index(".stat.stat-attn {") < css.index("a.stat:hover, a.stat.stat-attn:hover")
     assert ".upnext-list > :first-child" in css
-    assert ".stat-row > a.stat:last-child:nth-child(odd) { grid-column: 1 / -1; }" in css                                    # five tiles on a phone: the last one spans, no orphan
+    assert ".stat-row > .stat:last-child:nth-child(odd) { grid-column: 1 / -1; }" in css                                    # five tiles on a phone: the last one spans, no orphan

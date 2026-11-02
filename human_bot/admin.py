@@ -58,7 +58,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 from pathlib import Path
 
-from human_bot import bootstrap_login_sessions, browser_pool, content_strategist, db, schedule_store, screenshots
+from human_bot import bootstrap_login_sessions, browser_pool, content_strategist, db, failure_info, schedule_store, screenshots
 from human_bot.agent import TaskRequest, run_task
 from human_bot.config import (
     ACCOUNT_AGE_TIERS,
@@ -1127,16 +1127,83 @@ _PAGE_STYLE = """
     .sched-actions .row-menu-pop { left: 0; right: auto; }
     .sched-edit { padding-left: 16px; }
   }
+  /* /admin/reports (2026-11-02): bars (one accent colour, value at the tip), the same row look as Lịch đăng for every attempt. */
+  .rep-grid { @apply grid grid-cols-1 items-start gap-5 mb-5 lg:grid-cols-2; }
+  .rep-grid > .card { @apply mb-0; }
+  .rep-grid > .card:only-child { @apply lg:col-span-2; }
+  .bars { @apply flex flex-col; }
+  .bar-row { display: grid; grid-template-columns: minmax(8rem, 17rem) minmax(0, 1fr); align-items: center; column-gap: .75rem; padding: .35rem 0; }
+  .bar-label { @apply text-sm text-gray-800 min-w-0; overflow-wrap: anywhere; }
+  .bar-sub { @apply block text-[11px] text-gray-500; }
+  .bar-track { @apply flex items-center gap-2 h-5 min-w-0; }
+  .bar-fill { display: block; flex: none; height: 14px; min-width: 2px; width: calc((100% - 3rem) * var(--w, 0)); border-radius: 0 4px 4px 0; background: #6366f1; }
+  .bar-val { @apply text-sm font-semibold text-gray-900; font-variant-numeric: tabular-nums; }
+  .bar-cell { min-width: 12rem; }
+  .data-table.rep-weekly { min-width: 0; }                               /* (.data-table's own min-width comes later in this sheet) */
+  .wk-split { display: none; }
+  .data-table td.num, .data-table th.num { @apply text-right; font-variant-numeric: tabular-nums; }
+  .data-table td.nowrap { @apply whitespace-nowrap; }
+  .act-row { display: grid; grid-template-columns: minmax(6rem, 11rem) minmax(0, 1fr) auto; align-items: center; gap: .75rem; padding: .4rem 0; }
+  .split-bar { display: flex; gap: 2px; height: 14px; min-width: 0; }
+  .split-ok, .split-bad { display: block; min-width: 2px; }
+  .split-ok { background: #10b981; border-radius: 4px 0 0 4px; }
+  .split-bad { background: #ef4444; border-radius: 0 4px 4px 0; }
+  .split-bar > :only-child { border-radius: 4px; }
+  .act-num { @apply text-sm text-gray-700 whitespace-nowrap; font-variant-numeric: tabular-nums; }
+  .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 4px; }
+  .dot-ok { background: #10b981; }
+  .dot-bad { background: #ef4444; }
+  .bar-legend { @apply flex gap-4 text-xs text-gray-500 mb-1; }
+  .rep-tick { @apply text-sm; }
+  .rep-more { @apply mt-2; }
+  .rep-more > summary { @apply cursor-pointer text-sm text-indigo-600 py-1; }
+  .rep-line { @apply grid items-start gap-x-3 gap-y-2 px-4 py-3; grid-template-columns: 8.75rem minmax(0, 1fr) auto; }
+  .rep-time { @apply text-sm text-gray-700 whitespace-nowrap; font-variant-numeric: tabular-nums; }
+  .rep-main { @apply min-w-0; }
+  .rep-bad { box-shadow: inset 3px 0 0 #ef4444; }
+  .rep-wait { box-shadow: inset 3px 0 0 #f59e0b; }
+  .rep-content { @apply mt-1 text-[13px] text-gray-600; }
+  .rep-extra { @apply mt-1 text-xs text-gray-500; }
+  .rep-note { @apply mt-1 text-xs text-red-700; }
+  .rep-note-ok { @apply text-gray-500; }
+  .rep-hint { @apply text-gray-500; }
+  .rep-tech { @apply mt-1; }
+  .rep-tech > summary { @apply cursor-pointer text-gray-400 text-[11px]; }
+  .rep-tech pre { @apply mt-1 p-2 bg-gray-50 border border-gray-200 rounded-lg text-[11px] text-gray-600 whitespace-pre-wrap break-all; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+  .rep-job { @apply border border-gray-200 rounded-xl mb-2.5 bg-white; }
+  .rep-job > summary { @apply flex flex-wrap items-center gap-x-3 gap-y-1 px-4 py-3 cursor-pointer; list-style: none; }
+  .rep-job > summary::-webkit-details-marker { display: none; }
+  .rep-job > summary::before { content: "▸"; @apply text-gray-400 text-xs; }
+  .rep-job[open] > summary::before { content: "▾"; }
+  .rep-job[open] > summary { @apply border-b border-gray-100; }
+  .rep-job-title { @apply font-semibold text-sm text-gray-900; }
+  .rep-job-when { @apply text-xs ml-auto; }
+  .rep-job-data { @apply px-4 py-2 text-xs text-gray-500 border-b border-gray-100; }
+  .rep-job-rows { @apply border-0 rounded-none shadow-none; }
+  .rep-pager { @apply flex justify-between items-center flex-wrap gap-2 mt-3; }
+  @media (max-width: 720px) {
+    .rep-line { grid-template-columns: minmax(0, 1fr); }
+    .rep-line .sched-actions { justify-content: flex-start; }
+    .bar-row { grid-template-columns: minmax(0, 1fr); }
+    .act-row { grid-template-columns: minmax(0, 1fr) auto; }
+    .act-row .split-bar { grid-column: 1 / -1; grid-row: 2; }
+    .rep-job-when { margin-left: 0; }
+    .data-table.rep-weekly { table-layout: fixed; }
+    .rep-weekly th:first-child { width: 7.5rem; }
+    .rep-weekly .num { display: none; }
+    .rep-weekly .bar-cell { min-width: 0; }
+    .wk-split { display: block; @apply text-[11px] text-gray-500 mt-0.5; }
+  }
   /* Home "Hôm nay" (2026-11-02) */
   .home-head { @apply flex flex-wrap items-start justify-between gap-3; }
   .home-quick { @apply flex flex-wrap gap-2 pt-1; }
   .stat-row { @apply grid gap-3 mb-5; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); }
   @media (max-width: 599px) {
     .home-head { margin-bottom: 1rem; }                                   /* the quick links wrap under the title; keep them off the tiles */
-    .stat-row > a.stat:last-child:nth-child(odd) { grid-column: 1 / -1; } /* no orphan tile in a 2-column grid */
+    .stat-row > .stat:last-child:nth-child(odd) { grid-column: 1 / -1; } /* no orphan tile in a 2-column grid */
   }
-  a.stat { @apply flex flex-col gap-1 bg-white border border-gray-200 rounded-2xl px-4 py-3.5 shadow-sm no-underline text-gray-900; }
-  a.stat.stat-attn { @apply bg-amber-50 border-amber-300; }
+  a.stat, div.stat { @apply flex flex-col gap-1 bg-white border border-gray-200 rounded-2xl px-4 py-3.5 shadow-sm no-underline text-gray-900; }
+  .stat.stat-attn { @apply bg-amber-50 border-amber-300; }
   a.stat:hover, a.stat.stat-attn:hover { @apply border-indigo-400; }
   .stat-label { @apply text-xs font-semibold text-gray-500; }
   .stat-num { @apply text-2xl font-bold leading-tight; }
@@ -3207,11 +3274,13 @@ def _account_health_telegram_text(aid: str, account, sync_statuses: dict, last_s
 _WEEKDAYS_VI = ("Thứ hai", "Thứ ba", "Thứ tư", "Thứ năm", "Thứ sáu", "Thứ bảy", "Chủ nhật")
 
 
-def _stat_tile(label: str, value_html: str, href: str, sub: str = "", attention: bool = False) -> str:
+def _stat_tile(label: str, value_html: str, href: str | None, sub: str = "", attention: bool = False) -> str:
+    """A number tile: a link to where the work is, or (href=None) a plain tile."""
+    tag, link = ("a", f' href="{href}"') if href else ("div", "")
     return (
-        f'<a class="stat{" stat-attn" if attention else ""}" href="{href}">'
+        f'<{tag} class="stat{" stat-attn" if attention else ""}"{link}>'
         f'<span class="stat-label">{label}</span><span class="stat-num">{value_html}</span>'
-        f'{f"<span class=stat-sub>{sub}</span>" if sub else ""}</a>'
+        f'{f"<span class=stat-sub>{sub}</span>" if sub else ""}</{tag}>'
     )
 
 
@@ -3233,9 +3302,9 @@ async def admin_home(request: Request, _: None = Depends(_require_login)) -> str
     # --- the five numbers
     q = today.queue
     failures_tile = (
-        _stat_tile("Lỗi chưa xử lý", str(failures), "/admin/reports", "xử lý: gõ /error trên Telegram" if failures else "", attention=bool(failures))
+        _stat_tile("Lỗi chưa xử lý", str(failures), "/admin/reports?tab=failures&days=7", "xem lỗi 7 ngày qua · xử lý: gõ /error" if failures else "", attention=bool(failures))
         if failures is not None
-        else _stat_tile("Lỗi chưa xử lý", "?", "/admin/reports", "không đọc được — xem nhật ký của service", attention=True)
+        else _stat_tile("Lỗi chưa xử lý", "?", "/admin/reports?tab=failures&days=7", "không đọc được — xem nhật ký của service", attention=True)
     )
     tiles = "".join([
         _stat_tile("Chờ đăng hôm nay", str(q.left_today), "/admin/schedule",
@@ -5570,15 +5639,20 @@ def _sched_target_html(t, name_lookup) -> str:
     post it goes to. Raw URLs never take the line."""
     if not t.target_url:
         return '<span class="sched-target">Tường cá nhân</span>'
-    url = html.escape(t.target_url)
-    if t.action == "post_to_group":
-        label = name_lookup(t.account_id, t.target_url) or t.target_url.rstrip("/").rsplit("/", 1)[-1]
+    return _target_link_html(t.action, t.target_url, name_lookup(t.account_id, t.target_url))
+
+
+def _target_link_html(action: str, url: str, group_name: str | None) -> str:
+    """The link for a target URL, named: a group post -> the group's name (else the last part of its URL); a comment ->
+    "bài trong <group>" when the group is known, else "bài viết …<last 6 characters of the post id>". Shared by
+    /admin/schedule and /admin/reports so one target is never called two different things."""
+    href = html.escape(url)
+    tail = url.split("?")[0].rstrip("/").rsplit("/", 1)[-1]
+    if action == "post_to_group":
+        label = group_name or tail
     else:
-        # a post URL ends in an opaque id: name the group it is in when we know it, else the id's last digits
-        group = name_lookup(t.account_id, t.target_url)
-        tail = t.target_url.split("?")[0].rstrip("/").rsplit("/", 1)[-1]
-        label = f"bài trong {group}" if group else (f"bài viết …{tail[-6:]}" if tail and "." not in tail else "bài viết")
-    return f'<a class="sched-target" href="{url}" target="_blank" rel="noopener" title="{url}">{html.escape(label)}</a>'
+        label = f"bài trong {group_name}" if group_name else (f"bài viết …{tail[-6:]}" if tail and "." not in tail else "bài viết")
+    return f'<a class="sched-target" href="{href}" target="_blank" rel="noopener" title="{href}">{html.escape(label)}</a>'
 
 
 def _copy_url_button(url: str) -> str:
@@ -7113,7 +7187,7 @@ async def schedule_fire_now(request: Request, _: None = Depends(_require_login))
         if _is_htmx(request):
             return HTMLResponse(_schedule_content_html(account_id=account_id, page=page, page_size=page_size, action_filter=action_filter, date_filter=date_filter, tz_offset=tz_offset, saved=True) + _MODAL_CLOSE_OOB)
         return _schedule_redirect(account_id, page, page_size=page_size, action=action_filter, date=date_filter, tz_offset=tz_offset, saved=1)
-    if result.message.startswith("rate_limited:"):
+    if db.is_rate_limited(result.message):
         # Same reasoning as data_sync.py's fire_due_tasks(): this isn't a
         # real failure of the post, it just fired too soon after the
         # account's last action (or hit a hard count cap — never
@@ -7258,7 +7332,7 @@ async def schedule_missed_fire_now(request: Request, _: None = Depends(_require_
         if _is_htmx(request):
             return HTMLResponse(_schedule_content_html(account_id=account_id, page=page, page_size=page_size, tab="missed", missed_page=missed_page, missed_min_days=missed_min_days, saved=True) + _MODAL_CLOSE_OOB)
         return _schedule_redirect(account_id, page, page_size=page_size, tab="missed", missed_page=missed_page, missed_min_days=missed_min_days, saved=1)
-    if result.message.startswith("rate_limited:"):
+    if db.is_rate_limited(result.message):
         # Race condition only (we already checked can_proceed() above) —
         # e.g. another admin/action fired in between. Leave the task in
         # missed/ untouched (schedule_store.update() only knows how to
@@ -7525,12 +7599,12 @@ async def groups_delete(request: Request, _: None = Depends(_require_login)):
 # --- Reports (from human_bot/db.py's action_log) ----------------------------
 
 _SOURCE_LABELS: dict[str, str] = {
-    "manual": "Đăng trực tiếp (/admin/post)",
-    "queue": "Từ hàng đợi (content_queue)",
-    "schedule_manual": "Đăng ngay (/admin/schedule)",
-    "schedule_missed_manual": "Đăng ngay từ mục Quá hạn (Lịch đăng)",
-    "schedule_auto": "Tự động (bộ đồng bộ bên B)",
-    "api": "Gọi API /tasks trực tiếp (VD: n8n)",
+    "manual": "Đăng tay",
+    "queue": "Từ hàng đợi",
+    "schedule_manual": "Đăng ngay từ Lịch đăng",
+    "schedule_missed_manual": "Đăng ngay từ mục Quá hạn",
+    "schedule_auto": "Tự động",
+    "api": "Gọi API (n8n)",
 }
 
 
@@ -7596,13 +7670,14 @@ _CANDIDATE_REPORT_PAGE_SIZE = 10
 # /admin/reports with no `tab` in the URL renders exactly what it always
 # has, same "don't change behavior for old bookmarks/links" reasoning as
 # _REPORTS_RECENT_PAGE_SIZE's default above.
-_REPORTS_TABS = ("tables", "jobs", "candidates", "recent", "settings")
+_REPORTS_TABS = ("tables", "jobs", "candidates", "recent", "failures", "settings")
 _REPORTS_TAB_LABELS = {
-    "tables": "📊 Thống kê chi tiết",
+    "tables": "📊 Tổng quan",
     "jobs": "📮 Bài đăng",
     "candidates": "💬 Bình luận",
-    "recent": "🕒 Hoạt động gần đây",
-    "settings": "⚙️ Cấu hình",
+    "recent": "🕒 Hoạt động",
+    "failures": "⚠️ Lỗi",
+    "settings": "⚙️ Thời hạn lưu",
 }
 
 
@@ -7649,30 +7724,6 @@ _ATTR_LABELS = {
     "preferredRegion": "Khu vực mong muốn",
     "contact": "Liên hệ",
 }
-
-
-def _attrs_summary_html(title, attrs: dict) -> str:
-    """Renders EVERY non-empty key in `attrs` (plus `title` if given) as
-    "Nhãn: giá trị" pairs — dynamic, not a fixed allowlist, so a field
-    side B adds later (or one this project just hasn't named yet) still
-    shows up, using its own key name as the label until _ATTR_LABELS
-    above is taught a nicer one. `confidence` (a 0-1 ML score) is
-    formatted as a percentage since the raw decimal reads oddly next to
-    everything else here."""
-    parts = []
-    if title:
-        parts.append(f"<b>{html.escape('Tiêu đề')}:</b> {html.escape(_format_attr(title))}")
-    for key, value in (attrs or {}).items():
-        if not value and value != 0:
-            continue
-        if key == "confidence":
-            try:
-                value = f"{float(value) * 100:.0f}%"
-            except (TypeError, ValueError):
-                pass
-        label = _ATTR_LABELS.get(key, key)
-        parts.append(f"<b>{html.escape(label)}:</b> {html.escape(_format_attr(value))}")
-    return " &nbsp;·&nbsp; ".join(parts) if parts else '<span class="muted">—</span>'
 
 
 _RESCHEDULE_SEARCH_DAYS = 30
@@ -7861,6 +7912,39 @@ def _repost_choice_button_html(
     )
 
 
+def _already_posted_error(row) -> str | None:
+    """A message when this failed row's post has meanwhile gone out by another route (a Telegram retry, the scheduler,
+    a re-draft...): reposting it would post it twice. Checked again on the server — a page left open can be stale."""
+    done = db.success_logged_after(
+        row["account_id"], row["target_url"], row["content"], row["created_at"],
+        source_id=row["source_id"], source_kind=row["source_kind"],
+    )
+    if done is None:
+        return None
+    return f"Bài này đã được đăng thành công lúc {_fmt_jst(done['created_at'])} (giờ Nhật) — không đăng lại để khỏi trùng."
+
+
+def _failure_caution(row) -> tuple[str, str]:
+    """(banner HTML, confirm question) for the retry dialogs of a failed row: what failure_info knows BEFORE anything is
+    posted again. A failure that may already be live on Facebook, or one a retry cannot fix, says so and asks first
+    ("" , "" for a safe failure or a rate-limit deferral, which attempted nothing)."""
+    if db.is_rate_limited(row["message"]):
+        return "", ""
+    info = failure_info.classify(row["message"])
+    if info.safety == failure_info.UNCERTAIN:
+        return (
+            '<div class="warning">⚠️ Lần này <b>chưa rõ bài đã lên Facebook chưa</b> — hãy xem trên Facebook trước. '
+            'Đăng lại có thể thành bài trùng.</div>',
+            "Bài này có thể đã lên Facebook rồi. Vẫn tiếp tục?",
+        )
+    if info.safety == failure_info.NO_RETRY:
+        return (
+            f'<div class="error">⛔ {html.escape(info.cause)} — cần xử lý nguyên nhân trước, đăng lại nhiều khả năng sẽ lỗi tiếp.</div>',
+            "Lỗi này cần xử lý nguyên nhân trước. Vẫn tiếp tục?",
+        )
+    return "", ""
+
+
 def _repost_choice_modal_html(
     row: sqlite3.Row, *, account_id: str | None, days: str | None, page: int, page_size: int,
     job_page: int, candidate_page: int, tab: str,
@@ -7908,6 +7992,8 @@ def _repost_choice_modal_html(
         "page": page, "page_size": page_size, "job_page": job_page,
         "candidate_page": candidate_page, "tab": tab,
     })
+    caution, confirm = _failure_caution(row)
+    confirm_attr = f' hx-confirm="{html.escape(confirm)}"' if confirm else ""
     return f"""
 <div class="modal-backdrop" onclick="if(event.target===this) this.remove()">
   <div class="modal-box">
@@ -7916,13 +8002,14 @@ def _repost_choice_modal_html(
       <button type="button" class="modal-close" onclick="this.closest('.modal-backdrop').remove()">✕</button>
     </div>
     <p class="muted">Bản ghi này đã thất bại — chọn cách xử lý:</p>
+    {caution}
     <ul style="font-size:13px; color:#6b7280; margin:0 0 16px; padding-left:18px; line-height:1.7;">
       <li><b>Đăng ngay</b> — thử lại ngay bây giờ, vẫn kiểm tra đủ giới hạn số lượng/ngày và /giờ như bình thường.</li>
       <li><b>Đặt lịch</b> — mở trang soạn bài với nội dung điền sẵn, bạn tự chọn ngày giờ.</li>
       <li><b>Lên lịch lại</b> — hệ thống tự tìm giờ trống gần nhất còn đủ hạn mức, bạn xác nhận trước khi thêm vào lịch.</li>
     </ul>
     <div style="display:flex; flex-direction:column; gap:8px;">
-      <form method="post" action="/admin/reports/repost" hx-post="/admin/reports/repost" hx-target="#reports-content" hx-swap="outerHTML">
+      <form method="post" action="/admin/reports/repost" hx-post="/admin/reports/repost" hx-target="#reports-content" hx-swap="outerHTML"{confirm_attr}>
         {filter_fields}
         <button type="submit" style="width:100%;">🚀 Đăng ngay</button>
       </form>
@@ -7947,16 +8034,160 @@ def _reports_since(days: str | None) -> str | None:
     return (datetime.now(timezone.utc) - timedelta(days=n)).isoformat()
 
 
+
+def _salary_text(salary) -> str:
+    """{'min': 220000, 'max': 280000, 'currency': 'JPY', 'period': 'month'} -> "22–28 man / tháng": the same rules the
+    posts use (content_strategist._salary_line — currency defaults to JPY, a 0 is "missing", month/year pay is shown in
+    man, an hourly wage in plain yên). Anything that is not that shape — or that cannot be read as one — is shown as
+    "k: v" pairs instead, never dropped and never an error (this runs for every row of a report page)."""
+    if not isinstance(salary, dict):
+        return _format_attr(salary)
+    try:
+        lo, hi = salary.get("min"), salary.get("max")
+        if not lo and not hi:
+            return _pairs_text(salary)
+        currency, period = salary.get("currency") or "JPY", salary.get("period") or ""
+        if not isinstance(currency, str) or not isinstance(period, str):
+            raise ValueError("currency/period must be text")
+        currency = currency.upper()
+        in_man = currency == "JPY" and period in content_strategist.MAN_PERIOD_KEYS
+
+        def amount(value) -> str:
+            if not value:
+                return ""
+            n = float(value)
+            if n != n or n in (float("inf"), float("-inf")):
+                raise ValueError(value)
+            if in_man:
+                return content_strategist._format_man(n)
+            return _vn_int(int(n)) if n == int(n) else str(n)
+
+        lo_s, hi_s = amount(lo), amount(hi)
+        text = f"{lo_s}–{hi_s}" if lo_s and hi_s and lo_s != hi_s else (lo_s or hi_s)
+        unit = "man" if in_man else ("yên" if currency == "JPY" else currency)
+        period_label = content_strategist._SALARY_PERIOD_LABELS.get(period, period)
+        return f"{text} {unit}" + (f" / {period_label}" if period_label else "")
+    except (TypeError, ValueError, OverflowError):
+        return _pairs_text(salary)
+
+
+def _pairs_text(value: dict) -> str:
+    """A dict as "k: v, k: v" (non-empty values only) — never Python's repr."""
+    return ", ".join(f"{k}: {_format_attr(v)}" for k, v in value.items() if v not in (None, "") and _format_attr(v))
+
+
+def _attr_text(key: str, value) -> str:
+    """One side-B attribute as readable text: the salary as "22–28 man / tháng", a list joined with commas,
+    any other nested dict as "k: v" pairs (never Python's repr)."""
+    if key == "salary":
+        return _salary_text(value)
+    if isinstance(value, dict):
+        return _pairs_text(value)
+    return _format_attr(value)
+
+
+def _attr_parts(title, attrs) -> list[str]:
+    """Every non-empty key in `attrs` (plus `title` if given) as one "Nhãn: giá trị" HTML fragment each — dynamic,
+    not a fixed allowlist, so a field side B adds later (or one this project just hasn't named yet) still shows up,
+    using its own key name as the label until _ATTR_LABELS above is taught a nicer one. `confidence` (a 0-1 ML score)
+    is formatted as a percentage; the salary is spelled out (_salary_text). `attrs` that is not a dict is ignored."""
+    parts = []
+    if title:
+        parts.append(f"<b>{html.escape('Tiêu đề')}:</b> {html.escape(_format_attr(title))}")
+    for key, value in (attrs.items() if isinstance(attrs, dict) else ()):
+        if not value and value != 0:
+            continue
+        if key == "confidence":
+            try:
+                value = f"{float(value) * 100:.0f}%"
+            except (TypeError, ValueError):
+                pass
+        text = _attr_text(key, value)
+        if text:
+            parts.append(f"<b>{html.escape(_ATTR_LABELS.get(key, key))}:</b> {html.escape(text)}")
+    return parts
+
+
+def _attrs_summary_html(title, attrs) -> str:
+    parts = _attr_parts(title, attrs)
+    return " &nbsp;·&nbsp; ".join(parts) if parts else '<span class="muted">—</span>'
+
+
+def _week_range_label(week: str, today) -> tuple[str, bool]:
+    """db.weekly_post_counts()'s week key — the Monday's date, "2026-10-26" — -> ("26/10 – 01/11", is_this_week)."""
+    try:
+        monday = datetime.strptime(week, "%Y-%m-%d").date()
+    except ValueError:
+        return week, False
+    sunday = monday + timedelta(days=6)
+    return f"{monday:%d/%m} – {sunday:%d/%m}", monday <= today <= sunday
+
+
+def _bar_html(value: int, maximum: int) -> str:
+    """A bar with its value at the tip. One colour (the page accent), 4px rounded data end, square at the baseline;
+    the width is a share of the largest value, leaving room at the end for the number."""
+    ratio = (value / maximum) if maximum else 0
+    return (
+        f'<div class="bar-track"><span class="bar-fill" style="--w:{ratio:.4f}"></span>'
+        f'<span class="bar-val">{value}</span></div>'
+    )
+
+
+def _bar_row_html(label_html: str, value: int, maximum: int, *, sub_html: str = "") -> str:
+    sub = f'<span class="bar-sub">{sub_html}</span>' if sub_html else ""
+    return f'<div class="bar-row"><div class="bar-label">{label_html}{sub}</div>{_bar_html(value, maximum)}</div>'
+
+
+def _split_bar_html(ok: int, bad: int) -> str:
+    """Share of successes vs failures in one bar (two fills, a 2px surface gap between them)."""
+    total = ok + bad
+    if not total:
+        return '<div class="split-bar"></div>'
+    parts = []
+    if ok:
+        parts.append(f'<span class="split-ok" style="flex:{ok}"></span>')
+    if bad:
+        parts.append(f'<span class="split-bad" style="flex:{bad}"></span>')
+    return f'<div class="split-bar">{"".join(parts)}</div>'
+
+
+def _failure_note_html(message: str | None, *, with_hint: bool = True) -> str:
+    """Why a row failed, in words: failure_info's cause + whether the post may already be live, with the raw error
+    one click away (it is a Playwright dump, not something to read first). `with_hint=False` leaves the "can I retry"
+    line out (the row was posted by something else since)."""
+    msg = message or ""
+    if db.is_rate_limited(msg):
+        # the reason after the prefix is a gap, or an hourly / daily cap: the raw text (one click away) says which
+        cause, hint = "Chưa chạy: bị giới hạn tốc độ của tài khoản (khoảng cách giữa hai lần, hoặc hạn mức giờ/ngày)", ""
+    else:
+        info = failure_info.classify(msg)
+        cause, hint = info.cause, failure_info.hint(info) if with_hint else ""
+    tech = f'<details class="rep-tech"><summary>Chi tiết kỹ thuật</summary><pre>{html.escape(msg)}</pre></details>' if msg else ""
+    hint_html = f' <span class="rep-hint">· {html.escape(hint)}</span>' if hint else ""
+    return f'<div class="rep-note">{html.escape(cause)}{hint_html}{tech}</div>'
+
+
+def _log_target_html(r, name_lookup) -> str:
+    """Where an action_log row went (_target_link_html's naming; the recorded group name wins over the saved list's)."""
+    url = r["target_url"]
+    if not url:
+        return '<span class="sched-target">Tường cá nhân</span>' if r["action"] == "post_to_own_profile" else '<span class="muted">—</span>'
+    return _target_link_html(r["action"], url, r["target_group_name"] or name_lookup(r["account_id"], url))
+
+
 def _reports_content_html(
     account_id: str | None = None, days: str | None = None, page: int = 1,
     page_size: int = _REPORTS_RECENT_PAGE_SIZE, job_page: int = 1, candidate_page: int = 1,
     tab: str | None = None,
     posted: str | None = None, error: str | None = None, warning: str | None = None,
 ) -> str:
+    from urllib.parse import urlencode
+
     page_size = _clamp_reports_page_size(page_size)
     tab = _clamp_reports_tab(tab)
     accounts = get_all_accounts()
     since = _reports_since(days)
+    name_lookup = _group_name_lookup()
     flash = f'<p class="flash">✅ {html.escape(posted)}</p>' if posted else ""
     err = f'<p class="error">⚠️ {html.escape(error)}</p>' if error else ""
     # Separate from `error` (2026-09-11, owner request): "Đăng lại" hitting
@@ -7966,6 +8197,9 @@ def _reports_content_html(
     # `.warning` style (amber) instead of `.error` (red), same distinction
     # schedule_fire_now() already makes with rate_limit_wait_message().
     warn = f'<p class="warning">⏳ {html.escape(warning)}</p>' if warning else ""
+
+    # The list tabs ("Hoạt động" = everything, "Lỗi" = only what failed) share the page-size select and the pager.
+    list_tab = tab if tab in ("recent", "failures") else "recent"
 
     account_options = '<option value="">— Tất cả tài khoản —</option>' + "".join(
         f'<option value="{html.escape(aid)}"{" selected" if aid == account_id else ""}>{html.escape(_account_label(aid, accounts))}</option>'
@@ -7979,26 +8213,25 @@ def _reports_content_html(
         f'<option value="{size}"{" selected" if size == page_size else ""}>{size}/trang</option>'
         for size in _REPORTS_PAGE_SIZE_CHOICES
     )
-    # The page-size <select> itself renders inside the "Hoạt động gần
-    # đây" card's own header row, next to that card's title (owner
-    # request 2026-09-11, twice: first moved out of the page-wide
-    # account/days filter row since it only affects this one card, then
-    # out of the card's footer too — "xấu quá" — up next to the title
-    # instead) — but its markup and hx-include wiring live together right
-    # here since both selects need each other's id, and this is where
-    # account_options/days_options are already in scope.
-    # #reports-pagesize-select still gets found by hx-include regardless
-    # of where in the DOM it ends up.
+    # The page-size <select> itself renders inside the list card's own
+    # header row, next to that card's title (owner request 2026-09-11,
+    # twice: first moved out of the page-wide account/days filter row since
+    # it only affects this one card, then out of the card's footer too —
+    # "xấu quá" — up next to the title instead) — but its markup and
+    # hx-include wiring live together right here since both selects need
+    # each other's id, and this is where account_options/days_options are
+    # already in scope. #reports-pagesize-select still gets found by
+    # hx-include regardless of where in the DOM it ends up.
     page_size_select_html = f"""<label for="reports-pagesize-select" class="muted">Hiển thị</label>
   <select name="page_size" id="reports-pagesize-select"
           hx-get="/admin/reports" hx-target="#reports-content" hx-swap="outerHTML"
           hx-trigger="change" hx-include="#reports-account-select, #reports-days-select"
-          hx-vals='{{"tab": "recent"}}' hx-push-url="true">{page_size_options}</select>"""
+          hx-vals='{{"tab": "{list_tab}"}}' hx-push-url="true">{page_size_options}</select>"""
     # The 2 page-wide selects include the page-size one via hx-include so
     # switching account/days never silently resets it back to default.
     # hx-vals carries the currently active tab through (2026-09-12) — these
     # selects render above every tab, so without it, changing the account/
-    # days filter would silently snap back to the default "tables" tab.
+    # days filter would silently snap back to the default tab.
     filter_html = f"""
 <div class="account-filter">
   <label for="reports-account-select">Tài khoản</label>
@@ -8013,32 +8246,30 @@ def _reports_content_html(
           hx-vals='{{"tab": "{tab}"}}' hx-push-url="true">{days_options}</select>
 </div>"""
 
-    def _reports_tab_link(tab_key: str) -> str:
-        from urllib.parse import urlencode as _urlencode_tab
-        active = tab_key == tab
-        qs = _urlencode_tab({k: v for k, v in {
+    # --- KPI summary — glance-and-go health check before the detail tabs. The "Cấu hình" tab is global
+    # settings, not report data: the filters and the numbers (both scoped to those filters) would only confuse
+    # there, so it skips them and every query below.
+    stats = db.summary_stats(account_id=account_id, since=since)
+    failed_count = stats["failed"]
+
+    def _tab_qs(tab_key: str) -> str:
+        return urlencode({k: v for k, v in {
             "account_id": account_id, "days": days, "tab": tab_key,
             "page_size": page_size if page_size != _REPORTS_RECENT_PAGE_SIZE else None,
         }.items() if v})
-        style = (
-            "border-bottom:2px solid #111827; font-weight:600; color:#111827;" if active
-            else "border-bottom:2px solid transparent; color:#6b7280;"
-        )
+
+    def _reports_tab_link(tab_key: str) -> str:
+        qs = _tab_qs(tab_key)
+        label = _REPORTS_TAB_LABELS[tab_key]
+        if tab_key == "failures" and failed_count:
+            label += f' <span class="badge badge-bad">{failed_count}</span>'
         return (
-            f'<a href="/admin/reports?{qs}" hx-get="/admin/reports?{qs}" '
-            f'hx-target="#reports-content" hx-swap="outerHTML" hx-push-url="true" '
-            f'style="padding:8px 4px; text-decoration:none; {style}">{_REPORTS_TAB_LABELS[tab_key]}</a>'
+            f'<a href="/admin/reports?{qs}" hx-get="/admin/reports?{qs}" hx-target="#reports-content" hx-swap="outerHTML" '
+            f'hx-push-url="true" class="sched-tab{" active" if tab_key == tab else ""}">{label}</a>'
         )
 
-    tab_nav_html = f"""
-<div style="display:flex; gap:20px; margin-bottom:18px; border-bottom:1px solid #e5e7eb;">
-  {"".join(_reports_tab_link(k) for k in _REPORTS_TABS)}
-</div>"""
+    tab_nav_html = f'<div class="sched-tabs">{"".join(_reports_tab_link(k) for k in _REPORTS_TABS)}</div>'
 
-    # The "Cấu hình" tab is global settings, not report data: the
-    # account/days filters and the KPI tiles (both scoped to those
-    # filters) would only confuse here, so skip them — and every query
-    # below — and render just the flash line, the tab bar and the form.
     if tab == "settings":
         return f"""<div id="reports-content">
 {flash}
@@ -8048,24 +8279,20 @@ def _reports_content_html(
 {_retention_settings_card_html()}
 </div>"""
 
-    # --- KPI summary — glance-and-go health check before the detail tables ---
-    stats = db.summary_stats(account_id=account_id, since=since)
     rate_display = f"{stats['success_rate']}%" if stats["success_rate"] is not None else "—"
-    # Equal-width 5-column grid (owner request 2026-09-11 — the previous
-    # flex/gap layout let each tile take only as much width as its own
-    # content needed, so the 5 tiles ended up visibly uneven). auto-fit +
-    # minmax still divides evenly on narrow screens (fewer, wider columns)
-    # instead of overflowing.
-    summary_html = f"""
-<div class="card">
-  <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(150px, 1fr)); gap:24px;">
-    <div><div class="muted" style="font-size:12px;">Tổng số hành động</div><div style="font-size:22px; font-weight:700;">{stats['total']}</div></div>
-    <div><div class="muted" style="font-size:12px;">Thành công</div><div style="font-size:22px; font-weight:700; color:#059669;">{stats['succeeded']}</div></div>
-    <div><div class="muted" style="font-size:12px;">Thất bại</div><div style="font-size:22px; font-weight:700; color:#dc2626;">{stats['failed']}</div></div>
-    <div><div class="muted" style="font-size:12px;">Tỉ lệ thành công</div><div style="font-size:22px; font-weight:700;">{rate_display}</div></div>
-    <div><div class="muted" style="font-size:12px;">Tài khoản có hoạt động</div><div style="font-size:22px; font-weight:700;">{stats['active_accounts']}</div></div>
-  </div>
-</div>"""
+    period_label = _REPORTS_DAYS_LABELS.get(days or "", "")
+    failed_tile = _stat_tile(
+        "Thất bại", f'<span class="bad">{stats["failed"]}</span>' if stats["failed"] else "0",
+        f"/admin/reports?{_tab_qs('failures')}", sub="xem các lần lỗi →" if stats["failed"] else "không có lỗi",
+        attention=bool(stats["failed"]),
+    )
+    summary_html = '<div class="stat-row">' + "".join([
+        _stat_tile("Tổng số lần chạy", str(stats["total"]), None, sub=html.escape(period_label)),
+        _stat_tile("Thành công", f'<span class="ok">{stats["succeeded"]}</span>', None),
+        failed_tile,
+        _stat_tile("Tỉ lệ thành công", rate_display, None),
+        _stat_tile("Tài khoản có hoạt động", str(stats["active_accounts"]), None),
+    ]) + "</div>"
 
     # Which failed rows already have a pending (not-yet-fired) retry task
     # queued via "📅 Đặt lịch"/"🔄 Lên lịch lại" (2026-09-12) — one cheap
@@ -8078,42 +8305,163 @@ def _reports_content_html(
         t.retry_of_log_id for t in schedule_store.list_pending() if t.retry_of_log_id
     }
 
-    # Tab "tables" only (2026-09-12) — skip these 3 queries entirely on the
-    # other 2 tabs, same reasoning as the job/recent sections below: no
-    # point querying data a tab switch won't even render.
+    def _handled_status(rows) -> dict[int, str]:
+        """For the failed, repostable rows among `rows`: "retried" (a retry of it succeeded) or "later" (the same post
+        went out afterwards by some other route) — either way "Đăng lại" would post it twice."""
+        eligible = [r for r in rows if r["action"] in _REPOSTABLE_ACTIONS and not r["success"] and (r["content"] or "").strip()]
+        status = {i: "retried" for i in db.successful_retry_log_ids([r["id"] for r in eligible])}
+        rest = [r for r in eligible if r["id"] not in status]
+        status.update({i: "later" for i in db.failed_rows_posted_later(rest)})
+        return status
+
+    def _repost_action_cell_html(r: sqlite3.Row, handled: dict[int, str]) -> str:
+        # Replaces the "↻" button with a plain status text once this row
+        # has already been handled (owner request 2026-09-12: "Bài Đăng/
+        # Bình luận nào đã được lên lịch lại (tự động hay ADMIN thêm lại,
+        # hoặc đã ĐĂNG NGAY) — thay nút ĐĂNG LẠI bằng text"). Checked in
+        # this order: a still-PENDING retry task (schedule_store) wins
+        # over a past completed one, since that's the more current state.
+        if r['action'] not in _REPOSTABLE_ACTIONS or r['success'] or not (r['content'] or '').strip():
+            return ""
+        if r["id"] in pending_retry_ids:
+            return '<span class="muted" style="font-size:12px; white-space:nowrap;">⏳ Đã lên lịch lại</span>'
+        if handled.get(r["id"]) == "retried":
+            return '<span class="muted" style="font-size:12px; white-space:nowrap;">✅ Đã đăng lại</span>'
+        if handled.get(r["id"]) == "later":
+            return '<span class="muted" style="font-size:12px; white-space:nowrap;">✅ Đã đăng thành công sau đó</span>'
+        return _repost_choice_button_html(
+            r, account_id=account_id, days=days, page=page, page_size=page_size,
+            job_page=job_page, candidate_page=candidate_page, tab=tab,
+        )
+
+    def _row_html(r: sqlite3.Row, handled: dict[int, str], *, show_account: bool = True, show_action: bool = True,
+                  show_source: bool = False, extra_html: str = "") -> str:
+        """One attempt as a row (the same look as the /admin/schedule list): when · outcome + what + where · the text
+        that went out · why it failed in words · screenshot / retry. Shared by "Hoạt động", "Lỗi", "Bài đăng", "Bình luận"."""
+        msg = r["message"] or ""
+        rate_limited = db.is_rate_limited(msg)
+        if r["success"]:
+            state, chip = "rep-ok", '<span class="rep-tick" title="Thành công">✅</span>'      # most rows succeed: a tick, not a badge
+        elif rate_limited:
+            state, chip = "rep-wait", '<span class="badge badge-warn">⏳ Chưa chạy</span>'
+        else:
+            state, chip = "rep-bad", '<span class="badge badge-bad">⚠️ Thất bại</span>'
+        title = [chip]
+        if show_action:
+            title.append(_action_badge_html(r["action"]))
+        title.append(_log_target_html(r, name_lookup))
+        if show_account:
+            title.append(f'<span class="sched-acct">{html.escape(_account_label(r["account_id"], accounts))}</span>')
+        if show_source:
+            title.append(f'<span class="sched-acct">· {html.escape(_SOURCE_LABELS.get(r["source"], r["source"]))}</span>')
+        if r["success"]:
+            note = f'<div class="rep-note rep-note-ok">{_expandable_text(msg, 60)}</div>' if msg.strip() and msg.strip().lower() != "ok" else ""
+        else:
+            note = _failure_note_html(msg, with_hint=handled.get(r["id"]) != "later")
+        shot_path = r["screenshot_path"] if "screenshot_path" in r.keys() else None
+        shot = _screenshot_link_html(shot_path) if shot_path else ""
+        content = f'<div class="rep-content">{_expandable_text(r["content"], 110)}</div>' if (r["content"] or "").strip() else ""
+        return f"""<div class="sched-item {state}">
+  <div class="rep-line">
+    <div class="rep-time">{_local_dt_html(r['created_at'])}</div>
+    <div class="rep-main">
+      <div class="sched-title">{"".join(title)}</div>
+      {extra_html}{content}{note}
+    </div>
+    <div class="sched-actions">{shot}{_repost_action_cell_html(r, handled)}</div>
+  </div>
+</div>"""
+
+    def _pager_link(target_page: int, label: str, enabled: bool, *, page_key: str, tab_key: str) -> str:
+        if not enabled:
+            return f'<span class="btn-secondary btn-small" style="opacity:.45; pointer-events:none;">{label}</span>'
+        qs = urlencode({k: v for k, v in {
+            "account_id": account_id, "days": days, "tab": tab_key,
+            "page_size": page_size if page_size != _REPORTS_RECENT_PAGE_SIZE else None,
+            page_key: target_page if (target_page != 1 or page_key == "page") else None,
+        }.items() if v})
+        return (
+            f'<a class="btn-secondary btn-small" href="/admin/reports?{qs}" '
+            f'hx-get="/admin/reports?{qs}" hx-target="#reports-content" hx-swap="outerHTML" hx-push-url="true">{label}</a>'
+        )
+
+    def _simple_pager_html(current: int, total_pages: int, total: int, noun: str, *, page_key: str, tab_key: str) -> str:
+        if total_pages <= 1:
+            return ""
+        return f"""
+<div class="rep-pager">
+  {_pager_link(current - 1, "← Trang trước", current > 1, page_key=page_key, tab_key=tab_key)}
+  <span class="muted">Trang {current} / {total_pages} — {total} {noun}</span>
+  {_pager_link(current + 1, "Trang sau →", current < total_pages, page_key=page_key, tab_key=tab_key)}
+</div>"""
+
+    tab_content_html = ""
+
+    # ------------------------------------------------------------------ "Tổng quan"
     if tab == "tables":
+        today_jst = (datetime.now(timezone.utc) + timedelta(hours=9)).date()      # the weeks are Japan's (see db.weekly_post_counts)
+
+        # Weekly: one row per week, a column per account, the total as a bar. (The old table repeated the week on
+        # every account's row and wrote it as "2026-W43".)
         weekly_rows = db.weekly_post_counts(account_id=account_id, since=since)
         if weekly_rows:
-            weekly_html = "".join(
-                f"<tr><td>{html.escape(r['week'])}</td><td>{html.escape(_account_label(r['account_id'], accounts))}</td><td>{r['total']}</td></tr>"
-                for r in weekly_rows
-            )
-            weekly_table = f"""
-<div class="table-scroll"><table class="data-table">
-  <thead><tr><th>Tuần</th><th>Tài khoản</th><th>Số bài đăng thành công</th></tr></thead>
-  <tbody>{weekly_html}</tbody>
-</table></div>"""
+            per_week: dict[str, dict[str, int]] = {}
+            account_totals: dict[str, int] = {}
+            for r in weekly_rows:
+                per_week.setdefault(r["week"], {})[r["account_id"]] = r["total"]
+                account_totals[r["account_id"]] = account_totals.get(r["account_id"], 0) + r["total"]
+            columns = sorted(account_totals, key=lambda a: -account_totals[a]) if len(account_totals) > 1 else []
+            biggest = max(sum(v.values()) for v in per_week.values())
+            head = "<th>Tuần</th>" + "".join(f'<th class="num">{html.escape(_account_label(a, accounts))}</th>' for a in columns) + "<th>Tổng số bài</th>"
+            body = ""
+            for week, by_account in per_week.items():
+                label, this_week = _week_range_label(week, today_jst)
+                cells = "".join(f'<td class="num">{by_account.get(a) or "—"}</td>' for a in columns)
+                now_tag = '<div class="muted">đang diễn ra</div>' if this_week else ""
+                # on a phone the per-account columns fold into a line under the bar (a 4-column table would scroll sideways)
+                split = " · ".join(f"{html.escape(_account_label(a, accounts))} {by_account[a]}" for a in columns if by_account.get(a))
+                split_html = f'<div class="wk-split">{split}</div>' if split else ""
+                body += f'<tr><td class="nowrap"><b>{html.escape(label)}</b>{now_tag}</td>{cells}<td class="bar-cell">{_bar_html(sum(by_account.values()), biggest)}{split_html}</td></tr>'
+            weekly_card = f"""
+<div class="card">
+  <h2>📅 Bài đăng thành công theo tuần</h2>
+  <p class="hint" style="margin-top:-8px;">Tuần tính từ thứ Hai đến Chủ nhật, theo giờ Nhật.</p>
+  <div class="table-scroll"><table class="data-table rep-weekly">
+    <thead><tr>{head}</tr></thead>
+    <tbody>{body}</tbody>
+  </table></div>
+</div>"""
         else:
-            weekly_table = '<div class="empty-state">Chưa có bài đăng thành công nào được ghi nhận.</div>'
+            weekly_card = '<div class="card"><h2>📅 Bài đăng thành công theo tuần</h2><div class="empty-state">Chưa có bài đăng thành công nào được ghi nhận.</div></div>'
 
-        group_rows = db.group_post_counts(account_id=account_id, since=since)
-        if group_rows:
-            group_html = "".join(
-                f"""<tr>
-  <td>{html.escape(_account_label(r['account_id'], accounts))}</td>
-  <td>{html.escape(r['target_group_name']) if r['target_group_name'] else '<span class="muted">(chưa rõ tên)</span>'}</td>
-  <td class="row-url"><a href="{html.escape(r['target_url'] or '')}" target="_blank" rel="noopener">{html.escape(r['target_url'] or '')}</a></td>
-  <td>{r['total']}</td>
-</tr>""" for r in group_rows
+        # Why things failed (failure_info turns the raw errors into causes) — the first thing to read when the
+        # "Thất bại" number above is not zero.
+        causes_card = ""
+        if stats["failed"]:                                                                     # (an empty ranking still renders, just bare)
+            counts: dict[str, list] = {}
+            for message, n in db.failure_message_counts(account_id=account_id, since=since):
+                info = failure_info.classify(message)
+                entry = counts.setdefault(info.code, [info, 0])
+                entry[1] += n
+            ranked = sorted(counts.values(), key=lambda e: -e[1])
+            counted = sum(n for _info, n in ranked)
+            top = ranked[0][1] if ranked else 0
+            cause_rows = "".join(
+                _bar_row_html(html.escape(info.cause), n, top, sub_html=html.escape(failure_info.hint(info)))
+                for info, n in ranked
             )
-            group_table = f"""
-<div class="table-scroll"><table class="data-table">
-  <thead><tr><th>Tài khoản</th><th>Tên nhóm</th><th>URL nhóm</th><th>Số bài đăng thành công</th></tr></thead>
-  <tbody>{group_html}</tbody>
-</table></div>"""
-        else:
-            group_table = '<div class="empty-state">Chưa có bài đăng nhóm nào được ghi nhận.</div>'
+            sample_note = (
+                f'<p class="hint">Chỉ phân loại được {counted} trong tổng số {stats["failed"]} lần lỗi.</p>' if counted < stats["failed"] else ""
+            )
+            causes_card = f"""
+<div class="card">
+  <h2>⚠️ Lỗi theo nguyên nhân</h2>
+  <div class="bars">{cause_rows}</div>
+  {sample_note}
+  <p class="hint"><a href="/admin/reports?{_tab_qs('failures')}" hx-get="/admin/reports?{_tab_qs('failures')}" hx-target="#reports-content" hx-swap="outerHTML" hx-push-url="true">Xem từng lần lỗi và đăng lại →</a></p>
+</div>"""
 
+        # Success vs failure per action: one split bar each.
         action_rows = db.action_type_counts(account_id=account_id, since=since)
         if action_rows:
             # Pivot db.action_type_counts()'s (action, success, total) rows —
@@ -8126,72 +8474,56 @@ def _reports_content_html(
             for r in action_rows:
                 entry = pivoted.setdefault(r["action"], {"succeeded": 0, "failed": 0})
                 entry["succeeded" if r["success"] else "failed"] = r["total"]
-            action_html = "".join(
-                f"""<tr>
-  <td>{html.escape(_ACTION_LABELS.get(action, action))}</td>
-  <td style="color:#059669;">{counts['succeeded']}</td>
-  <td style="color:#dc2626;">{counts['failed']}</td>
-</tr>""" for action, counts in pivoted.items()
+            action_html = ""
+            for action, c in pivoted.items():
+                total = c["succeeded"] + c["failed"]
+                rate = round(100 * c["succeeded"] / total) if total else 0
+                action_html += (
+                    f'<div class="act-row"><div class="bar-label">{html.escape(_ACTION_LABELS.get(action, action))}</div>'
+                    f'{_split_bar_html(c["succeeded"], c["failed"])}'
+                    f'<div class="act-num"><span class="dot dot-ok"></span>{c["succeeded"]} <span class="dot dot-bad"></span>{c["failed"]} · {rate}%</div></div>'
+                )
+            actions_card = (
+                '<div class="card"><h2>📈 Thành công / thất bại theo hành động</h2>'
+                '<div class="bar-legend"><span><span class="dot dot-ok"></span>Thành công</span><span><span class="dot dot-bad"></span>Thất bại</span></div>'
+                f'<div class="bars">{action_html}</div></div>'
             )
-            action_table = f"""
-<div class="table-scroll"><table class="data-table">
-  <thead><tr><th>Hành động</th><th>Thành công</th><th>Thất bại</th></tr></thead>
-  <tbody>{action_html}</tbody>
-</table></div>"""
         else:
-            action_table = '<div class="empty-state">Chưa có dữ liệu.</div>'
+            actions_card = '<div class="card"><h2>📈 Thành công / thất bại theo hành động</h2><div class="empty-state">Chưa có dữ liệu.</div></div>'
 
-    # --- "Theo từng lần đăng" (2026-09-12): one job = one card of its own —
-    # target groups, per-group content actually posted, per-group time and
-    # result, and the raw side-B job data it came from. Grouped server-side
-    # by db.job_post_groups() (source_kind='job' rows only — candidates
-    # have no per-group fan-out to gather), rendered as one <details> per
-    # job so the (potentially long) per-group table only takes space once
-    # opened.
-    def _recent_result_icon(r: sqlite3.Row) -> str:
-        # Distinct from a real failure (2026-09-11, same reasoning as
-        # summary_stats()/action_type_counts() in db.py) — a rate_limited
-        # row was never actually attempted, so lumping it in with ⚠️ next
-        # to genuine broken-selector/timeout failures made the "KQ" column
-        # misleading at a glance. Used by both "Hoạt động gần đây" and
-        # "Theo từng lần đăng" (2026-09-12) — same action_log rows, same
-        # icon rules.
-        if r["success"]:
-            return "✅"
-        if (r["message"] or "").startswith("rate_limited:"):
-            return "⏳"
-        return "⚠️"
+        # Posts per group: the NAME (the saved one when the log has none), top 10, the rest one click away.
+        group_rows = db.group_post_counts(account_id=account_id, since=since)
+        if group_rows:
+            several = len({r["account_id"] for r in group_rows}) > 1
 
-    def _group_link_html(row: sqlite3.Row) -> str:
-        # Same link-the-name pattern as the "Bài đăng theo nhóm" table
-        # above — bấm tên nhóm/bài mở thẳng ra đó (owner request
-        # 2026-09-12). Used by both "Theo từng lần đăng" (nhóm) and
-        # "Theo từng lần bình luận" (bài/nhóm chứa comment).
-        name = row["target_group_name"] or row["target_url"] or "—"
-        if row["target_url"]:
-            return f'<a href="{html.escape(row["target_url"])}" target="_blank" rel="noopener">{html.escape(name)}</a>'
-        return html.escape(name)
+            def group_row(r) -> str:
+                url = r["target_url"] or ""
+                name = r["target_group_name"] or name_lookup(r["account_id"], url) or url.rstrip("/").rsplit("/", 1)[-1] or "(chưa rõ tên)"
+                label = f'<a href="{html.escape(url)}" target="_blank" rel="noopener" title="{html.escape(url)}">{html.escape(name)}</a>' if url else html.escape(name)
+                if several:
+                    label += f' <span class="sched-acct">· {html.escape(_account_label(r["account_id"], accounts))}</span>'
+                return _bar_row_html(label, r["total"], group_rows[0]["total"])
 
-    def _repost_action_cell_html(r: sqlite3.Row, done_retry_ids: set[int]) -> str:
-        # Replaces the "↻" button with a plain status text once this row
-        # has already been handled (owner request 2026-09-12: "Bài Đăng/
-        # Bình luận nào đã được lên lịch lại (tự động hay ADMIN thêm lại,
-        # hoặc đã ĐĂNG NGAY) — thay nút ĐĂNG LẠI bằng text"). Checked in
-        # this order: a still-PENDING retry task (schedule_store) wins
-        # over a past completed one, since that's the more current state.
-        if r['action'] not in _REPOSTABLE_ACTIONS or r['success'] or not (r['content'] or '').strip():
-            return ""
-        if r["id"] in pending_retry_ids:
-            return '<span class="muted" style="font-size:12px; white-space:nowrap;">⏳ Đã lên lịch lại</span>'
-        if r["id"] in done_retry_ids:
-            return '<span class="muted" style="font-size:12px; white-space:nowrap;">✅ Đã đăng lại</span>'
-        return _repost_choice_button_html(
-            r, account_id=account_id, days=days, page=page, page_size=page_size,
-            job_page=job_page, candidate_page=candidate_page, tab=tab,
-        )
+            shown, rest = group_rows[:10], group_rows[10:]
+            more = (
+                f'<details class="rep-more"><summary>Xem thêm {len(rest)} nhóm</summary><div class="bars">{"".join(group_row(r) for r in rest)}</div></details>'
+                if rest else ""
+            )
+            groups_card = f'<div class="card"><h2>👥 Bài đăng theo nhóm</h2><div class="bars">{"".join(group_row(r) for r in shown)}</div>{more}</div>'
+        else:
+            groups_card = '<div class="card"><h2>👥 Bài đăng theo nhóm</h2><div class="empty-state">Chưa có bài đăng nhóm nào được ghi nhận.</div></div>'
 
-    job_cards_html = job_nav_html = ""
-    if tab == "jobs":
+        tab_content_html = f"""
+{weekly_card}
+<div class="rep-grid">{causes_card}{actions_card}</div>
+{groups_card}"""
+
+    # ------------------------------------------------------------------ "Bài đăng": one job = one card
+    # (2026-09-12) — target groups, per-group content actually posted, per-group time and result, and the raw
+    # side-B job data it came from. Grouped server-side by db.job_post_groups() (source_kind='job' rows only —
+    # candidates have no per-group fan-out to gather), rendered as one <details> per job so the (potentially long)
+    # per-group list only takes space once opened.
+    elif tab == "jobs":
         job_total = db.job_post_groups_count(account_id=account_id, since=since)
         job_total_pages = max(1, -(-job_total // _JOB_REPORT_PAGE_SIZE))
         job_page = min(max(job_page, 1), job_total_pages)
@@ -8200,19 +8532,12 @@ def _reports_content_html(
             limit=_JOB_REPORT_PAGE_SIZE, offset=(job_page - 1) * _JOB_REPORT_PAGE_SIZE,
         )
 
-        def _job_data_summary_html(raw: str | None) -> str:
-            if not raw:
-                return '<span class="muted">(không có dữ liệu gốc)</span>'
+        def _job_data(raw: str | None) -> dict:
             try:
-                data = json.loads(raw)
+                data = json.loads(raw) if raw else {}
             except (TypeError, ValueError):
-                return '<span class="muted">(dữ liệu gốc không đọc được)</span>'
-            attrs = data.get("attributes") or {}
-            # title falls back to nothing here (not jobField) — jobField
-            # already renders on its own via the attrs loop below (as
-            # "Ngành nghề"), showing it twice under 2 different labels
-            # would be redundant.
-            return _attrs_summary_html(data.get("title"), attrs)
+                return {}
+            return data if isinstance(data, dict) else {}
 
         if job_rows:
             job_cards_html = ""
@@ -8224,91 +8549,53 @@ def _reports_content_html(
                 (jr["source_id"], jr["account_id"]): db.job_post_group_detail(jr["source_id"], jr["account_id"])
                 for jr in job_rows
             }
-            eligible_ids = [
-                d["id"] for rows in job_detail_by_source.values() for d in rows
-                if d["action"] in _REPOSTABLE_ACTIONS and not d["success"] and (d["content"] or "").strip()
-            ]
-            done_retry_ids = db.successful_retry_log_ids(eligible_ids)
+            handled = _handled_status([d for rows in job_detail_by_source.values() for d in rows])
             for jr in job_rows:
                 detail_rows = job_detail_by_source[(jr["source_id"], jr["account_id"])]
-                detail_html = "".join(
-                    f"""<tr>
-  <td>{_local_dt_html(d['created_at'])}</td>
-  <td class="row-url">{_group_link_html(d)}</td>
-  <td class="muted">{_expandable_text(d['content'])}</td>
-  <td style="text-align:center;">{_recent_result_icon(d)}</td>
-  <td>{_screenshot_link_html(d['screenshot_path'] if 'screenshot_path' in d.keys() else None)}</td>
-  <td class="muted">{_expandable_text(d['message'])}</td>
-  <td>{_repost_action_cell_html(d, done_retry_ids)}</td>
-</tr>""" for d in detail_rows
-                )
-                succeeded = jr["succeeded_groups"] or 0
-                failed = jr["total_groups"] - succeeded
-                result_summary = f'<span style="color:#059669;">{succeeded} thành công</span>'
+                data = _job_data(jr["job_data"])
+                raw_present = bool(jr["job_data"])
+                if data:
+                    summary_line = _attrs_summary_html(data.get("title"), data.get("attributes"))
+                else:
+                    summary_line = '<span class="muted">(không có dữ liệu gốc)</span>' if not raw_present else '<span class="muted">(dữ liệu gốc không đọc được)</span>'
+                title_text = _format_attr(data.get("title")) or "(không có tiêu đề)"
+                succeeded = sum(1 for d in detail_rows if d["success"])
+                waiting = sum(1 for d in detail_rows if not d["success"] and db.is_rate_limited(d["message"]))
+                failed = len(detail_rows) - succeeded - waiting
+                result_summary = f'<span class="badge badge-ok">{succeeded} thành công</span>'
                 if failed:
-                    result_summary += f', <span style="color:#dc2626;">{failed} thất bại</span>'
+                    result_summary += f' <span class="badge badge-bad">{failed} thất bại</span>'
+                if waiting:
+                    result_summary += f' <span class="badge badge-warn">{waiting} chưa chạy</span>'
+                rows_html = "".join(_row_html(d, handled, show_account=False, show_action=False) for d in detail_rows)
                 job_cards_html += f"""
-<details style="border:1px solid #e5e7eb; border-radius:8px; padding:10px 14px; margin-bottom:10px;">
-  <summary style="cursor:pointer; font-weight:600;">
-    {html.escape(_account_label(jr['account_id'], accounts))} — {jr['total_groups']} nhóm ({result_summary})
-    <span class="muted" style="font-weight:400;"> · {_local_dt_html(jr['first_posted_at'])} → {_local_dt_html(jr['last_posted_at'])}</span>
+<details class="rep-job">
+  <summary>
+    <span class="rep-job-title">{html.escape(title_text)}</span>
+    <span class="sched-acct">{html.escape(_account_label(jr['account_id'], accounts))} · {len(detail_rows)} nhóm</span>
+    <span class="rep-job-result">{result_summary}</span>
+    <span class="muted rep-job-when">{_local_dt_html(jr['first_posted_at'])} → {_local_dt_html(jr['last_posted_at'])}</span>
   </summary>
-  <div class="page-desc" style="margin-top:8px;">{_job_data_summary_html(jr['job_data'])}</div>
-  <div class="table-scroll" style="margin-top:8px;"><table class="data-table" style="table-layout:fixed; width:100%;">
-    <thead><tr>
-      <th style="width:12%;">Thời gian</th>
-      <th style="width:14%;">Nhóm</th>
-      <th style="width:26%;">Nội dung đã đăng</th>
-      <th style="width:5%; text-align:center;">KQ</th>
-      <th style="width:7%;">Ảnh</th>
-      <th style="width:26%;">Ghi chú</th>
-      <th style="width:10%;">Thao tác</th>
-    </tr></thead>
-    <tbody>{detail_html}</tbody>
-  </table></div>
+  <div class="rep-job-data">{summary_line}</div>
+  <div class="sched-list rep-job-rows">{rows_html}</div>
 </details>"""
         else:
             job_cards_html = '<div class="empty-state">Chưa có bài đăng job nào được ghi nhận.</div>'
 
-        if job_total_pages > 1:
-            from urllib.parse import urlencode as _urlencode_job
-
-            def _job_page_link(target_page: int, label: str, enabled: bool) -> str:
-                if not enabled:
-                    return f'<span class="btn-secondary btn-small" style="opacity:.45; pointer-events:none;">{label}</span>'
-                qs = _urlencode_job({k: v for k, v in {
-                    "account_id": account_id, "days": days, "tab": "jobs",
-                    "page_size": page_size if page_size != _REPORTS_RECENT_PAGE_SIZE else None,
-                    "job_page": target_page if target_page != 1 else None,
-                }.items() if v})
-                return (
-                    f'<a class="btn-secondary btn-small" href="/admin/reports?{qs}" '
-                    f'hx-get="/admin/reports?{qs}" hx-target="#reports-content" hx-swap="outerHTML" hx-push-url="true">{label}</a>'
-                )
-
-            job_nav_html = f"""
-<div style="display:flex; justify-content:space-between; align-items:center; margin-top:10px; flex-wrap:wrap; gap:8px;">
-  <div style="display:flex; gap:8px; align-items:center;">
-    {_job_page_link(job_page - 1, "← Trang trước", job_page > 1)}
-  </div>
-  <span class="muted">Trang {job_page} / {job_total_pages} — {job_total} job</span>
-  <div style="display:flex; gap:8px; align-items:center;">
-    {_job_page_link(job_page + 1, "Trang sau →", job_page < job_total_pages)}
-  </div>
+        tab_content_html = f"""
+<div class="card">
+  <h2>📮 Bài đăng</h2>
+  {job_cards_html}
+  {_simple_pager_html(job_page, job_total_pages, job_total, "job", page_key="job_page", tab_key="jobs")}
 </div>"""
 
-    # --- "Theo từng lần bình luận" (2026-09-12, flattened same day per
-    # owner request) — for candidate replies (source_kind='candidate'):
-    # which post/friend a comment went to, the candidate's own raw
-    # attributes (desiredJobField/preferredRegion — see content_strategist.
-    # rewrite_candidate_reply()'s docstring), and the actual comment text
-    # posted. FLAT table, one row per action_log row — unlike "theo từng
-    # lần đăng"'s grouped <details> cards, a candidate only ever gets ONE
-    # comment (no per-group fan-out like a job), so grouping just added a
-    # pointless extra click per row ("chỉ có 1 bình luận cho từng bài viết
-    # nên không cần gom nhóm lại đâu, thể hiện rõ ra luôn cũng được").
-    candidate_cards_html = candidate_nav_html = ""
-    if tab == "candidates":
+    # ------------------------------------------------------------------ "Bình luận" (2026-09-12, flattened same
+    # day per owner request) — for candidate replies (source_kind='candidate'): which post/friend a comment went to,
+    # the candidate's own raw attributes (desiredJobField/preferredRegion — see content_strategist.
+    # rewrite_candidate_reply()'s docstring), and the actual comment text posted. FLAT list, one row per action_log
+    # row — a candidate only ever gets ONE comment (no per-group fan-out like a job), so grouping just added a
+    # pointless extra click per row.
+    elif tab == "candidates":
         candidate_total = db.candidate_comments_count(account_id=account_id, since=since)
         candidate_total_pages = max(1, -(-candidate_total // _CANDIDATE_REPORT_PAGE_SIZE))
         candidate_page = min(max(candidate_page, 1), candidate_total_pages)
@@ -8317,167 +8604,68 @@ def _reports_content_html(
             limit=_CANDIDATE_REPORT_PAGE_SIZE, offset=(candidate_page - 1) * _CANDIDATE_REPORT_PAGE_SIZE,
         )
 
-        def _candidate_data_summary_html(raw: str | None) -> str:
+        def _candidate_extra(raw: str | None) -> str:
             if not raw:
-                return '<span class="muted">—</span>'
+                return ""
             try:
                 data = json.loads(raw)
             except (TypeError, ValueError):
-                return '<span class="muted">(không đọc được)</span>'
-            return _attrs_summary_html(None, data.get("attributes") or {})
+                return '<div class="rep-extra muted">(dữ liệu gốc không đọc được)</div>'
+            parts = _attr_parts(None, data.get("attributes") if isinstance(data, dict) else None)
+            return f'<div class="rep-extra">{" &nbsp;·&nbsp; ".join(parts)}</div>' if parts else ""
 
         if candidate_rows:
-            eligible_ids = [
-                r["id"] for r in candidate_rows
-                if r["action"] in _REPOSTABLE_ACTIONS and not r["success"] and (r["content"] or "").strip()
-            ]
-            done_retry_ids = db.successful_retry_log_ids(eligible_ids)
+            handled = _handled_status(candidate_rows)
             candidate_html = "".join(
-                f"""<tr>
-  <td>{_local_dt_html(r['created_at'])}</td>
-  <td class="row-url">{_group_link_html(r)}</td>
-  <td class="muted">{_candidate_data_summary_html(r['job_data'])}</td>
-  <td class="muted">{_expandable_text(r['content'])}</td>
-  <td style="text-align:center;">{_recent_result_icon(r)}</td>
-  <td>{_screenshot_link_html(r['screenshot_path'] if 'screenshot_path' in r.keys() else None)}</td>
-  <td class="muted">{_expandable_text(r['message'])}</td>
-  <td>{_repost_action_cell_html(r, done_retry_ids)}</td>
-</tr>""" for r in candidate_rows
+                _row_html(r, handled, show_action=False, extra_html=_candidate_extra(r["job_data"]))
+                for r in candidate_rows
             )
-            candidate_cards_html = f"""
-<div class="table-scroll"><table class="data-table" style="table-layout:fixed; width:100%;">
-  <thead><tr>
-    <th style="width:11%;">Thời gian</th>
-    <th style="width:13%;">Bài/Nhóm</th>
-    <th style="width:18%;">Dữ liệu gốc</th>
-    <th style="width:21%;">Nội dung đã đăng</th>
-    <th style="width:5%; text-align:center;">KQ</th>
-    <th style="width:6%;">Ảnh</th>
-    <th style="width:16%;">Ghi chú</th>
-    <th style="width:10%;">Thao tác</th>
-  </tr></thead>
-  <tbody>{candidate_html}</tbody>
-</table></div>"""
+            candidate_cards_html = f'<div class="sched-list">{candidate_html}</div>'
         else:
             candidate_cards_html = '<div class="empty-state">Chưa có bình luận nào được ghi nhận.</div>'
 
-        if candidate_total_pages > 1:
-            from urllib.parse import urlencode as _urlencode_candidate
-
-            def _candidate_page_link(target_page: int, label: str, enabled: bool) -> str:
-                if not enabled:
-                    return f'<span class="btn-secondary btn-small" style="opacity:.45; pointer-events:none;">{label}</span>'
-                qs = _urlencode_candidate({k: v for k, v in {
-                    "account_id": account_id, "days": days, "tab": "candidates",
-                    "page_size": page_size if page_size != _REPORTS_RECENT_PAGE_SIZE else None,
-                    "candidate_page": target_page if target_page != 1 else None,
-                }.items() if v})
-                return (
-                    f'<a class="btn-secondary btn-small" href="/admin/reports?{qs}" '
-                    f'hx-get="/admin/reports?{qs}" hx-target="#reports-content" hx-swap="outerHTML" hx-push-url="true">{label}</a>'
-                )
-
-            candidate_nav_html = f"""
-<div style="display:flex; justify-content:space-between; align-items:center; margin-top:10px; flex-wrap:wrap; gap:8px;">
-  <div style="display:flex; gap:8px; align-items:center;">
-    {_candidate_page_link(candidate_page - 1, "← Trang trước", candidate_page > 1)}
-  </div>
-  <span class="muted">Trang {candidate_page} / {candidate_total_pages} — {candidate_total} bình luận</span>
-  <div style="display:flex; gap:8px; align-items:center;">
-    {_candidate_page_link(candidate_page + 1, "Trang sau →", candidate_page < candidate_total_pages)}
-  </div>
+        tab_content_html = f"""
+<div class="card">
+  <h2>💬 Bình luận</h2>
+  {candidate_cards_html}
+  {_simple_pager_html(candidate_page, candidate_total_pages, candidate_total, "bình luận", page_key="candidate_page", tab_key="candidates")}
 </div>"""
 
-    # --- Recent activity: paginated + height-capped, so this block (by far
-    # the longest one) never dominates the page regardless of how much
-    # history exists — see the conversation that raised "4 khối khá dài,
-    # nhất là Hoạt động gần đây". Tab "recent" only (2026-09-12).
-    recent_total = 0
-    recent_table = recent_pagination_html = ""
-    if tab == "recent":
-        recent_total = db.recent_activity_count(account_id=account_id, since=since)
+    # ------------------------------------------------------------------ "Hoạt động" / "Lỗi": paginated list
+    # (the same rows; "Lỗi" keeps only what failed, rate-limited deferrals excluded exactly like the number above)
+    else:
+        only_failed = tab == "failures"
+        recent_total = db.recent_activity_count(account_id=account_id, since=since, only_failed=only_failed)
         recent_total_pages = max(1, -(-recent_total // page_size))
         page = min(max(page, 1), recent_total_pages)
         recent_rows = db.recent_activity(
-            limit=page_size,
-            offset=(page - 1) * page_size,
-            account_id=account_id,
-            since=since,
+            limit=page_size, offset=(page - 1) * page_size, account_id=account_id, since=since, only_failed=only_failed,
         )
         if recent_rows:
-            eligible_ids = [
-                r["id"] for r in recent_rows
-                if r["action"] in _REPOSTABLE_ACTIONS and not r["success"] and (r["content"] or "").strip()
-            ]
-            done_retry_ids = db.successful_retry_log_ids(eligible_ids)
-            recent_html = "".join(
-                f"""<tr>
-  <td>{_local_dt_html(r['created_at'])}</td>
-  <td>{html.escape(_account_label(r['account_id'], accounts))}</td>
-  <td>{html.escape(_ACTION_LABELS.get(r['action'], r['action']))}</td>
-  <td class="row-url">{html.escape((r['target_group_name'] or r['target_url'] or '—'))}</td>
-  <td style="text-align:center;">{_recent_result_icon(r)}</td>
-  <td>{html.escape(_SOURCE_LABELS.get(r['source'], r['source']))}</td>
-  <td>{_screenshot_link_html(r['screenshot_path'] if 'screenshot_path' in r.keys() else None)}</td>
-  <td class="muted">{_expandable_text(r['message'])}</td>
-  <td>{_repost_action_cell_html(r, done_retry_ids)}</td>
-</tr>""" for r in recent_rows
-            )
-            recent_table = f"""
-<div class="table-scroll" style="max-height:420px; overflow-y:auto;"><table class="data-table" style="table-layout:fixed; width:100%;">
-  <thead><tr>
-    <th style="width:12%;">Thời gian</th>
-    <th style="width:12%;">Tài khoản</th>
-    <th style="width:12%;">Hành động</th>
-    <th style="width:16%;">Đích</th>
-    <th style="width:5%; text-align:center;">KQ</th>
-    <th style="width:8%;">Nguồn</th>
-    <th style="width:6%;">Ảnh</th>
-    <th style="width:20%;">Ghi chú</th>
-    <th style="width:9%;">Thao tác</th>
-  </tr></thead>
-  <tbody>{recent_html}</tbody>
-</table></div>"""
+            handled = _handled_status(recent_rows)
+            recent_table = f'<div class="sched-list">{"".join(_row_html(r, handled, show_source=True) for r in recent_rows)}</div>'
+        elif only_failed:
+            recent_table = '<div class="empty-state">Không có lần nào thất bại trong khoảng thời gian này. 🎉</div>'
         else:
             recent_table = '<div class="empty-state">Chưa có hoạt động nào được ghi nhận.</div>'
 
-        # Footer row for the "Hoạt động gần đây" card (item count + nav) — the
-        # page-size select itself now renders up in this card's own header
-        # row, next to the "🕒 Hoạt động gần đây" title (2026-09-11: an
-        # earlier version put it down here in the footer, owner found that
-        # placement "xấu" — moved up so it reads as "controls for this card"
-        # rather than buried at the bottom). The Đầu/Trước/jump/Sau/Cuối nav
-        # below only renders once there's more than 1 page.
-        nav_html = ""
+        recent_pagination_html = ""
         if recent_total_pages > 1:
-            from urllib.parse import urlencode
-
             # First/last buttons + a pretty single-pill "go to page" jump —
             # same pattern (and same owner request) as /admin/schedule's
             # pagination; page_size threads through so navigating never
             # silently resets it back to the default.
-            def _recent_page_link(target_page: int, label: str, enabled: bool) -> str:
-                if not enabled:
-                    return f'<span class="btn-secondary btn-small" style="opacity:.45; pointer-events:none;">{label}</span>'
-                qs = urlencode({k: v for k, v in {
-                    "account_id": account_id, "days": days, "page": target_page, "tab": "recent",
-                    "page_size": page_size if page_size != _REPORTS_RECENT_PAGE_SIZE else None,
-                }.items() if v})
-                return (
-                    f'<a class="btn-secondary btn-small" href="/admin/reports?{qs}" '
-                    f'hx-get="/admin/reports?{qs}" hx-target="#reports-content" hx-swap="outerHTML" hx-push-url="true">{label}</a>'
-                )
-
             jump_hidden_fields = (
                 (f'<input type="hidden" name="account_id" value="{html.escape(account_id)}">' if account_id else "")
                 + (f'<input type="hidden" name="days" value="{html.escape(days)}">' if days else "")
                 + f'<input type="hidden" name="page_size" value="{page_size}">'
-                + '<input type="hidden" name="tab" value="recent">'
+                + f'<input type="hidden" name="tab" value="{tab}">'
             )
-            nav_html = f"""
+            recent_pagination_html = f"""
+<div class="rep-pager">
   <div style="display:flex; gap:8px; align-items:center;">
-    {_recent_page_link(1, "«« Đầu", page > 1)}
-    {_recent_page_link(page - 1, "← Trang trước", page > 1)}
+    {_pager_link(1, "«« Đầu", page > 1, page_key="page", tab_key=tab)}
+    {_pager_link(page - 1, "← Trang trước", page > 1, page_key="page", tab_key=tab)}
   </div>
   <form hx-get="/admin/reports" hx-target="#reports-content" hx-swap="outerHTML" hx-push-url="true"
         style="display:flex; gap:6px; align-items:center; background:#f9fafb; border:1px solid #e5e7eb; border-radius:8px; padding:5px 10px;">
@@ -8489,60 +8677,25 @@ def _reports_content_html(
     <button type="submit" class="btn-secondary btn-small">Đi</button>
   </form>
   <div style="display:flex; gap:8px; align-items:center;">
-    {_recent_page_link(page + 1, "Trang sau →", page < recent_total_pages)}
-    {_recent_page_link(recent_total_pages, "Cuối »»", page < recent_total_pages)}
-  </div>"""
-
-        # Item count ("N mục") moved up to the card header next to "Hiển thị"
-        # (2026-09-11) — this footer only needs to render at all once there's
-        # actual nav (>1 page) to show.
-        recent_pagination_html = f"""
-<div style="display:flex; justify-content:space-between; align-items:center; margin-top:10px; flex-wrap:wrap; gap:8px;">
-  {nav_html}
-</div>""" if nav_html else ""
-
-    # --- Assemble: only the active tab's card(s) render (2026-09-12, owner
-    # request — page had grown to 6 stacked cards, "quá nhiều nội dung").
-    if tab == "tables":
-        tab_content_html = f"""
-<div class="card">
-  <h2>📅 Bài đăng thành công theo tuần</h2>
-  {weekly_table}
-</div>
-
-<div class="card">
-  <h2>👥 Bài đăng theo nhóm</h2>
-  {group_table}
-</div>
-
-<div class="card">
-  <h2>📈 Tỉ lệ thành công/thất bại theo hành động</h2>
-  {action_table}
+    {_pager_link(page + 1, "Trang sau →", page < recent_total_pages, page_key="page", tab_key=tab)}
+    {_pager_link(recent_total_pages, "Cuối »»", page < recent_total_pages, page_key="page", tab_key=tab)}
+  </div>
 </div>"""
-    elif tab == "jobs":
-        tab_content_html = f"""
-<div class="card">
-  <h2>📮 Bài đăng</h2>
-  {job_cards_html}
-  {job_nav_html}
-</div>"""
-    elif tab == "candidates":
-        tab_content_html = f"""
-<div class="card">
-  <h2>💬 Bình luận</h2>
-  {candidate_cards_html}
-  {candidate_nav_html}
-</div>"""
-    else:  # "recent"
+
+        title, intro = (
+            ("⚠️ Các lần thất bại", '<p class="page-desc">Bấm ↻ để đăng lại, đặt lịch hoặc lên lịch lại. Với lỗi “chưa rõ bài đã lên chưa”, hãy xem trên Facebook trước — đăng lại có thể thành bài trùng.</p>')
+            if only_failed else ("🕒 Hoạt động gần đây", "")
+        )
         tab_content_html = f"""
 <div class="card">
   <div style="display:flex; justify-content:space-between; align-items:center; gap:16px; flex-wrap:wrap;">
-    <h2 style="margin:0; white-space:nowrap;">🕒 Hoạt động gần đây</h2>
+    <h2 style="margin:0; white-space:nowrap;">{title}</h2>
     <div style="display:flex; gap:10px; align-items:center; white-space:nowrap; flex-shrink:0;">
       {page_size_select_html}
       <span class="muted">{recent_total} mục</span>
     </div>
   </div>
+  {intro}
   {recent_table}
   {recent_pagination_html}
 </div>"""
@@ -8560,14 +8713,14 @@ def _reports_content_html(
 
 _RETENTION_FIELDS: list[tuple[str, str, str, str]] = [
     ("screenshot_days", "Ảnh chụp bằng chứng",
-     "Ảnh chụp mỗi lần đăng/bình luận (thư mục screenshots/).",
-     "Hết hạn: dòng báo cáo mất link \"📷 Xem\", chữ và số liệu vẫn còn."),
-    ("schedule_days", "File lịch đăng đã xong / lỗi / huỷ",
-     "File lưu vết của task đã đăng, đã lỗi, đã huỷ (thư mục scheduled/), gồm cả ghi chú lý do quá hạn còn sót lại.",
-     "Hết hạn: chỉ mất file lưu vết trên đĩa, báo cáo không ảnh hưởng. Task đang chờ đăng không bao giờ bị xoá."),
-    ("action_log_days", "Lịch sử hành động (dữ liệu báo cáo)",
-     "Mỗi lần bot thử đăng/bình luận, thành công hay thất bại (human_bot.db).",
-     "⚠️ Hết hạn: dòng đó BIẾN MẤT khỏi mọi báo cáo ở trang này — đây là cái duy nhất xoá lịch sử báo cáo."),
+     "Ảnh chụp lại mỗi lần đăng hoặc bình luận.",
+     "Hết hạn: lần đó mất link \"📷 Xem\", chữ và số liệu vẫn còn."),
+    ("schedule_days", "Bản lưu bài đã đăng / lỗi / huỷ",
+     "Bản lưu của các bài đã đăng, đã lỗi hoặc đã huỷ, gồm cả ghi chú lý do quá hạn còn sót lại.",
+     "Hết hạn: chỉ mất bản lưu này, báo cáo không ảnh hưởng. Bài đang chờ đăng không bao giờ bị xoá."),
+    ("action_log_days", "Lịch sử báo cáo",
+     "Mỗi lần bot thử đăng hoặc bình luận, thành công hay thất bại.",
+     "⚠️ Hết hạn: lần đó BIẾN MẤT khỏi mọi báo cáo ở trang này — đây là mục duy nhất xoá lịch sử báo cáo."),
 ]
 
 _RETENTION_MAX_DAYS = 3650  # 10 years — keeps timedelta() far from overflow
@@ -8589,7 +8742,7 @@ def _retention_settings_card_html() -> str:
 <div class="card" id="retention-settings">
   <h2>⚙️ Thời hạn lưu dữ liệu</h2>
   <p class="page-desc">Sau bao nhiêu ngày thì từng loại dữ liệu cũ tự động bị xoá. Nhập <b>0</b> = không bao giờ tự xoá loại đó.
-  Việc dọn chạy lúc khởi động service rồi mỗi 24 giờ — thay đổi ở đây áp dụng từ lần dọn kế tiếp, không cần khởi động lại, và không xoá gì ngay lập tức.</p>
+  Việc dọn chạy lúc hệ thống khởi động rồi mỗi 24 giờ — thay đổi ở đây áp dụng từ lần dọn kế tiếp, không cần khởi động lại, và không xoá gì ngay lập tức.</p>
   <form method="post" action="/admin/reports/retention"
         hx-post="/admin/reports/retention" hx-target="#reports-content" hx-swap="outerHTML">
     <div class="field-grid">{"".join(rows)}</div>
@@ -8730,6 +8883,11 @@ async def reports_repost(request: Request, _: None = Depends(_require_login)):
         if _is_htmx(request):
             return HTMLResponse(_reports_content_html(account_id=account_id, days=days, page=page, page_size=page_size, job_page=job_page, candidate_page=candidate_page, tab=tab, error=err) + _MODAL_CLOSE_OOB)
         return _reports_redirect(account_id, days, page, page_size=page_size, job_page=job_page, candidate_page=candidate_page, tab=tab, error=err)
+    err = _already_posted_error(row)
+    if err:
+        if _is_htmx(request):
+            return HTMLResponse(_reports_content_html(account_id=account_id, days=days, page=page, page_size=page_size, job_page=job_page, candidate_page=candidate_page, tab=tab, error=err) + _MODAL_CLOSE_OOB)
+        return _reports_redirect(account_id, days, page, page_size=page_size, job_page=job_page, candidate_page=candidate_page, tab=tab, error=err)
 
     try:
         result = await run_task(TaskRequest(
@@ -8752,7 +8910,7 @@ async def reports_repost(request: Request, _: None = Depends(_require_login)):
         if _is_htmx(request):
             return HTMLResponse(_reports_content_html(account_id=account_id, days=days, page=page, page_size=page_size, job_page=job_page, candidate_page=candidate_page, tab=tab, posted=msg) + _MODAL_CLOSE_OOB)
         return _reports_redirect(account_id, days, page, page_size=page_size, job_page=job_page, candidate_page=candidate_page, tab=tab, posted=msg)
-    if result.message.startswith("rate_limited:"):
+    if db.is_rate_limited(result.message):
         # Same reasoning as /admin/schedule's schedule_fire_now(): firing
         # too soon (or hitting a hard per-day/per-hour count cap) after
         # this account's last action of the same type isn't a real
@@ -8822,12 +8980,20 @@ async def reports_reschedule_suggest(
     row = db.get_action_log(log_id)
     if row is None or row["action"] not in _REPOSTABLE_ACTIONS or row["success"] or not (row["content"] or "").strip():
         return ""
+    already = _already_posted_error(row)
+    if already:
+        return (
+            '<div class="modal-backdrop" onclick="if(event.target===this) this.remove()">'
+            f'<div class="modal-box"><p class="warning">✅ {html.escape(already)}</p></div></div>'
+        )
     account = get_all_accounts().get(row["account_id"])
     if account is None:
         return (
             '<div class="modal-backdrop" onclick="if(event.target===this) this.remove()">'
             '<div class="modal-box"><p class="error">⚠️ Không tìm thấy tài khoản này.</p></div></div>'
         )
+    caution, confirm = _failure_caution(row)
+    confirm_attr = f' hx-confirm="{html.escape(confirm)}"' if confirm else ""
     suggested = _suggest_reschedule_at(account, row["action"])
     page_size = _clamp_reports_page_size(page_size)
     tab = _clamp_reports_tab(tab)
@@ -8849,12 +9015,13 @@ async def reports_reschedule_suggest(
       <h2>🔄 Lên lịch lại</h2>
       <button type="button" class="modal-close" onclick="this.closest('.modal-backdrop').remove()">✕</button>
     </div>
+    {caution}
     <p>Giờ đăng gợi ý: <b>{_local_dt_html(suggested.isoformat())}</b></p>
     <p class="muted">Đã tính theo giới hạn số lượng/ngày, khoảng cách tối thiểu với lần đăng gần nhất, và giờ yên tĩnh đang cấu hình. Bấm Xác nhận để thêm vào lịch (xem/sửa lại ở /admin/schedule), hoặc Huỷ để tự chọn giờ khác qua "Đặt lịch".</p>
     <div class="form-actions">
       <button type="button" class="btn-secondary" style="margin-right:8px;" onclick="this.closest('.modal-backdrop').remove()">Huỷ</button>
       <form method="post" action="/admin/reports/reschedule-confirm"
-            hx-post="/admin/reports/reschedule-confirm" hx-target="#reports-content" hx-swap="outerHTML" style="display:inline;">
+            hx-post="/admin/reports/reschedule-confirm" hx-target="#reports-content" hx-swap="outerHTML" style="display:inline;"{confirm_attr}>
         {filter_fields}
         <button type="submit">✅ Xác nhận</button>
       </form>
@@ -8902,6 +9069,9 @@ async def reports_reschedule_confirm(request: Request, _: None = Depends(_requir
     row = db.get_action_log(log_id)
     if row is None or row["action"] not in _REPOSTABLE_ACTIONS or row["success"] or not (row["content"] or "").strip():
         err = "Bản ghi này không thể lên lịch lại"
+        return HTMLResponse(_reports_content_html(account_id=account_id, days=days, page=page, page_size=page_size, job_page=job_page, candidate_page=candidate_page, tab=tab, error=err) + _MODAL_CLOSE_OOB)
+    err = _already_posted_error(row)
+    if err:
         return HTMLResponse(_reports_content_html(account_id=account_id, days=days, page=page, page_size=page_size, job_page=job_page, candidate_page=candidate_page, tab=tab, error=err) + _MODAL_CLOSE_OOB)
 
     scheduled_at_raw = str(form.get("scheduled_at", "")).strip()

@@ -1145,6 +1145,10 @@ Telegram dùng nội dung đã soạn sẵn; muốn sửa chữ vẫn phải và
   không thử lại hàng loạt vì sẽ cùng hỏng lại — thử từng lỗi ở `/error`.
   Tin báo đỏ **"N lần thất bại LIÊN TIẾP"** nay có nút **"Tắt"** (một chạm, bật lại là chạy ngay), **"Tạm dừng"**
   (hỏi xác nhận, vì kích hoạt lại phải hạ nhiệt) và **"Đã biết"**; tin tự đổi theo trạng thái thật của tài khoản.
+- **Báo cáo dễ đọc hơn, có tab "Lỗi" (02/11).** Mỗi lần bot chạy là **một dòng gọn** giống Lịch đăng: giờ, tên nhóm (không còn URL), tài khoản, nội dung đã đăng, và nếu lỗi thì **lý do bằng lời** ("Không thấy ô/nút cần bấm", "Máy mất mạng khi vào Facebook")
+  kèm cho biết bài đã lên chưa — đoạn lỗi kỹ thuật dài chỉ hiện khi bấm "Chi tiết kỹ thuật". Ô **"Thất bại"** ở đầu trang bấm vào được và dẫn tới tab **Lỗi** mới (chỉ các lần thất bại, có nút đăng lại). Tab **Tổng quan** có thêm biểu đồ **"Lỗi theo nguyên nhân"**,
+  bảng tuần ghi theo ngày ("26/10 – 01/11", tính theo giờ Nhật) với thanh tổng, tỉ lệ thành công theo từng loại việc, và danh sách nhóm đăng nhiều nhất (tên nhóm, top 10). Thẻ tin ở tab Bài đăng mở đầu bằng **tên tin**, và mức lương hiện dạng "22–28 man / tháng" thay vì dữ liệu thô.
+  Khi đăng lại một lần lỗi mà **chưa rõ bài đã lên chưa**, hộp thoại cảnh báo và hỏi xác nhận; nếu bài đã được đăng thành công sau đó (qua Telegram hay bộ lập lịch) thì không cho đăng lại để khỏi trùng.
 - **Đăng bài gọn hơn, không mất chữ đã gõ (02/11).** Tab **Tin tuyển dụng** nay đứng đầu và là tab mở sẵn (phần lớn bài là tin tuyển dụng vào nhóm), form xếp thành hai cột (công ty | địa điểm, visa | JLPT…) và ghi rõ
   cách nhập lương ("25 nghĩa là 25万 = 250.000 yên mỗi tháng"; theo giờ thì nhập số yên). Hai nút **Tạo bằng AI** / **Tạo bằng template** có chú thích đi kèm, và nếu chưa có khoá AI thì báo ngay trước khi bấm chứ không đợi đến sau.
   Tên tài khoản sẽ đăng hiện **ngay cạnh nút gửi** để khỏi đăng nhầm. Ở tab Đăng vào nhóm có dòng **"Sẽ tạo N bài"**. Khi đổi tài khoản hoặc khi gửi bị báo lỗi, **chữ đã gõ, các khối nội dung thêm, giờ đã chọn được giữ lại**

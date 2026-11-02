@@ -84,6 +84,7 @@ def test_reports_page_tables_tab_shows_action_counts(client, isolated_db):
     _log(isolated_db, account_id="acc-a", action="post_to_group", success=True)
     resp = client.get("/admin/reports?tab=tables")
     assert resp.status_code == 200
+    assert "Đăng vào nhóm" in resp.text and "2 <span" in resp.text      # the action row, with its success count
 
 
 def test_reports_page_recent_tab_shows_logged_rows(client, isolated_db):
@@ -258,7 +259,7 @@ def test_settings_tab_renders_the_form_with_current_values(client):
     assert 'action="/admin/reports/retention"' in resp.text
     assert 'name="screenshot_days"' in resp.text and 'value="60"' in resp.text
     assert 'name="schedule_days"' in resp.text and 'name="action_log_days"' in resp.text
-    assert "Cấu hình" in resp.text  # the tab label is in the nav
+    assert 'class="sched-tab active">⚙️ Thời hạn lưu</a>' in resp.text  # the tab itself is the active one
 
 
 def test_settings_tab_skips_the_report_filters_and_kpi_tiles(client):
@@ -266,7 +267,7 @@ def test_settings_tab_skips_the_report_filters_and_kpi_tiles(client):
     KPI tiles would only mislead there."""
     text = client.get("/admin/reports?tab=settings").text
     assert "reports-account-select" not in text
-    assert "Tổng số hành động" not in text
+    assert "Tổng số lần chạy" not in text and 'class="stat' not in text   # (the old label was renamed: check the tiles themselves)
 
 
 def test_saving_retention_persists_all_three_values(client):

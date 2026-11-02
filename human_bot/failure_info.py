@@ -30,6 +30,15 @@ UNCERTAIN = "uncertain"
 NO_RETRY = "no"
 
 
+# One short line per safety state for lists (the admin's "Lỗi" tab and its cause breakdown). Telegram words the same
+# three states at more length in telegram_failures._SAFETY_LINE.
+SAFETY_HINT = {
+    SAFE: "bài chưa lên — thử lại được",
+    UNCERTAIN: "nên xem trên Facebook trước khi đăng lại",
+    NO_RETRY: "cần xử lý nguyên nhân trước khi thử lại",
+}
+
+
 @dataclass(frozen=True)
 class FailureInfo:
     code: str
@@ -107,3 +116,10 @@ def classify(message: str | None) -> FailureInfo:
     if m.startswith("error:"):
         return FailureInfo("unknown_error", "Lỗi không xác định — chưa rõ bài đã lên chưa", UNCERTAIN)
     return FailureInfo("other", "Lỗi khác — chưa rõ bài đã lên chưa", UNCERTAIN)
+
+
+def hint(info: FailureInfo) -> str:
+    """SAFETY_HINT for `info`, plus the warning that a "safe" failure of this kind tends to repeat (the page changed)."""
+    if info.safety == SAFE and info.repeats_likely:
+        return "bài chưa lên — thử lại được, nhưng lỗi kiểu này hay lặp lại"
+    return SAFETY_HINT.get(info.safety, "")

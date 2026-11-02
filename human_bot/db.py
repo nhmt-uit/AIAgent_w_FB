@@ -298,6 +298,26 @@ def list_accounts_with_activity() -> list[str]:
         conn.close()
 
 
+# A run_task() refused by the rate limiter before a browser was ever opened is logged as "rate_limited:<reason>" — a
+# deferral, not an attempt (agent.py writes it). Every report that counts failures goes through these, so the tile,
+# the "Lỗi" list and the "Lỗi theo nguyên nhân" breakdown cannot drift apart.
+RATE_LIMITED_PREFIX = "rate_limited:"
+# (substr/<>, not LIKE: LIKE would read the "_" as a wildcard and ignore case, is_rate_limited() below does neither)
+_NOT_RATE_LIMITED = f"(message IS NULL OR substr(message, 1, {len(RATE_LIMITED_PREFIX)}) <> '{RATE_LIMITED_PREFIX}')"
+# "Failed" exactly as summary_stats() has always counted it (a refusal that never reached Facebook, such as
+# account_disabled:, still counts there — consecutive_failure_streak() below skips those for alerting only).
+_FAILED_CLAUSE = f"success = 0 AND {_NOT_RATE_LIMITED}"
+
+
+def is_rate_limited(message: str | None) -> bool:
+    return (message or "").startswith(RATE_LIMITED_PREFIX)
+
+
+def _where_with(where: str, extra: str) -> str:
+    """`where` (from _base_where, maybe empty) with one more AND-ed condition."""
+    return f"{where} AND {extra}" if where else f"WHERE {extra}"
+
+
 def _base_where(account_id: str | None, since: str | None, until: str | None = None) -> tuple[str, list]:
     """Shared WHERE-clause builder for the account/date-range filters every
     report query below takes — `since` is an ISO 8601 UTC cutoff (rows with
@@ -326,17 +346,19 @@ def _base_where(account_id: str | None, since: str | None, until: str | None = N
 def weekly_post_counts(
     account_id: str | None = None, since: str | None = None, limit_weeks: int = 12
 ) -> list[sqlite3.Row]:
-    """One row per (account, ISO week) with how many posts (own-profile +
+    """One row per (account, week) with how many posts (own-profile +
     group) succeeded that week — the "tài khoản nào đăng bao nhiêu bài mỗi
-    tuần" report."""
+    tuần" report. `week` is the Monday's date ("2026-10-26"; weeks run Monday
+    to Sunday in JAPAN time, like the business day): one calendar week is one
+    key even across New Year."""
     conn = _connect()
     try:
         where, params = _base_where(account_id, since)
         extra = "success = 1 AND action IN ('post_to_own_profile', 'post_to_group')"
-        where = f"{where} AND {extra}" if where else f"WHERE {extra}"
+        where = _where_with(where, extra)
         cur = conn.execute(
             f"""
-            SELECT account_id, strftime('%Y-W%W', created_at) AS week, COUNT(*) AS total
+            SELECT account_id, date(created_at, '+9 hours', 'weekday 0', '-6 days') AS week, COUNT(*) AS total
             FROM action_log
             {where}
             GROUP BY account_id, week
@@ -357,7 +379,7 @@ def group_post_counts(account_id: str | None = None, since: str | None = None) -
     try:
         where, params = _base_where(account_id, since)
         extra = "success = 1 AND action = 'post_to_group'"
-        where = f"{where} AND {extra}" if where else f"WHERE {extra}"
+        where = _where_with(where, extra)
         cur = conn.execute(
             f"""
             SELECT account_id, target_group_name, target_url, COUNT(*) AS total
@@ -385,8 +407,7 @@ def action_type_counts(account_id: str | None = None, since: str | None = None, 
     conn = _connect()
     try:
         where, params = _base_where(account_id, since, until)
-        extra = "(message IS NULL OR message NOT LIKE 'rate_limited:%')"
-        where = f"{where} AND {extra}" if where else f"WHERE {extra}"
+        where = _where_with(where, _NOT_RATE_LIMITED)
         cur = conn.execute(
             f"""
             SELECT action, success, COUNT(*) AS total
@@ -398,6 +419,46 @@ def action_type_counts(account_id: str | None = None, since: str | None = None, 
             params,
         )
         return cur.fetchall()
+    finally:
+        conn.close()
+
+
+def failure_message_counts(account_id: str | None = None, since: str | None = None) -> list[tuple[str, int]]:
+    """(raw message, how many failed attempts had it) for every failed attempt — for the "Lỗi theo nguyên nhân"
+    breakdown, which sorts the distinct messages into causes with failure_info.classify() (once per distinct text, and
+    the counts add up to summary_stats()'s failed number). Failed = what summary_stats() counts."""
+    conn = _connect()
+    try:
+        where, params = _base_where(account_id, since)
+        cur = conn.execute(
+            f"SELECT COALESCE(message, '') AS message, COUNT(*) AS total FROM action_log {_where_with(where, _FAILED_CLAUSE)} "
+            "GROUP BY COALESCE(message, '')",
+            params,
+        )
+        return [(row["message"], row["total"]) for row in cur.fetchall()]
+    finally:
+        conn.close()
+
+
+def failed_rows_posted_later(rows) -> set[int]:
+    """Which of these failed rows (action_log rows) were meanwhile posted successfully by something else — the same
+    account, target and content (or the same side-B job/candidate) logged after the failure, see success_logged_after().
+    One connection for the whole page of rows."""
+    found: set[int] = set()
+    conn = _connect()
+    try:
+        for r in rows:
+            row = conn.execute(
+                "SELECT id FROM action_log WHERE success = 1 AND account_id = ? "
+                "AND COALESCE(target_url, '') = COALESCE(?, '') AND created_at > ? "
+                "AND ((? <> '' AND COALESCE(content, '') = ?) "
+                "     OR (? <> '' AND COALESCE(source_id, '') = ? AND COALESCE(source_kind, '') = COALESCE(?, ''))) LIMIT 1",
+                (r["account_id"], r["target_url"], r["created_at"], r["content"] or "", r["content"] or "",
+                 r["source_id"] or "", r["source_id"] or "", r["source_kind"]),
+            ).fetchone()
+            if row is not None:
+                found.add(r["id"])
+        return found
     finally:
         conn.close()
 
@@ -422,7 +483,7 @@ def summary_stats(account_id: str | None = None, since: str | None = None, until
     conn = _connect()
     try:
         where, params = _base_where(account_id, since, until)
-        not_rate_limited = "(message IS NULL OR message NOT LIKE 'rate_limited:%')"
+        not_rate_limited = _NOT_RATE_LIMITED
         cur = conn.execute(
             f"""
             SELECT
@@ -451,11 +512,13 @@ def summary_stats(account_id: str | None = None, since: str | None = None, until
 
 
 def recent_activity(
-    limit: int = 50, offset: int = 0, account_id: str | None = None, since: str | None = None
+    limit: int = 50, offset: int = 0, account_id: str | None = None, since: str | None = None, only_failed: bool = False
 ) -> list[sqlite3.Row]:
     conn = _connect()
     try:
         where, params = _base_where(account_id, since)
+        if only_failed:
+            where = _where_with(where, _FAILED_CLAUSE)
         cur = conn.execute(
             f"SELECT * FROM action_log {where} ORDER BY id DESC LIMIT ? OFFSET ?",
             (*params, limit, offset),
@@ -477,13 +540,15 @@ def get_action_log(log_id: int) -> sqlite3.Row | None:
         conn.close()
 
 
-def recent_activity_count(account_id: str | None = None, since: str | None = None) -> int:
+def recent_activity_count(account_id: str | None = None, since: str | None = None, only_failed: bool = False) -> int:
     """Total matching rows for `recent_activity`'s filters, so
     /admin/reports can render "Trang X/Y" instead of guessing whether
     there's more to page through."""
     conn = _connect()
     try:
         where, params = _base_where(account_id, since)
+        if only_failed:
+            where = _where_with(where, _FAILED_CLAUSE)
         cur = conn.execute(f"SELECT COUNT(*) AS total FROM action_log {where}", params)
         return cur.fetchone()["total"] or 0
     finally:
@@ -512,7 +577,7 @@ def job_post_groups(
     try:
         where, params = _base_where(account_id, since)
         extra = "source_kind = 'job'"
-        where = f"{where} AND {extra}" if where else f"WHERE {extra}"
+        where = _where_with(where, extra)
         cur = conn.execute(
             f"""
             SELECT
@@ -544,7 +609,7 @@ def job_post_groups_count(account_id: str | None = None, since: str | None = Non
     try:
         where, params = _base_where(account_id, since)
         extra = "source_kind = 'job'"
-        where = f"{where} AND {extra}" if where else f"WHERE {extra}"
+        where = _where_with(where, extra)
         cur = conn.execute(
             f"SELECT COUNT(*) AS total FROM (SELECT 1 FROM action_log {where} GROUP BY source_id, account_id)",
             params,
@@ -593,7 +658,7 @@ def candidate_comments(
     try:
         where, params = _base_where(account_id, since)
         extra = "source_kind = 'candidate'"
-        where = f"{where} AND {extra}" if where else f"WHERE {extra}"
+        where = _where_with(where, extra)
         cur = conn.execute(
             f"""
             SELECT * FROM action_log
@@ -615,7 +680,7 @@ def candidate_comments_count(account_id: str | None = None, since: str | None = 
     try:
         where, params = _base_where(account_id, since)
         extra = "source_kind = 'candidate'"
-        where = f"{where} AND {extra}" if where else f"WHERE {extra}"
+        where = _where_with(where, extra)
         cur = conn.execute(f"SELECT COUNT(*) AS total FROM action_log {where}", params)
         return cur.fetchone()["total"] or 0
     finally:
@@ -702,7 +767,7 @@ def last_successful_action_per_account() -> dict[str, str]:
 # session) — also refusals that never touched Facebook, and an account the
 # operator switched off must not page anyone with a "failing" alert.
 _EARLY_EXIT_MESSAGE_PREFIXES = (
-    "account_paused:", "account_disabled:", "unsupported_action:", "rate_limited:",
+    "account_paused:", "account_disabled:", "unsupported_action:", RATE_LIMITED_PREFIX,
     "page_owner_off:", "page_owner_missing:",
 )
 # How much wider than `max_rows` the raw SQL fetch window is, in

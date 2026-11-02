@@ -2134,7 +2134,7 @@ async def fire_due_tasks(cfg: SchedulingConfig | None = None) -> dict[str, Any]:
         result = await run_task(request)
         if result.success:
             schedule_store.mark_posted(task.task_id, result.message)
-        elif result.message.startswith("rate_limited:"):
+        elif db.is_rate_limited(result.message):
             # Rare fallback: the pre-check above just said this account
             # was free, but a concurrent action (e.g. a manual "Đăng
             # ngay" click on another due task) claimed the slot first,

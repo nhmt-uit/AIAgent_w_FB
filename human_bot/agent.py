@@ -625,7 +625,7 @@ async def run_task(request: TaskRequest) -> TaskResult:
     limiter = RateLimiter(account)
     allowed, reason = daily_limits.can_proceed(account, rate_limit_bucket, ignore_gap=request.force_ignore_gap)
     if not allowed:
-        message = f"rate_limited:{reason}"
+        message = f"{db.RATE_LIMITED_PREFIX}{reason}"
         _log_result(request, False, message)
         return TaskResult(
             success=False,
