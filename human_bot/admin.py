@@ -977,13 +977,13 @@ _PAGE_STYLE = """
      label column sits mostly empty. */
   .field-stack { @apply flex flex-col gap-1.5 py-2.5 border-b border-gray-100; }
   .field-stack:last-child { @apply border-b-0 pb-0; }
-  .field-stack .field-label { @apply text-sm text-gray-800 font-medium flex-none min-w-0; }
+  .field-stack .field-label, .fg-label { @apply text-sm text-gray-800 font-medium flex-none min-w-0; }
   .field-stack .field-input { @apply w-full; }
 
-  input[type=text], input[type=number], input[type=password], input[type=datetime-local], textarea, select {
+  input[type=text], input[type=url], input[type=number], input[type=password], input[type=datetime-local], textarea, select {
     @apply w-full box-border px-2.5 py-2 text-sm border border-gray-200 rounded-lg bg-white text-gray-900 font-sans;
   }
-  input[type=text]:focus, input[type=number]:focus, input[type=password]:focus, input[type=datetime-local]:focus, textarea:focus, select:focus {
+  input[type=text]:focus, input[type=url]:focus, input[type=number]:focus, input[type=password]:focus, input[type=datetime-local]:focus, textarea:focus, select:focus {
     @apply outline-none border-indigo-600 ring-4 ring-indigo-50;
   }
   input[type=checkbox] { @apply w-[18px] h-[18px] accent-indigo-600 cursor-pointer; }
@@ -1014,7 +1014,9 @@ _PAGE_STYLE = """
 
   .muted { @apply text-gray-500 text-sm; }
 
-  .flash, .error, .warning { @apply rounded-2xl px-4 py-3 mb-5 text-sm flex items-center gap-2; }
+  /* A plain block: these hold a sentence with <strong>/<a>/<code> in it, and as a flex row every inline piece
+     became its own column (ragged on a phone). None of them contains a button or form. */
+  .flash, .error, .warning { @apply rounded-2xl px-4 py-3 mb-5 text-sm; }
   .flash { @apply bg-emerald-50 border border-emerald-200 text-emerald-700; }
   .error { @apply bg-red-50 border border-red-200 text-red-700; }
   .warning { @apply bg-amber-50 border border-amber-200 text-amber-800; }
@@ -1181,7 +1183,7 @@ _PAGE_STYLE = """
   .mini-help { @apply mt-1.5 text-xs text-gray-500; }
   .mini-help summary { @apply cursor-pointer text-indigo-600 font-medium; }
   .mini-help code { @apply block bg-gray-50 border border-gray-200 rounded-md px-2 py-1 mt-1 text-[11px] text-gray-700 break-all whitespace-pre-wrap; }
-  .hint { @apply text-gray-500 text-xs mt-1 leading-relaxed; }
+  .hint, .fg-hint { @apply text-gray-500 text-xs mt-1 leading-relaxed; }
   details.page-section { @apply border border-gray-200 rounded-xl px-4 py-3 mt-3 bg-gray-50/60; }
   details.page-section > summary { @apply cursor-pointer text-sm font-semibold text-gray-800; }
   details.page-section[open] > summary { @apply mb-2; }
@@ -1256,6 +1258,35 @@ _PAGE_STYLE = """
   .data-table td.col-actions form { @apply inline-block ml-1.5; }
   .data-table .row-url { @apply text-gray-500 text-[13px] break-all; }
   .account-filter { @apply flex items-center gap-2.5 mb-5 flex-wrap; }
+  /* Compose forms on /admin/post: a two-column grid on a wide screen (short fields side by side,
+     long ones span both), a single column on a phone. */
+  .form-grid { @apply grid grid-cols-1 gap-x-4 gap-y-4 sm:grid-cols-2; }
+  .form-grid > .span-2 { @apply sm:col-span-2; }
+  .fg { @apply flex flex-col gap-1.5 min-w-0; }
+  .fg-label .req { @apply text-red-600; }
+  .fg input.narrow { @apply w-28; }
+  .fg textarea.compact { @apply min-h-[96px]; }
+  .salary-row { @apply flex items-center gap-2 flex-wrap; }
+  .salary-row input { @apply w-28 flex-none; }
+  .salary-row select { @apply w-auto; }
+  .post-block { @apply border border-gray-200 rounded-xl p-3.5 mb-2.5; }
+  .block-groups-head { @apply flex items-center justify-between mt-3 mb-2; }
+  .group-pills { @apply flex flex-wrap gap-2; }
+  .group-pill { @apply flex items-center gap-1.5 text-[13px] bg-gray-50 border border-gray-200 rounded-lg px-2.5 py-1.5 cursor-pointer; }
+  .group-pill:has(input:checked) { @apply bg-indigo-50 border-indigo-300; }
+  .block-remove { @apply mt-3; }
+  .post-actions { @apply mt-5 pt-4 border-t border-gray-100 flex flex-wrap items-start justify-between gap-x-4 gap-y-3; }
+  .post-as { @apply text-sm text-gray-500 pt-2; }
+  .post-as b { @apply text-gray-800 font-semibold; }
+  .post-btns { @apply flex flex-wrap items-start justify-end gap-3 ml-auto; }
+  .mode-opt { @apply flex flex-col gap-1 max-w-[260px]; }
+  .post-count { @apply text-sm text-gray-600 self-center; }
+  .post-count.post-count-empty { @apply text-amber-700; }
+  @media (max-width: 639px) {
+    .post-btns { @apply w-full; }
+    .mode-opt { @apply flex-1 max-w-none; flex-basis: 100%; }
+    .post-btns button { @apply w-full; }
+  }
   .account-filter select { @apply w-auto min-w-[260px]; }
   .account-filter label { @apply text-sm text-gray-500 font-semibold; }
 
@@ -1651,13 +1682,158 @@ _PAGE_STYLE = """
       var activeTab = document.querySelector("[data-tabs] .tab-btn.active");
       setHidden(form, "profile_content", contentEl ? contentEl.value : "");
       setHidden(form, "profile_scheduled_at", scheduleUtcEl ? scheduleUtcEl.value : "");
-      setHidden(form, "tab", activeTab ? activeTab.getAttribute("data-tab-target") : "");
+      setHidden(form, "tab", activeTab ? activeTab.getAttribute("data-tab-target").replace(/^tab-/, "") : "");
+      writePostDraft(true);
       form.submit();
     });
   }
 
-  // Plain tab switcher for /admin/post's Tường cá nhân / Đăng vào nhóm
-  // sections — added because the page got long enough that having both
+  // /admin/post keeps what was typed across the two ways the page reloads
+  // under the admin: switching account (plain GET form, above) and a
+  // server-side validation error (redirect back with ?error=). Every
+  // compose form's plain fields — text, textarea, number, select, the ticked
+  // group checkboxes and the extra "+ Thêm nội dung khác" blocks — are
+  // stashed in sessionStorage right before either one, and put back on the
+  // next load ONLY if that load was one of those two (`switched`, or ?error=
+  // present); a normal visit, or the success redirect (?scheduled= /
+  // ?posted=), just clears it so an old draft never resurfaces. A blank
+  // time means "now", so the date pickers travel too (their hidden UTC value;
+  // the visible picker is rebuilt from it). Storage can be blocked and a
+  // stored draft can be from another build — every access is guarded, and
+  // the page works the same without a draft.
+  //
+  // Fields are keyed by form action + name + POSITION of their content block
+  // (content_0 / content_3 are "the block at position p": the number in the
+  // name is only an id), so blocks come back in order whatever their ids.
+  // Account-specific things are not carried to another account: the ticked
+  // groups and the group count (each account has its own limit), nor the
+  // "retry of report row N" link, which belongs to the account that failed.
+  var POST_DRAFT_KEY = "human_bot.postDraft";
+
+  function postForms() {
+    return document.querySelectorAll("[data-tabs] form[action^='/admin/post/']");
+  }
+
+  function eachDraftField(callback) {
+    postForms().forEach(function (f) {
+      var action = f.getAttribute("action");
+      var blocks = f.querySelectorAll("[data-block]");
+      f.querySelectorAll("textarea[name], input[name], select[name]").forEach(function (el) {
+        if (el.name === "account_id") return;
+        if (el.type === "hidden" && el.name !== "retry_of_log_id" && !el.hasAttribute("data-schedule-utc")) return;
+        var block = el.closest("[data-block]");
+        var position = block ? Array.prototype.indexOf.call(blocks, block) : -1;
+        callback(el, action + "|" + el.name.replace(/_\\d+$/, "_") + "|" + position);
+      });
+    });
+  }
+
+  function writePostDraft(switched) {
+    try {
+      var fields = {}, checks = {}, blocks = {};
+      eachDraftField(function (el, key) {
+        if (el.type === "checkbox") {
+          if (el.checked) (checks[key] = checks[key] || []).push(el.value);
+        } else {
+          fields[key] = el.value;
+        }
+      });
+      postForms().forEach(function (f) { blocks[f.getAttribute("action")] = f.querySelectorAll("[data-block]").length; });
+      sessionStorage.setItem(POST_DRAFT_KEY, JSON.stringify({ switched: !!switched, fields: fields, checks: checks, blocks: blocks }));
+    } catch (e) { /* storage blocked: the form just starts empty */ }
+  }
+
+  function applyPostDraft(draft) {
+    // The extra content blocks only exist after a click on "+ Thêm nội dung
+    // khác": add as many as the draft had (bounded, in case the click does nothing).
+    postForms().forEach(function (f) {
+      var want = (draft.blocks || {})[f.getAttribute("action")] || 0;
+      var add = f.querySelector("[data-add-block]");
+      for (var guard = 0; add && guard < 50 && f.querySelectorAll("[data-block]").length < want; guard++) add.click();
+    });
+    eachDraftField(function (el, key) {
+      if (el.type === "hidden") {
+        // hidden: the date pickers' UTC value (the visible picker is rebuilt from it) and the
+        // retry link; a value the server already put there wins.
+        if (el.value || !draft.fields[key] || (el.name === "retry_of_log_id" && draft.switched)) return;
+        el.value = draft.fields[key];
+        var wrap = el.closest("[data-schedule-field]");
+        var local = wrap && wrap.querySelector("[data-schedule-local]");
+        var when = new Date(el.value);
+        if (local && !isNaN(when.getTime())) local.value = toLocalInputValue(when);
+        return;
+      }
+      if (el.type === "checkbox") {
+        var ticked = draft.checks[key];
+        if (!draft.switched && ticked && ticked.indexOf(el.value) !== -1) el.checked = true;
+        return;
+      }
+      if (!(key in draft.fields) || (draft.switched && el.name === "group_count")) return;
+      var value = draft.fields[key];
+      // A server-side prefill (the "Đặt lịch" link from Báo cáo) wins over a
+      // draft for free-text fields; a select only takes a value it still offers.
+      if ((el.tagName === "TEXTAREA" || el.type === "text" || el.type === "url") && el.value) return;
+      if (el.tagName === "SELECT" && !Array.prototype.some.call(el.options, function (o) { return o.value === value; })) return;
+      if (el.type === "number" && el.max && Number(value) > Number(el.max)) value = el.max;
+      el.value = value;
+    });
+    postForms().forEach(function (f) { f.dispatchEvent(new Event("change", { bubbles: true })); });
+    document.querySelectorAll("[data-salary-period]").forEach(function (sel) { sel.dispatchEvent(new Event("change")); });
+  }
+
+  function initPostDrafts(form) {
+    if (form.dataset.draftsInit) return;
+    form.dataset.draftsInit = "1";
+    var draft = null;
+    try {
+      draft = JSON.parse(sessionStorage.getItem(POST_DRAFT_KEY) || "null");
+      sessionStorage.removeItem(POST_DRAFT_KEY);
+    } catch (e) { draft = null; }
+    var usable = draft && typeof draft === "object" && draft.fields && typeof draft.fields === "object" && draft.checks && typeof draft.checks === "object";
+    if (usable && (draft.switched || new URLSearchParams(location.search).has("error"))) {
+      try { applyPostDraft(draft); } catch (e) { /* a draft this page cannot read: start empty */ }
+    }
+    postForms().forEach(function (f) {
+      f.addEventListener("submit", function () { writePostDraft(false); });
+    });
+  }
+
+  // "Sẽ tạo N bài" next to the group form's submit button: one post per
+  // content block x ticked group, so the admin sees the size of what they are
+  // about to schedule. Counts ticked boxes; re-counted after any change and
+  // after any click (add/remove block, "Chọn tất cả" set .checked in code).
+  function initPostCount(form) {
+    if (form.dataset.countInit) return;
+    form.dataset.countInit = "1";
+    var out = form.querySelector("[data-post-count]");
+    if (!out) return;
+    function update() {
+      var n = form.querySelectorAll("[data-block-list] input[type=checkbox]:checked").length;
+      out.textContent = n ? "Sẽ tạo " + n + " bài" : "Chưa chọn nhóm nào";
+      out.classList.toggle("post-count-empty", !n);
+    }
+    form.addEventListener("change", update);
+    form.addEventListener("click", function () { setTimeout(update, 0); });
+    update();
+  }
+
+  // The salary hint under "Lương" follows the period (man for month/year,
+  // plain yen for hour) — the same rule _build_manual_job() applies.
+  function initSalaryHint(select) {
+    if (select.dataset.hintInit) return;
+    select.dataset.hintInit = "1";
+    var hint = document.querySelector("[data-salary-hint]");
+    if (!hint) return;
+    function update() {
+      var text = select.getAttribute("data-hint-" + select.value);
+      if (text) hint.textContent = text;
+    }
+    select.addEventListener("change", update);
+    update();
+  }
+
+  // Plain tab switcher (/admin/post's four compose tabs, the config tabs, ...) —
+  // added because the page got long enough that having every section
   // always visible at once was more scrolling than scanning. No
   // routing/state beyond which panel is showing; the
   // initial active tab is decided server-side (post_form()'s `tab` query
@@ -1725,7 +1901,7 @@ _PAGE_STYLE = """
   // server (schedule_store) treats it as UTC — so add the "Z" before parsing.
   function parseUtc(iso) {
     if (!iso) return null;
-    var d = new Date(/(Z|[+-]\d\d:?\d\d)$/i.test(iso) ? iso : iso + "Z");
+    var d = new Date(/(Z|[+-]\\d\\d:?\\d\\d)$/i.test(iso) ? iso : iso + "Z");
     return isNaN(d.getTime()) ? null : d;
   }
 
@@ -1842,6 +2018,9 @@ _PAGE_STYLE = """
     root.querySelectorAll("[data-tz-offset-field]").forEach(initTzOffsetField);
     root.querySelectorAll("[data-apply-tier]").forEach(initApplyTierButton);
     root.querySelectorAll("[data-preserve-post-form]").forEach(initPreservePostForm);
+    root.querySelectorAll("[data-preserve-post-form]").forEach(initPostDrafts);
+    root.querySelectorAll("[data-post-count-form]").forEach(initPostCount);
+    root.querySelectorAll("[data-salary-period]").forEach(initSalaryHint);
     root.querySelectorAll("[data-tabs]").forEach(initTabs);
   }
 
@@ -1982,6 +2161,32 @@ def _datetime_picker_html(name: str, current_value: str = "", required: bool = F
         f"{hint}"
         f"</div>"
     )
+
+
+def _vn_int(n: int) -> str:
+    return f"{n:,}".replace(",", ".")
+
+
+# Shown under "Lương", worded from the same constant the server converts with. `_SALARY_HINT_ANY` is what a page
+# without JS keeps showing (all three periods in one line); the script swaps in the line for the chosen period.
+_SALARY_HINTS = {
+    "month": f"Nhập theo man (万 = {_vn_int(content_strategist.YEN_PER_MAN)} yên): 25 nghĩa là 25万 = {_vn_int(25 * content_strategist.YEN_PER_MAN)} yên mỗi tháng.",
+    "year": f"Nhập theo man (万 = {_vn_int(content_strategist.YEN_PER_MAN)} yên): 300 nghĩa là 300万 = {_vn_int(300 * content_strategist.YEN_PER_MAN)} yên mỗi năm.",
+    "hour": "Nhập số yên: 1500 nghĩa là 1.500 yên mỗi giờ.",
+}
+_SALARY_HINT_ANY = f"Theo tháng hoặc năm: nhập theo man (万 = {_vn_int(content_strategist.YEN_PER_MAN)} yên), ví dụ 25 là {_vn_int(25 * content_strategist.YEN_PER_MAN)} yên. Theo giờ: nhập số yên."
+
+
+def _fg(label: str, control: str, *, span2: bool = False, hint: str = "", hint_attrs: str = "", tag: str = "label") -> str:
+    """One labelled field of a compose form (.form-grid: two columns on a
+    wide screen, one on a phone; span2 = the whole row). `tag="label"` wraps
+    a single control so clicking the caption focuses it; use "div" when the
+    control is several elements (the date picker + its preset buttons, a
+    salary range) — a <label> around those would forward clicks to the
+    first one only. `label` and `hint` are trusted HTML (callers pass
+    literals); `control` is built by the caller, who escapes any value."""
+    hint_html = f'<span class="fg-hint"{hint_attrs}>{hint}</span>' if hint else ""
+    return f'<{tag} class="fg{" span-2" if span2 else ""}"><span class="fg-label">{label}</span>{control}{hint_html}</{tag}>'
 
 
 def _is_htmx(request: Request) -> bool:
@@ -4709,13 +4914,14 @@ async def post_form(
         account_id = account_ids[0]
     account_labels = {aid: _account_label(aid, accounts) for aid in account_ids}
 
+    open_schedule = '<a href="/admin/schedule">Mở Lịch đăng →</a>'
     if scheduled:
-        flash = '<p class="flash">✅ Đã lên lịch — xem/sửa/đăng ngay ở /admin/schedule.</p>'
+        flash = f'<div class="flash">✅ Đã lên lịch. {open_schedule} để xem, sửa hoặc đăng ngay.</div>'
     elif posted:
-        flash = f'<p class="flash">✅ {html.escape(posted)}</p>'
+        flash = f'<div class="flash">✅ {html.escape(posted)}. {open_schedule}</div>'
     else:
         flash = ""
-    err = f'<p class="error">⚠️ {html.escape(error)}</p>' if error else ""
+    err = f'<div class="error">⚠️ {html.escape(error)}</div>' if error else ""
 
     # Doesn't block composing/scheduling for a paused account — a task
     # created now is still safely staged behind /admin/schedule's own
@@ -4740,64 +4946,69 @@ async def post_form(
     # than trying to keep an account-scoped group checkbox list in sync
     # via JS/htmx — same "still-full-reload page" simplicity already used
     # elsewhere on this page. To stop that reload from silently wiping
-    # whatever was already typed into the "Đăng lên tường cá nhân" card
-    # (reported in the conversation that raised this — content + the
-    # picked time both reset), preservePostFormOnAccountSwitch (this
-    # module's page script) copies that card's current content/time into
-    # hidden fields on THIS form before it submits, and post_form() below
-    # reads them back (profile_content/profile_scheduled_at) to re-fill
-    # the card after the reload. Scoped to the profile card only — the
-    # "Đăng vào nhóm" card's content blocks are dynamically added by JS
-    # and not worth the extra complexity to preserve the same way.
+    # whatever was already typed, initPreservePostForm (this
+    # module's page script) copies the "Đăng lên tường cá nhân" card's
+    # content/time into hidden fields on THIS form before it submits —
+    # post_form() below reads them back (profile_content/
+    # profile_scheduled_at) — and stashes every other compose field in
+    # sessionStorage, which initPostDrafts puts back after the reload (also
+    # after a validation error sends the admin back here). The hidden `tab`
+    # keeps the admin on the tab they were using.
     account_picker = f"""
 <form method="get" action="/admin/post" class="account-filter" id="post-account-form" data-preserve-post-form>
-  <label for="post-account-select">Soạn cho tài khoản</label>
+  <label for="post-account-select">Đăng bằng tài khoản</label>
   <select name="account_id" id="post-account-select">
     {"".join(f'<option value="{html.escape(aid)}"{" selected" if aid == account_id else ""}>{html.escape(account_labels[aid])}</option>' for aid in account_ids)}
   </select>
 </form>"""
+    post_as = f'<span class="post-as">Đăng bằng <b>{html.escape(account_labels[account_id])}</b></span>'
 
     groups = get_joined_groups(account_id)
     if groups:
         group_checkboxes = "".join(
-            f'''<label style="display:flex; align-items:center; gap:6px; font-size:13px; background:#f9fafb; border:1px solid #e5e7eb; border-radius:8px; padding:6px 10px;">
-  <input type="checkbox" name="groups_0" value="{html.escape(g.url)}"{" checked" if prefill_target_url and g.url == prefill_target_url else ""}> {html.escape(g.name or g.url)}
-</label>'''
+            f"""<label class="group-pill">
+  <input type="checkbox" name="groups_0" value="{html.escape(g.url)}"{" checked" if prefill_target_url and g.url == prefill_target_url else ""}> <span>{html.escape(g.name or g.url)}</span>
+</label>"""
             for g in groups
         )
         group_post_card = f"""
 <div class="card">
-  <h2>👥 Đăng vào nhóm — {html.escape(account_labels[account_id])}</h2>
-  <p class="page-desc">Mỗi khối nội dung đăng vào một tập nhóm riêng (ví dụ nội dung A cho 3 nhóm đầu, nội dung B cho nhóm còn lại). Bot tự rải giờ giữa tất cả các bài theo khoảng cách ở <a href="/admin/config?tab=sync">Cấu hình → Đồng bộ dữ liệu</a>, nên không đăng dồn một lúc.</p>
-  <form method="post" action="/admin/post/schedule-groups">
+  <h2>👥 Đăng vào nhóm</h2>
+  <p class="page-desc">Viết nội dung, tick các nhóm sẽ đăng. Muốn mỗi nhóm một nội dung khác nhau thì thêm khối mới (ví dụ nội dung A cho 3 nhóm đầu, nội dung B cho nhóm còn lại). Giờ đăng được rải đều giữa tất cả các bài — không đăng dồn một lúc — theo khoảng cách đặt ở <a href="/admin/config?tab=sync">Cấu hình → Đồng bộ dữ liệu</a>.</p>
+  <form method="post" action="/admin/post/schedule-groups" data-post-count-form>
     <input type="hidden" name="account_id" value="{html.escape(account_id)}">
     <input type="hidden" name="retry_of_log_id" value="{prefill_retry_of_log_id or ""}">
     <div data-repeatable-blocks>
       <div data-block-list>
-        <div class="content-block" data-block style="border:1px solid #e5e7eb; border-radius:12px; padding:14px; margin-bottom:10px;">
+        <div class="content-block post-block" data-block>
           <textarea name="content_0" placeholder="Nội dung cho các nhóm được chọn bên dưới..." required>{html.escape(prefill_content or "")}</textarea>
-          <div class="field-key" style="margin:8px 0 6px; display:flex; align-items:center; justify-content:space-between;">
-            <span>Đăng vào nhóm:</span>
+          <div class="block-groups-head">
+            <span class="fg-label">Đăng vào nhóm</span>
             <button type="button" class="btn-secondary btn-small" data-select-all-groups>Chọn tất cả</button>
           </div>
-          <div style="display:flex; flex-wrap:wrap; gap:8px;">{group_checkboxes}</div>
-          <button type="button" class="btn-secondary btn-small" data-remove-block style="margin-top:10px;">Xoá khối này</button>
+          <div class="group-pills">{group_checkboxes}</div>
+          <button type="button" class="btn-secondary btn-small block-remove" data-remove-block>Xoá khối này</button>
         </div>
       </div>
       <button type="button" class="btn-secondary btn-small" data-add-block>+ Thêm nội dung khác</button>
     </div>
-    <div class="field-stack" style="margin-top:14px;">
-      <div class="field-label">Bắt đầu đăng lúc</div>
-      <div class="field-input">{_datetime_picker_html("start_at")}</div>
+    <div class="form-grid" style="margin-top:16px;">
+      {_fg("Bắt đầu đăng lúc", _datetime_picker_html("start_at"), span2=True, tag="div")}
     </div>
-    <div class="form-actions"><button type="submit">Lên lịch tất cả</button></div>
+    <div class="post-actions">
+      {post_as}
+      <div class="post-btns">
+        <span class="post-count" data-post-count aria-live="polite"></span>
+        <button type="submit">Lên lịch tất cả</button>
+      </div>
+    </div>
   </form>
 </div>"""
     else:
         group_post_card = f"""
 <div class="card">
-  <h2>👥 Đăng vào nhóm — {html.escape(account_labels[account_id])}</h2>
-  <div class="empty-state">Tài khoản này chưa có nhóm nào — thêm ở <a href="/admin/groups?account_id={html.escape(account_id)}">/admin/groups</a> trước.</div>
+  <h2>👥 Đăng vào nhóm</h2>
+  <div class="empty-state">Tài khoản này chưa tham gia nhóm nào — <a href="/admin/groups?account_id={html.escape(account_id)}">thêm ở “Nhóm đã tham gia”</a> trước.</div>
 </div>"""
 
     # "💬 Bình luận" tab (2026-09-12) — added specifically so /admin/reports'
@@ -4811,25 +5022,17 @@ async def post_form(
     # ("/groups/" in url).
     comment_post_card = f"""
 <div class="card">
-  <h2>💬 Đặt lịch bình luận — {html.escape(account_labels[account_id])}</h2>
+  <h2>💬 Bình luận</h2>
   <p class="page-desc">Bình luận vào MỘT bài Facebook có sẵn (dán URL bài đó bên dưới). Muốn đăng bài mới thì dùng “Đăng vào nhóm”.</p>
   <form method="post" action="/admin/post/schedule-comment">
     <input type="hidden" name="account_id" value="{html.escape(account_id)}">
     <input type="hidden" name="retry_of_log_id" value="{prefill_retry_of_log_id or ""}">
-    <div class="field-stack">
-      <div class="field-label">URL bài đăng/hồ sơ cần bình luận</div>
-      <div class="field-input">
-        <input type="url" name="target_url" placeholder="https://facebook.com/groups/.../posts/..." required
-               style="width:100%; box-sizing:border-box;"
-               value="{html.escape(prefill_target_url or "")}">
-      </div>
+    <div class="form-grid">
+      {_fg("URL bài đăng/hồ sơ cần bình luận", f'<input type="url" name="target_url" placeholder="https://facebook.com/groups/.../posts/..." required value="{html.escape(prefill_target_url or "")}">', span2=True)}
+      {_fg("Nội dung bình luận", f'<textarea name="content" placeholder="Nội dung bình luận..." required>{html.escape(prefill_content or "")}</textarea>', span2=True)}
+      {_fg("Đăng lúc", _datetime_picker_html("scheduled_at"), span2=True, tag="div")}
     </div>
-    <textarea name="content" placeholder="Nội dung bình luận..." required style="margin-top:14px;">{html.escape(prefill_content or "")}</textarea>
-    <div class="field-stack" style="margin-top:14px;">
-      <div class="field-label">Đăng lúc</div>
-      <div class="field-input">{_datetime_picker_html("scheduled_at")}</div>
-    </div>
-    <div class="form-actions"><button type="submit">Lên lịch</button></div>
+    <div class="post-actions">{post_as}<div class="post-btns"><button type="submit">Lên lịch</button></div></div>
   </form>
 </div>"""
 
@@ -4842,50 +5045,49 @@ async def post_form(
         f'<option value="{html.escape(code)}">{html.escape(code.capitalize())}</option>'
         for code in get_visa_type_names(_VISA_TYPE_NAMES_DEFAULT)
     )
+    salary_hint_attrs = " ".join(f'data-hint-{k}="{html.escape(v)}"' for k, v in _SALARY_HINTS.items())
+    jlpt_options = "".join(f'<option value="{n}">{n}</option>' for n in ("N1", "N2", "N3", "N4", "N5"))
     max_group_count = max(1, min(accounts[account_id].rate_limits.max_groups_per_post, max(len(groups), 1)))
     default_group_count = max_group_count
+    # What each button does, said next to it — and, when no AI key is set,
+    # said BEFORE the click (post_schedule_job() falls back to the template
+    # either way, but only told the admin afterwards).
+    if content_strategist.ai_provider_configured():
+        ai_hint = "mỗi nhóm một bài viết khác nhau (mất vài giây)"
+    else:
+        ai_hint = 'chưa có khoá AI ở <a href="/admin/config?tab=ai">Cấu hình → AI</a> — nút này sẽ dùng template'
     job_card = f"""
 <div class="card">
-  <h2>📋 Tin tuyển dụng — {html.escape(account_labels[account_id])}</h2>
-  <p class="page-desc">Nhập thông tin tin tuyển dụng như dữ liệu bên B gửi sang. Bot soạn mỗi nhóm một bài khác nhau, <b>tự chọn nhóm và xếp giờ</b> theo giới hạn của tài khoản rồi lên lịch (xem, sửa, huỷ ở <a href="/admin/schedule">Lịch đăng</a>). Chỉ cần Tiêu đề; ô nào để trống thì bài mời nhắn tin để trao đổi thêm.</p>
+  <h2>📋 Tin tuyển dụng</h2>
+  <p class="page-desc">Nhập thông tin của tin tuyển dụng như dữ liệu bên B gửi sang. Bot soạn mỗi nhóm một bài khác nhau, <b>tự chọn nhóm và xếp giờ</b> theo giới hạn của tài khoản rồi lên lịch (xem, sửa, huỷ ở <a href="/admin/schedule">Lịch đăng</a>). Chỉ cần Tiêu đề; ô nào để trống thì bài mời nhắn tin để trao đổi thêm.</p>
   <form method="post" action="/admin/post/schedule-job">
     <input type="hidden" name="account_id" value="{html.escape(account_id)}">
-    <div class="field-stack"><div class="field-label">Tiêu đề / vị trí *</div>
-      <div class="field-input"><input type="text" name="title" required maxlength="200" placeholder="VD: Vận hành máy" style="width:100%; box-sizing:border-box;"></div></div>
-    <div class="field-stack" style="margin-top:12px;"><div class="field-label">Công ty</div>
-      <div class="field-input"><input type="text" name="company" maxlength="200" style="width:100%; box-sizing:border-box;"></div></div>
-    <div class="field-stack" style="margin-top:12px;"><div class="field-label">Địa điểm</div>
-      <div class="field-input"><input type="text" name="location" maxlength="200" placeholder="VD: Ibaraki" style="width:100%; box-sizing:border-box;"></div></div>
-    <div style="display:flex; flex-wrap:wrap; gap:16px; margin-top:12px;">
-      <div class="field-stack"><div class="field-label">Visa</div>
-        <div class="field-input"><select name="visa"><option value="">— không rõ —</option>{visa_options}</select></div></div>
-      <div class="field-stack"><div class="field-label">JLPT</div>
-        <div class="field-input"><select name="jlpt"><option value="">— không yêu cầu / không rõ —</option>{"".join(f'<option value="{n}">{n}</option>' for n in ("N1", "N2", "N3", "N4", "N5"))}</select></div></div>
+    <div class="form-grid">
+      {_fg('Tiêu đề / vị trí <span class="req">*</span>', '<input type="text" name="title" required maxlength="200" placeholder="VD: Vận hành máy">', span2=True)}
+      {_fg("Công ty", '<input type="text" name="company" maxlength="200">')}
+      {_fg("Địa điểm", '<input type="text" name="location" maxlength="200" placeholder="VD: Ibaraki">')}
+      {_fg("Visa", f'<select name="visa"><option value="">— không rõ —</option>{visa_options}</select>')}
+      {_fg("JLPT", f'<select name="jlpt"><option value="">— không yêu cầu / không rõ —</option>{jlpt_options}</select>')}
+      {_fg("Lương", f'<div class="salary-row"><input type="number" name="salary_min" min="0" step="any" placeholder="từ" aria-label="Lương từ"><span class="muted">–</span><input type="number" name="salary_max" min="0" step="any" placeholder="đến" aria-label="Lương đến"><select name="salary_period" aria-label="Tính theo" data-salary-period {salary_hint_attrs}><option value="month">/ tháng</option><option value="year">/ năm</option><option value="hour">/ giờ</option></select></div>', span2=True, tag="div", hint=_SALARY_HINT_ANY, hint_attrs=" data-salary-hint")}
+      {_fg("Thông tin thêm", '<textarea name="extra_info" rows="4" maxlength="1000" class="compact" placeholder="VD: Trợ cấp vợ con 2m8, trợ cấp nhà, tăng ca 30h/tháng"></textarea>', span2=True)}
+      {_fg("Số nhóm sẽ đăng", f'<input type="number" name="group_count" min="1" max="{max_group_count}" value="{default_group_count}" class="narrow">', span2=True, hint=f"Tối đa {max_group_count} (giới hạn của tài khoản; đã tham gia {len(groups)} nhóm). Hệ thống tự chọn nhóm, ưu tiên nhóm lâu chưa đăng.")}
     </div>
-    <div style="display:flex; flex-wrap:wrap; gap:16px; margin-top:12px; align-items:flex-end;">
-      <div class="field-stack"><div class="field-label">Lương từ</div>
-        <div class="field-input"><input type="number" name="salary_min" min="0" step="any" style="width:120px;"></div></div>
-      <div class="field-stack"><div class="field-label">đến</div>
-        <div class="field-input"><input type="number" name="salary_max" min="0" step="any" style="width:120px;"></div></div>
-      <div class="field-stack"><div class="field-label">Tính theo</div>
-        <div class="field-input"><select name="salary_period">
-          <option value="month">tháng — nhập theo man (万 = 10.000 yên)</option>
-          <option value="year">năm — nhập theo man (万)</option>
-          <option value="hour">giờ — nhập số yên</option>
-        </select></div></div>
-    </div>
-    <div class="field-stack" style="margin-top:12px;"><div class="field-label">Thông tin thêm</div>
-      <div class="field-input"><textarea name="extra_info" rows="4" maxlength="1000" placeholder="VD: Trợ cấp vợ con 2m8, trợ cấp nhà, tăng ca 30h/tháng"></textarea></div></div>
-    <div class="field-stack" style="margin-top:12px;"><div class="field-label">Đăng vào bao nhiêu nhóm (hệ thống tự chọn nhóm, ưu tiên nhóm lâu chưa đăng)</div>
-      <div class="field-input"><input type="number" name="group_count" min="1" max="{max_group_count}" value="{default_group_count}" style="width:100px;"> <span class="muted">tối đa {max_group_count} (giới hạn của tài khoản; đã tham gia {len(groups)} nhóm)</span></div></div>
-    <div class="form-actions" style="margin-top:16px;">
-      <button type="submit" name="mode" value="ai">✨ Tạo bằng AI & lên lịch</button>
-      <button type="submit" name="mode" value="template" class="btn-secondary">📄 Tạo bằng template & lên lịch</button>
+    <div class="post-actions">
+      {post_as}
+      <div class="post-btns">
+        <div class="mode-opt"><button type="submit" name="mode" value="ai">✨ Tạo bằng AI & lên lịch</button><span class="fg-hint">{ai_hint}</span></div>
+        <div class="mode-opt"><button type="submit" name="mode" value="template" class="btn-secondary">📄 Tạo bằng template & lên lịch</button><span class="fg-hint">khung mẫu có sẵn, nhanh, không dùng AI</span></div>
+      </div>
     </div>
   </form>
 </div>"""
 
-    active_tab = tab if tab in ("profile", "group", "comment", "job") else "profile"
+    # Most posts here are job posts into groups, so those tabs come first
+    # (and "Tường cá nhân" last). `tab` may arrive as the tab BUTTON's
+    # target id ("tab-job") — older links and the account-switch form sent
+    # that, which used to fall through to the default tab.
+    tab = (tab or "").removeprefix("tab-")
+    active_tab = tab if tab in ("job", "group", "comment", "profile") else "job"
 
     def tab_btn(key: str, label: str) -> str:
         cls = "tab-btn active" if key == active_tab else "tab-btn"
@@ -4904,48 +5106,39 @@ async def post_form(
 
 <div data-tabs>
   <div class="tab-bar">
-    {tab_btn("profile", "👤 Tường cá nhân")}
-    {tab_btn("group", "👥 Đăng vào nhóm")}
     {tab_btn("job", "📋 Tin tuyển dụng")}
+    {tab_btn("group", "👥 Đăng vào nhóm")}
     {tab_btn("comment", "💬 Bình luận")}
-  </div>
-
-  <div class="tab-panel" id="tab-profile"{panel_attrs("profile")}>
-    <div class="card">
-      <h2>👤 Đăng lên tường cá nhân — {html.escape(account_labels[account_id])}</h2>
-      <form method="post" action="/admin/post/schedule-profile">
-        <input type="hidden" name="account_id" value="{html.escape(account_id)}">
-        <input type="hidden" name="retry_of_log_id" value="{prefill_retry_of_log_id or ""}">
-        <textarea name="content" placeholder="Nội dung bài đăng..." required data-preserve-profile-content>{html.escape(profile_content or "")}</textarea>
-        <div class="field-stack" style="margin-top:14px;">
-          <div class="field-label">Đối tượng xem</div>
-          <div class="field-input">
-            <select name="audience">
-              <option value="public" selected>🌍 Công khai (Public)</option>
-              <option value="friends">👥 Bạn bè (Friends)</option>
-              <option value="only_me">🔒 Chỉ mình tôi (Only me)</option>
-            </select>
-          </div>
-        </div>
-        <div class="field-stack" style="margin-top:14px;">
-          <div class="field-label">Đăng lúc</div>
-          <div class="field-input" data-preserve-profile-schedule>{_datetime_picker_html("scheduled_at", current_value=profile_scheduled_at or "")}</div>
-        </div>
-        <div class="form-actions"><button type="submit">Lên lịch</button></div>
-      </form>
-    </div>
-  </div>
-
-  <div class="tab-panel" id="tab-group"{panel_attrs("group")}>
-    {group_post_card}
+    {tab_btn("profile", "👤 Tường cá nhân")}
   </div>
 
   <div class="tab-panel" id="tab-job"{panel_attrs("job")}>
     {job_card}
   </div>
 
+  <div class="tab-panel" id="tab-group"{panel_attrs("group")}>
+    {group_post_card}
+  </div>
+
   <div class="tab-panel" id="tab-comment"{panel_attrs("comment")}>
     {comment_post_card}
+  </div>
+
+  <div class="tab-panel" id="tab-profile"{panel_attrs("profile")}>
+    <div class="card">
+      <h2>👤 Tường cá nhân</h2>
+      <p class="page-desc">Đăng một bài lên trang cá nhân của tài khoản.</p>
+      <form method="post" action="/admin/post/schedule-profile">
+        <input type="hidden" name="account_id" value="{html.escape(account_id)}">
+        <input type="hidden" name="retry_of_log_id" value="{prefill_retry_of_log_id or ""}">
+        <div class="form-grid">
+          {_fg("Nội dung bài đăng", f'<textarea name="content" placeholder="Nội dung bài đăng..." required data-preserve-profile-content>{html.escape(profile_content or "")}</textarea>', span2=True)}
+          {_fg("Đối tượng xem", '<select name="audience"><option value="public" selected>🌍 Công khai (Public)</option><option value="friends">👥 Bạn bè (Friends)</option><option value="only_me">🔒 Chỉ mình tôi (Only me)</option></select>', span2=True)}
+          {_fg("Đăng lúc", f'<div data-preserve-profile-schedule>{_datetime_picker_html("scheduled_at", current_value=profile_scheduled_at or "")}</div>', span2=True, tag="div")}
+        </div>
+        <div class="post-actions">{post_as}<div class="post-btns"><button type="submit">Lên lịch</button></div></div>
+      </form>
+    </div>
   </div>
 </div>
 """, active="post", current_user=_build_current_user(request))
@@ -5105,7 +5298,7 @@ def _build_manual_job(form) -> dict:
             raise ValueError("Lương \"từ\" không được lớn hơn \"đến\"")
         # Month/year amounts are typed in man (万 = 10.000 yên) but side B —
         # and content_strategist._salary_line() — work in plain yên.
-        factor = 10000 if period in ("month", "year") else 1
+        factor = content_strategist.YEN_PER_MAN if period in content_strategist.MAN_PERIOD_KEYS else 1
 
         def to_yen(v):
             if not v:
@@ -5153,7 +5346,7 @@ async def post_schedule_job(request: Request, _: None = Depends(_require_login))
 
     joined = get_joined_groups(account_id)
     if not joined:
-        return back(error="Tài khoản này chưa tham gia nhóm nào — thêm ở /admin/groups trước")
+        return back(error="Tài khoản này chưa tham gia nhóm nào — thêm ở “Nhóm đã tham gia” trước")
     # Never more groups per job than the account's own limit (the same one
     # the side-B pipeline enforces) — a crafted POST can't lift it.
     limit = max(1, account.rate_limits.max_groups_per_post)
@@ -5170,7 +5363,7 @@ async def post_schedule_job(request: Request, _: None = Depends(_require_login))
         t.account_id == account_id and str(t.source_id).startswith("manual-") and t.job_data == job_data
         for t in schedule_store.list_pending()
     ):
-        return back(error="Tin này đã được lên lịch rồi và còn bài đang chờ đăng — xem ở /admin/schedule")
+        return back(error="Tin này đã được lên lịch rồi và còn bài đang chờ đăng — xem ở Lịch đăng")
 
     groups = _pick_groups_for_job(joined, _last_scheduled_time_per_group(account_id), needed=wanted)
 

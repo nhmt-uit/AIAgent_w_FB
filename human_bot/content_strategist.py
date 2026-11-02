@@ -262,9 +262,12 @@ _SALARY_LABELS_YEAR_EXTRA = ["Nenshuu", "年収"]
 # whenever the amount is actually in yên and the pay period is month/year
 # (an hourly/daily wage like "1400 yên/giờ" stays as a plain number; only
 # a monthly/yearly figure is large enough that man/lá/tờ reads naturally
-# — see _MAN_PERIOD_KEYS).
+# — see MAN_PERIOD_KEYS).
 _MAN_WORDS = ["lá", "tờ", "man", "m"]
-_MAN_PERIOD_KEYS = {"month", "year"}
+# 1万 (man) = 10,000 yên. The ONE place this lives: the posts print yên amounts as man (_format_man), and the admin
+# "Tin tuyển dụng" form takes month/year pay typed in man and converts it back to yên with the same factor.
+YEN_PER_MAN = 10000
+MAN_PERIOD_KEYS = {"month", "year"}
 
 _SALARY_RANGE_TEMPLATES = [
     "từ {lo} đến {hi}", "{lo}-{hi}", "khoảng {lo}-{hi}", "{lo}~{hi}", "dao động {lo}-{hi}", "tầm {lo}-{hi}",
@@ -279,7 +282,7 @@ _SALARY_MAX_TEMPLATES_ABOUT = ["khoảng {hi}", "~{hi}"]
 def _format_man(amount: float) -> str:
     """`250000` yên -> `"25"` (man/lá/tờ) — `1.5` for a half-man amount
     like `15000`, never a trailing `.0` for a whole number."""
-    man = amount / 10000
+    man = amount / YEN_PER_MAN
     if man == int(man):
         return str(int(man))
     return f"{man:.1f}"
@@ -304,7 +307,7 @@ def _salary_line(salary: Any) -> str | None:
     label = random.choice(label_pool)
     about_only = label == _SALARY_ABOUT_ONLY_LABEL
 
-    if currency == "JPY" and period in _MAN_PERIOD_KEYS:
+    if currency == "JPY" and period in MAN_PERIOD_KEYS:
         # Real yên amounts convert to man/lá/tờ — this is what side B's
         # min/max are actually denominated in (plain yên, e.g. 250000),
         # not already-in-man numbers, so the /10000 conversion here is

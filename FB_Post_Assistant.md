@@ -1145,6 +1145,10 @@ Telegram dùng nội dung đã soạn sẵn; muốn sửa chữ vẫn phải và
   không thử lại hàng loạt vì sẽ cùng hỏng lại — thử từng lỗi ở `/error`.
   Tin báo đỏ **"N lần thất bại LIÊN TIẾP"** nay có nút **"Tắt"** (một chạm, bật lại là chạy ngay), **"Tạm dừng"**
   (hỏi xác nhận, vì kích hoạt lại phải hạ nhiệt) và **"Đã biết"**; tin tự đổi theo trạng thái thật của tài khoản.
+- **Đăng bài gọn hơn, không mất chữ đã gõ (02/11).** Tab **Tin tuyển dụng** nay đứng đầu và là tab mở sẵn (phần lớn bài là tin tuyển dụng vào nhóm), form xếp thành hai cột (công ty | địa điểm, visa | JLPT…) và ghi rõ
+  cách nhập lương ("25 nghĩa là 25万 = 250.000 yên mỗi tháng"; theo giờ thì nhập số yên). Hai nút **Tạo bằng AI** / **Tạo bằng template** có chú thích đi kèm, và nếu chưa có khoá AI thì báo ngay trước khi bấm chứ không đợi đến sau.
+  Tên tài khoản sẽ đăng hiện **ngay cạnh nút gửi** để khỏi đăng nhầm. Ở tab Đăng vào nhóm có dòng **"Sẽ tạo N bài"**. Khi đổi tài khoản hoặc khi gửi bị báo lỗi, **chữ đã gõ, các khối nội dung thêm, giờ đã chọn được giữ lại**
+  (trước đây chỉ giữ ở tab Tường cá nhân; còn đổi tài khoản thì từng nhảy về tab Tường cá nhân — đã sửa). Thông báo thành công có link tới Lịch đăng. Khung thông báo màu (xanh/đỏ/vàng) không còn bị vỡ thành nhiều cột trên điện thoại.
 - **Trang chủ "Hôm nay" (02/11).** Trang đầu tiên của trang quản trị nay trả lời một câu: *hôm nay ổn không?* Thay sáu thẻ lối tắt to bằng **năm ô số bấm được** — chờ đăng hôm nay, kết quả hôm nay
   (thành công · thất bại), quá hạn, chờ duyệt, lỗi chưa xử lý — ô nào có việc thì viền vàng, bấm vào là tới đúng màn hình cần xử lý. Dưới đó là thẻ **"Cần chú ý"** gom mọi vấn đề thành một danh sách
   (tự động đăng đang tắt, tài khoản hoặc Page bị tạm dừng / chưa đăng nhập / cấu hình thiếu; thứ nào gấp xếp trước và thẻ tự ẩn khi không có gì), thẻ **"Sắp đăng"** bốn bài gần nhất và danh sách tài khoản

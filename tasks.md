@@ -6917,3 +6917,29 @@ Bước (3) trong thứ tự đã thống nhất. **Chưa commit** (chờ owner)
 - Đã chạy thật trên trình duyệt (dữ liệu mẫu) desktop + 390px. Rủi ro đã biết, KHÔNG sửa trong đợt này: test cũ `test_schedule_text_flags_tasks_whose_time_already_passed` có thể chập chờn quanh 02:00 JST
   (đã nói với owner, chưa được yêu cầu sửa).
 - **Có thể làm tiếp (chưa làm, chưa hỏi):** màn hình "Lỗi" trong admin (danh sách bài lỗi + Lên lịch lại/Bỏ qua) để ô "Lỗi chưa xử lý" có nơi dẫn tới; hiện chỉ trỏ sang Telegram.
+
+### Giao diện các màn hình còn lại — đợt 3: Đăng bài (2026-11-02)
+
+Bước (4). **Chưa commit** (chờ owner).
+- **Lỗi thật tìm thấy khi dựng thử:** đổi tài khoản khi đang ở tab "Tin tuyển dụng" (hay Bình luận…) thì trang nhảy về tab "Tường cá nhân": JS gửi `tab=tab-job` (id của nút) mà server chỉ nhận `job`.
+  Nay JS gửi đúng khoá (`job`), server cũng chấp nhận dạng `tab-…` (đường dẫn cũ). Test trình duyệt kiểm tra trên tab KHÔNG phải mặc định (vì mặc định mới là `job` nên sẽ che mất lỗi này).
+- **Thứ tự tab:** Tin tuyển dụng → Đăng vào nhóm → Bình luận → Tường cá nhân; mở trang không chỉ định tab thì vào **Tin tuyển dụng** (phần lớn bài ở đây là tin tuyển dụng vào nhóm). Các link có sẵn (`?tab=…`, "Đặt lịch" từ Báo cáo) giữ nguyên.
+- **Thanh chọn tài khoản:** "Đăng bằng tài khoản"; tên tài khoản không còn lặp ở tiêu đề từng thẻ mà hiện **một lần cạnh nút gửi** ("Đăng bằng **Tên (id)**") — chỗ mắt người dùng dừng lại trước khi bấm, tránh đăng nhầm tài khoản.
+- **Form Tin tuyển dụng gọn lại:** lưới 2 cột (Công ty | Địa điểm, Visa | JLPT; Tiêu đề, Lương, Thông tin thêm, Số nhóm chiếm cả hàng; 1 cột trên điện thoại), dấu * đỏ cho ô bắt buộc,
+  ô "Thông tin thêm" thấp hơn. **Lương:** từ – đến + "/ tháng · / năm · / giờ" trên một hàng, dòng gợi ý đổi theo kỳ ("25 nghĩa là 25万 = 250.000 yên mỗi tháng" / "1500 nghĩa là 1.500 yên mỗi giờ"; không JS thì hiện câu gộp cả ba kỳ).
+  **Hai nút** có chú thích bên dưới (AI: "mỗi nhóm một bài viết khác nhau"; template: "khung mẫu có sẵn, nhanh, không dùng AI"); chưa có khoá AI thì báo NGAY dưới nút AI ("sẽ dùng template", kèm link Cấu hình → AI) thay vì chỉ báo sau khi bấm.
+- **Tab Đăng vào nhóm:** nhóm hiện dạng nhãn tick, nhóm đã chọn tô màu; cạnh nút gửi có **"Sẽ tạo N bài"** (số khối × số nhóm đã tick, cập nhật khi tick / Chọn tất cả / thêm–xoá khối; "Chưa chọn nhóm nào" khi chưa tick). Bình luận và Tường cá nhân có nhãn cho từng ô.
+- **Không mất chữ đã gõ:** trước đây đổi tài khoản chỉ giữ nội dung Tường cá nhân, còn báo lỗi (vd. "Lương từ lớn hơn đến") thì form trống trơn. Nay mọi ô nhập của các form được cất vào `sessionStorage` ngay trước khi đổi tài khoản hoặc gửi,
+  và đổ lại CHỈ khi trang tải lại vì đổi tài khoản hoặc có `?error=` (đi thăm bình thường / gửi thành công thì xoá, không bao giờ hiện lại bản nháp cũ). Giữ cả các khối nội dung thêm bằng "+ Thêm nội dung khác" (theo THỨ TỰ khối, không theo số trong tên ô),
+  **giờ đã chọn** (giờ trống = "ngay bây giờ" nên mất giờ là đăng nhầm lập tức) và liên kết "đăng lại từ dòng báo cáo N". Không mang sang tài khoản khác: nhóm đã tick, số nhóm (mỗi tài khoản một hạn mức), liên kết đăng lại.
+  Bản nháp hỏng / từ phiên bản khác / giá trị select không còn tuỳ chọn → bỏ qua, không làm hỏng trang (các script khởi tạo sau đó vẫn chạy).
+- **Thông báo:** thành công có link **"Mở Lịch đăng →"**; các lỗi bên server không còn ghi đường dẫn ("xem ở /admin/schedule", "thêm ở /admin/groups") mà ghi tên màn hình ("Lịch đăng", "Nhóm đã tham gia").
+- **Sửa gốc lỗi khung thông báo trên điện thoại (mọi trang):** `.flash/.error/.warning` là hàng flex nên câu có `<strong>`/`<a>` bị vỡ thành nhiều cột ("Tự động đăng:" / "Đang tắt" / "— bài đến giờ…" xếp dọc). Không khung nào chứa nút/form → đổi thành khối thường.
+  Đã chụp lại Đăng bài, Lịch đăng, Tài khoản, Cấu hình ở 390px.
+- **Một chỗ định nghĩa man → yên:** `content_strategist.YEN_PER_MAN` / `MAN_PERIOD_KEYS` (trước: số 10000 viết cứng ở 2 nơi). Dòng gợi ý của form, phép đổi lưu lương và câu chữ trong bài đăng cùng dùng nó; test nối dòng gợi ý với kết quả `_build_manual_job`.
+  Ngoài ra sửa 2 chỗ regex trong script viết `\d` trong chuỗi Python thường (Python 3.12+ cảnh báo) — có test biên dịch `admin.py` với cảnh báo = lỗi.
+- **Rà soát /code-review (2 vòng):** vòng 1 — mất các khối thêm + liên kết đăng lại khi khôi phục, `applyPostDraft` không có try/catch, giá trị khôi phục không kiểm tra (select không còn tuỳ chọn, số nhóm của tài khoản khác), gốc rễ khung flex, trùng lặp CSS
+  (`.fg-label`/`.fg-hint` nay dùng chung luật với `.field-label`/`.hint`), test chỉ grep chuỗi; vòng 2 — giờ đã chọn không được khôi phục, fixture test không dọn khi skip, test trình duyệt phụ thuộc CDN, breakpoint 599 vs 640, hằng số trùng, comment tên hàm sai.
+  Cố ý KHÔNG làm: bỏ cơ chế `profile_content`/`profile_scheduled_at` trên URL (còn dùng cho link "Đặt lịch" từ Báo cáo và để vẫn giữ chữ khi trình duyệt chặn sessionStorage); render lại form kèm giá trị khi lỗi (đổi cách các route POST trả về — việc lớn hơn).
+- Test: `tests/test_admin_post_ui.py` (mới, 33 test: HTML phía server) + `tests/test_admin_post_browser.py` (mới, 11 test chạy trình duyệt thật bằng Playwright, tự bỏ qua nếu chưa cài Playwright/Chromium; chặn mọi request ra ngoài 127.0.0.1;
+  kiểm tra giữ tab, giữ chữ khi đổi tài khoản / khi lỗi, khối thêm, giờ, đếm bài, gợi ý lương, bản nháp hỏng). Đã thử "phá" bản sửa tab để chắc test bắt được. Suite 1271 pass.
