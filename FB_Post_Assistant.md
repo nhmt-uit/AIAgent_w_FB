@@ -1145,6 +1145,10 @@ Telegram dùng nội dung đã soạn sẵn; muốn sửa chữ vẫn phải và
   không thử lại hàng loạt vì sẽ cùng hỏng lại — thử từng lỗi ở `/error`.
   Tin báo đỏ **"N lần thất bại LIÊN TIẾP"** nay có nút **"Tắt"** (một chạm, bật lại là chạy ngay), **"Tạm dừng"**
   (hỏi xác nhận, vì kích hoạt lại phải hạ nhiệt) và **"Đã biết"**; tin tự đổi theo trạng thái thật của tài khoản.
+- **Cấu hình gọn hơn (02/11).** Tab "Cấu hình hành vi" từ ~5200px còn ~1700px: những thứ hay đổi (tự động đăng, ảnh đính kèm, hạ nhiệt, báo động Telegram) lên đầu; phần **giả lập hành vi người** (gõ phím, chờ, di chuột, cuộn trang — 43 mục) gập lại với lời nhắc
+  nên để mặc định. Mỗi cặp "tối thiểu / tối đa" thành **một dòng hai ô** ("từ … đến … ms"), số nguyên không còn hiện "15,0", dòng kỹ thuật "mặc định · key" bỏ đi (tên kỹ thuật chỉ hiện khi rê chuột); ô nào **khác mặc định** thì có vạch màu, hiện mặc định và nút **"↺ đặt lại"**.
+  Thanh **Lưu** dính đáy trang, báo "N thay đổi chưa lưu", có nút "Bỏ thay đổi" và cảnh báo khi rời trang chưa lưu. Tab **AI** chỉ còn một nút lưu: hai công tắc AI có hiệu lực ngay khi bật/tắt, nút "Lưu cấu hình AI" dành cho nhà cung cấp/key/model. Tab "Đồng bộ dữ liệu" chia nhóm
+  (Chu kỳ / Nhịp đăng / Chọn việc để đăng) và gập mục "Nâng cao"; các nhãn dài được viết lại bằng tiếng thường, không còn đường dẫn hay tên hằng.
 - **Báo cáo dễ đọc hơn, có tab "Lỗi" (02/11).** Mỗi lần bot chạy là **một dòng gọn** giống Lịch đăng: giờ, tên nhóm (không còn URL), tài khoản, nội dung đã đăng, và nếu lỗi thì **lý do bằng lời** ("Không thấy ô/nút cần bấm", "Máy mất mạng khi vào Facebook")
   kèm cho biết bài đã lên chưa — đoạn lỗi kỹ thuật dài chỉ hiện khi bấm "Chi tiết kỹ thuật". Ô **"Thất bại"** ở đầu trang bấm vào được và dẫn tới tab **Lỗi** mới (chỉ các lần thất bại, có nút đăng lại). Tab **Tổng quan** có thêm biểu đồ **"Lỗi theo nguyên nhân"**,
   bảng tuần ghi theo ngày ("26/10 – 01/11", tính theo giờ Nhật) với thanh tổng, tỉ lệ thành công theo từng loại việc, và danh sách nhóm đăng nhiều nhất (tên nhóm, top 10). Thẻ tin ở tab Bài đăng mở đầu bằng **tên tin**, và mức lương hiện dạng "22–28 man / tháng" thay vì dữ liệu thô.

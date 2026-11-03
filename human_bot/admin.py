@@ -335,18 +335,13 @@ _BOOL_FIELDS = {
 }
 
 # Pulled out of DataSyncConfig's usual card into their own "🤖 AI" tab in
-# /admin/config, next to the API key card — same fields, same save path
-# (save_data_sync_overrides()), just displayed somewhere more findable
-# than buried in "Đồng bộ dữ liệu". See config_form()'s docstring-less
-# but commented split logic.
+# /admin/config, next to the API key card. They are still DataSyncConfig fields, but they SAVE on their own, the
+# moment they are flipped (config_ai_toggle(), a read-merge-write of the data_sync section) — and the page-wide
+# "Lưu cấu hình" (config_save) carries their stored values over instead of reading them from the page.
 _AI_TOGGLE_FIELDS = {"job_post_ai_enabled", "candidate_reply_ai_enabled"}
 
 _SCHEDULING_LABELS: dict[str, str] = {
-    "auto_fire_enabled": (
-        "⚠️ Tự động đăng khi đến giờ — áp dụng cho MỌI bài trong lịch (tắt = chỉ đặt "
-        "lịch, phải bấm 'Đăng ngay' thủ công ở /admin/schedule; áp dụng cả bài tự động "
-        "từ bên B lẫn bài soạn tay ở /admin/post)"
-    ),
+    "auto_fire_enabled": "Tự động đăng khi đến giờ",
 }
 
 _ICONS: dict[str, str] = {
@@ -386,19 +381,16 @@ _DATA_SYNC_LABELS: dict[str, str] = {
     "quiet_hour_end_local": "Giờ kết thúc khung giờ yên tĩnh (giờ địa phương, 0-23)",
     "candidate_min_confidence": "Độ tin cậy tối thiểu để nhắn ứng viên (0-1)",
     "candidate_max_age_days": "Chỉ nhắn ứng viên có bài đăng trong vòng bao nhiêu ngày",
-    "job_min_confidence": "Độ tin cậy tối thiểu để TỰ lên lịch đăng job (0-1) — job thấp hơn mức này vẫn soạn sẵn nội dung bằng template nhưng chờ admin duyệt ở tab \"Chờ duyệt\" của /admin/schedule, không tự lên lịch",
-    "max_overflow_business_days": "Giới hạn số ngày nghiệp vụ được phép tràn khi hết hạn mức hôm nay (job sponsored cần chỗ trống gần, xem tài khoản 'Chỉ đăng sponsored' ở /admin/accounts)",
-    "max_cursor_holdback_days": "Số ngày tối đa giữ lùi con trỏ đồng bộ cho 1 job/candidate cứ bị hoãn mãi — quá hạn thì bỏ qua nó thay vì quét lại toàn bộ lịch sử vô thời hạn",
+    "job_min_confidence": "Độ tin cậy tối thiểu để tự lên lịch đăng tin tuyển dụng (0–1)",
+    "max_overflow_business_days": "Số ngày nghiệp vụ được phép tràn khi hết hạn mức hôm nay",
+    "max_cursor_holdback_days": "Số ngày tối đa giữ lại một tin/ứng viên bị hoãn mãi",
     "cache_retention_days": "Số ngày giữ lại cache chống trùng trước khi dọn",
     "job_post_ai_enabled": "Dùng AI soạn lại bài tin tuyển dụng đăng nhóm",
     "candidate_reply_ai_enabled": "Dùng AI để soạn câu reply comment bài viết ứng viên",
 }
 
-# Overrides the default "mặc định: X · key: field_name" sub-line
-# (render_rows() in config_form()) with a plain-language explanation
-# instead — used for the 2 AI toggles above, where "mặc định: True" is
-# far less useful to an operator than knowing what flipping it actually
-# changes at posting time.
+# The help line under the 2 AI toggles above (_config_rows_html() shows it as the row's explanation): what flipping
+# one actually changes at posting time.
 _FIELD_DESCRIPTIONS: dict[str, str] = {
     "job_post_ai_enabled": (
         "Bài viết sẽ được soạn lại ngay lúc đăng, nếu không sử dụng thì bài đăng sẽ được đăng theo "
@@ -407,6 +399,38 @@ _FIELD_DESCRIPTIONS: dict[str, str] = {
     "candidate_reply_ai_enabled": (
         "Comment sẽ được soạn ngay lúc đăng, hoặc nếu tắt sẽ sử dụng câu reply từ API GET /reply, "
         "hoặc từ template mẫu"
+    ),
+}
+
+# One plain-language line under a setting: what flipping / changing it does. Keyed "<section prefix>__<field>" (the
+# bare field names repeat across sections: every section has an "enabled"). Shown instead of the technical
+# "mặc định · key" line the rows used to carry (the key is now the label's tooltip).
+_FIELD_HELP: dict[str, str] = {
+    "scheduling__auto_fire_enabled": (
+        "Tắt = chỉ đặt lịch: bài đến giờ phải bấm “🚀 Đăng ngay” ở Lịch đăng. "
+        "Áp dụng cho mọi bài — tự động từ bên B lẫn soạn tay ở Đăng bài."
+    ),
+    "data_sync__job_min_confidence": (
+        "Tin thấp hơn mức này vẫn được soạn sẵn bằng template nhưng chờ bạn duyệt ở Lịch đăng → Chờ duyệt, không tự lên lịch."
+    ),
+    "data_sync__max_overflow_business_days": (
+        "Tin sponsored cần chỗ trống gần — xem thêm tuỳ chọn “Chỉ đăng sponsored” của từng tài khoản ở Tài khoản."
+    ),
+    "data_sync__max_cursor_holdback_days": (
+        "Mốc đồng bộ bị giữ lùi vì một tin hoặc ứng viên cứ bị hoãn; quá số ngày này thì bỏ qua nó thay vì quét lại toàn bộ lịch sử."
+    ),
+    "media__attach_random_meme_default": (
+        "Lấy ngẫu nhiên từ thư mục media/memes/. Ảnh do bên B cung cấp cho bài luôn được dùng trước."
+    ),
+    "safety_cooldown__cooldown_days": (
+        "Chia đôi thành 2 tuần: tuần 1 chạy ở mức sàn bên dưới cho mọi tier, tuần 2 nhích lên một tier thấp hơn; hết hạn thì tự trở về giới hạn cũ."
+    ),
+    "telegram__enabled": (
+        "Cần có token của bot Telegram trong .env và người nhận ở Tài khoản → Tài khoản Telegram. "
+        "Tắt ở đây để im lặng ngay, không cần sửa .env hay khởi động lại."
+    ),
+    "telegram__daily_summary_hour_jst": (
+        "Ngày nghiệp vụ kết thúc lúc 2h sáng nên không đặt sớm hơn; mặc định 6 = 6h sáng, sau khung giờ yên lặng."
     ),
 }
 
@@ -615,7 +639,7 @@ def _text_row_block_html(field_name: str, idx: int, value: str, placeholder: str
 def _textarea_row_block_html(field_name: str, idx: int, value: str, placeholder: str = "") -> str:
     return f"""
 <div class="content-block" data-block style="display:flex; flex-wrap:wrap; gap:8px; align-items:flex-start; margin-bottom:8px;">
-  <textarea name="{field_name}_{idx}" rows="2" placeholder="{html.escape(placeholder)}" style="flex:1 1 240px; min-width:160px; font-family:inherit;">{html.escape(value)}</textarea>
+  <textarea name="{field_name}_{idx}" rows="2" placeholder="{html.escape(placeholder)}" style="flex:1 1 240px; min-width:160px; min-height:64px; font-family:inherit;">{html.escape(value)}</textarea>
   <button type="button" class="btn-secondary btn-small" data-remove-block style="flex-shrink:0;">Xoá</button>
 </div>"""
 
@@ -871,10 +895,7 @@ def _validate_content_library(
 
 
 _MEDIA_LABELS: dict[str, str] = {
-    "attach_random_meme_default": (
-        "Tự động đính kèm ảnh ngẫu nhiên từ media/memes/ khi bài đăng chưa có ảnh riêng "
-        "(ảnh do bên B cung cấp cho bài đó luôn được ưu tiên dùng trước)"
-    ),
+    "attach_random_meme_default": "Tự động đính kèm ảnh ngẫu nhiên khi bài chưa có ảnh riêng",
 }
 
 _ICONS["media"] = "🖼️"
@@ -894,7 +915,7 @@ _SAFETY_COOLDOWN_LABELS: dict[str, str] = {
     # COOLDOWN_WEEK2_STEP_UP_TIER), không đọc các field này — chỉnh số
     # ở đây không ảnh hưởng gì tới mức tuần 2 của 1 tài khoản đã "trưởng
     # thành".
-    "cooldown_days": "Tổng số ngày hạ nhiệt (chia đôi thành 2 tuần: tuần 1 = mức sàn dưới đây cho MỌI tier, tuần 2 = nhích lên 1 tier thấp hơn — xem COOLDOWN_WEEK2_STEP_UP_TIER), trước khi tự trở về giới hạn cũ",
+    "cooldown_days": "Tổng số ngày hạ nhiệt",
     "posts_per_day": "Số bài đăng tối đa/ngày ở TUẦN 1 hạ nhiệt (mọi tier)",
     "comments_per_hour": "Số comment tối đa/giờ ở TUẦN 1 hạ nhiệt (mọi tier)",
     "comments_per_day": "Số comment tối đa/ngày ở TUẦN 1 hạ nhiệt (mọi tier)",
@@ -912,12 +933,9 @@ _CONFIG_SECTIONS.append(
 )
 
 _TELEGRAM_LABELS: dict[str, str] = {
-    "enabled": (
-        "Bật báo cáo/báo động qua Telegram (cần khai báo TELEGRAM_BOT_TOKEN trong .env, và "
-        "thêm người nhận ở /admin/accounts, tab \"Tài khoản Telegram\" — tắt ở đây để im lặng ngay không cần sửa .env/khởi động lại)"
-    ),
+    "enabled": "Bật báo cáo / báo động qua Telegram",
     "daily_summary_enabled": "Gửi tóm tắt mỗi ngày về những gì đã làm hôm qua (ngày nghiệp vụ 02:00 → 02:00 JST)",
-    "daily_summary_hour_jst": "Giờ gửi tóm tắt (giờ Nhật, 2–23 — ngày nghiệp vụ kết thúc lúc 2h sáng nên không đặt sớm hơn; mặc định 6 = 6h sáng, sau khung giờ yên lặng)",
+    "daily_summary_hour_jst": "Giờ gửi tóm tắt (giờ Nhật, 2–23)",
 }
 
 _ICONS["telegram"] = "📨"
@@ -1127,6 +1145,35 @@ _PAGE_STYLE = """
     .sched-actions .row-menu-pop { left: 0; right: auto; }
     .sched-edit { padding-left: 16px; }
   }
+  /* /admin/config (2026-11-02): rows that differ from the default, min/max pairs, folded "advanced" groups, sticky save bar. */
+  .field-help { @apply text-xs text-gray-500 mt-0.5 leading-relaxed; }
+  .field-row.is-changed { box-shadow: inset 3px 0 0 #818cf8; margin-inline: -.625rem; padding-inline: .625rem; }      /* the stripe sits outside; the text stays aligned */
+  .reset-wrap { @apply text-xs text-indigo-600; }
+  .reset-wrap b { @apply font-semibold; }
+  .reset-link { @apply bg-transparent border-0 p-0 ml-1 text-xs font-semibold text-indigo-600 cursor-pointer underline; }
+  .reset-link:hover { @apply bg-transparent text-indigo-800; }
+  .pair-input { @apply flex items-center gap-2 sm:w-[300px]; }
+  .pair-input input { @apply min-w-0; }
+  .pair-sep, .pair-unit { @apply text-sm text-gray-500 flex-none; }
+  .field-row.pair-bad .pair-input input { @apply border-red-400 bg-red-50; }
+  .cfg-group-title { @apply text-xs font-bold uppercase tracking-wide text-gray-500 mt-5 mb-1; }
+  .cfg-adv { @apply bg-white border border-gray-200 rounded-2xl shadow-sm mb-5; }
+  .cfg-adv > summary { @apply flex flex-wrap items-center gap-x-3 gap-y-1 px-5 py-3.5 cursor-pointer text-base font-semibold text-gray-900; list-style: none; }
+  .cfg-adv > summary::-webkit-details-marker { display: none; }
+  .cfg-adv > summary::before { content: "▸"; @apply text-gray-400 text-xs; }
+  .cfg-adv[open] > summary::before { content: "▾"; }
+  .cfg-adv-note { @apply text-xs font-normal text-gray-500 ml-auto; }
+  .cfg-adv-body { @apply px-5 pb-2; }
+  .cfg-adv-body .card { @apply shadow-none; }
+  .cfg-adv-inline { @apply shadow-none border-gray-100 bg-gray-50 mt-5 mb-0; }
+  .cfg-adv-inline > summary { @apply text-sm py-2.5; }
+  .cfg-adv-inline > .field-grid { @apply px-5 pb-3; }
+  .form-actions.savebar { @apply sticky bottom-0 z-[5] items-center justify-between gap-3 mt-4 px-4 py-3 bg-white border border-gray-200 rounded-2xl shadow-md; }
+  .form-actions.savebar[hidden] { @apply hidden; }
+  .savebar-note { @apply text-sm text-gray-500; }
+  .savebar-note.is-dirty { @apply text-amber-700 font-semibold; }
+  .savebar-buttons { @apply flex items-center gap-2; }
+  @media (max-width: 639px) { .pair-input { @apply w-full; } .cfg-adv-note { @apply ml-0 basis-full; } }
   /* /admin/reports (2026-11-02): bars (one accent colour, value at the tip), the same row look as Lịch đăng for every attempt. */
   .rep-grid { @apply grid grid-cols-1 items-start gap-5 mb-5 lg:grid-cols-2; }
   .rep-grid > .card { @apply mb-0; }
@@ -1899,6 +1946,101 @@ _PAGE_STYLE = """
     update();
   }
 
+  // /admin/config: every setting row that differs from its default says so (with the default and a "↺ đặt lại"),
+  // a min above its max turns red, and the sticky save bar counts the rows changed since the page opened — with a
+  // way to drop them (only the boxes it counts — not the AI key or the Kho nội dung text on other tabs), and a
+  // warning if the page is left with unsaved changes. A blank number box is saved as "back to the default"
+  // (config_save skips it and the section is replaced), so it is not shown as a change from the default.
+  function initConfigForm(form) {
+    if (form.dataset.configInit) return;
+    form.dataset.configInit = "1";
+    var rows = form.querySelectorAll("[data-field-row]");
+    var note = form.querySelector("[data-dirty-note]");
+    var discard = form.querySelector("[data-discard]");
+    var dirtyRows = 0, submitting = false;
+    function num(v) { var n = parseFloat(v); return isNaN(n) ? null : n; }
+    function atDefault(el) {
+      if (el.type === "checkbox") return String(el.checked) === el.getAttribute("data-default");
+      if (el.value === "") return true;
+      var a = num(el.value), b = num(el.getAttribute("data-default"));
+      return a !== null && a === b;
+    }
+    function changedSinceOpen(el) {
+      return el.type === "checkbox" ? el.checked !== el.defaultChecked : el.value !== el.defaultValue;
+    }
+    function refresh() {
+      dirtyRows = 0;
+      rows.forEach(function (row) {
+        var inputs = Array.prototype.slice.call(row.querySelectorAll("[data-default]"));
+        var allDefault = inputs.every(atDefault);
+        var wrap = row.querySelector("[data-reset-wrap]");
+        if (wrap) wrap.hidden = allDefault;
+        row.classList.toggle("is-changed", !allDefault);
+        if (inputs.some(changedSinceOpen)) dirtyRows++;
+        if (inputs.length === 2 && inputs[0].type === "number") {
+          var lo = num(inputs[0].value), hi = num(inputs[1].value);
+          row.classList.toggle("pair-bad", lo !== null && hi !== null && lo > hi);
+        }
+      });
+      if (note) {
+        note.textContent = dirtyRows ? dirtyRows + " thay đổi chưa lưu" : "Chưa có thay đổi";
+        note.classList.toggle("is-dirty", dirtyRows > 0);
+      }
+      if (discard) discard.hidden = dirtyRows === 0;
+      var adv = form.querySelector(".cfg-adv-body");
+      var badge = form.querySelector("[data-adv-changed]");
+      if (adv && badge) {
+        var n = adv.querySelectorAll(".field-row.is-changed").length;
+        badge.hidden = n === 0;
+        badge.textContent = "đã chỉnh " + n;
+      }
+    }
+    form.addEventListener("input", refresh);
+    form.addEventListener("change", refresh);
+    form.addEventListener("submit", function () { submitting = true; });
+    form.addEventListener("click", function (ev) {
+      var reset = ev.target.closest("[data-reset]");
+      if (reset) {
+        reset.closest("[data-field-row]").querySelectorAll("[data-default]").forEach(function (el) {
+          if (el.type === "checkbox") el.checked = el.getAttribute("data-default") === "true";
+          else el.value = el.getAttribute("data-default");
+        });
+        refresh();
+      }
+      if (ev.target.closest("[data-discard]")) {
+        rows.forEach(function (row) {
+          row.querySelectorAll("[data-default]").forEach(function (el) {
+            if (el.type === "checkbox") el.checked = el.defaultChecked; else el.value = el.defaultValue;
+          });
+        });
+        refresh();
+      }
+    });
+    window.addEventListener("beforeunload", function (ev) {
+      if (dirtyRows > 0 && !submitting) { ev.preventDefault(); ev.returnValue = ""; }
+    });
+    refresh();
+  }
+
+  // An AI switch saves itself over htmx; htmx does not swap a failed (4xx/5xx) or unreachable response, so without this
+  // the switch would stay flipped with nothing saved and no word about it.
+  function aiSwitchFailed(ev) {
+    var el = ev.detail && ev.detail.elt;
+    var card = el && el.closest ? el.closest("#ai-toggle-card") : null;
+    if (!card) return;
+    if (el.type === "checkbox") el.checked = !el.checked;
+    var note = card.querySelector("[data-save-error]");
+    if (!note) {
+      note = document.createElement("p");
+      note.className = "error";
+      note.setAttribute("data-save-error", "");
+      card.insertBefore(note, card.querySelector(".field-grid"));
+    }
+    note.textContent = "⚠️ Chưa lưu được — công tắc đã trở về như cũ. Thử lại sau ít phút.";
+  }
+  document.addEventListener("htmx:responseError", aiSwitchFailed);
+  document.addEventListener("htmx:sendError", aiSwitchFailed);
+
   // Plain tab switcher (/admin/post's four compose tabs, the config tabs, ...) —
   // added because the page got long enough that having every section
   // always visible at once was more scrolling than scanning. No
@@ -1928,7 +2070,7 @@ _PAGE_STYLE = """
         // than only once server-side at initial render. No-op (element
         // doesn't exist) on every other page sharing this helper.
         var genericSave = document.getElementById("config-generic-save-actions");
-        if (genericSave) genericSave.hidden = (target === "tab-content");
+        if (genericSave) genericSave.hidden = (target === "tab-content" || target === "tab-ai");
       });
     });
   }
@@ -2089,6 +2231,7 @@ _PAGE_STYLE = """
     root.querySelectorAll("[data-post-count-form]").forEach(initPostCount);
     root.querySelectorAll("[data-salary-period]").forEach(initSalaryHint);
     root.querySelectorAll("[data-tabs]").forEach(initTabs);
+    root.querySelectorAll("[data-config-form]").forEach(initConfigForm);
   }
 
   // Owner-reported 2026-09-15: the datetime picker (data-schedule-field,
@@ -3393,73 +3536,241 @@ async def admin_home(request: Request, _: None = Depends(_require_login)) -> str
 """, active="home", current_user=_build_current_user(request))
 
 
-@router.get("/config", response_class=HTMLResponse)
-async def config_form(request: Request, saved: bool = False, tab: str = "behavior", _: None = Depends(_require_login)) -> str:
-    def render_rows(config_cls, editable_fields, labels, current, prefix, field_subset=None):
-        """`field_subset` narrows which of `editable_fields` actually get
-        rendered here — used to split DataSyncConfig's 2 AI-toggle fields
-        out into their own tab (see below) without needing a whole
-        separate _CONFIG_SECTIONS entry/save path for them; they still
-        save through the same save_data_sync_overrides() as every other
-        DataSyncConfig field, just rendered in a different card/tab."""
-        defaults = config_cls()
-        names = field_subset if field_subset is not None else editable_fields
-        rows = []
-        for field_name in names:
-            label = labels.get(field_name, field_name)
-            default_val = getattr(defaults, field_name)
-            value = current.get(field_name, default_val)
-            form_name = f"{prefix}__{field_name}"
-            if field_name in _BOOL_FIELDS:
-                checked = "checked" if value else ""
-                input_html = (
-                    f'<label class="switch"><input type="checkbox" name="{form_name}" value="true" {checked}>'
-                    f'<span class="switch-slider"></span></label>'
-                )
-            else:
-                input_html = f'<input type="number" step="any" name="{form_name}" value="{html.escape(str(value))}">'
-            sub_line = (
-                html.escape(_FIELD_DESCRIPTIONS[field_name]) if field_name in _FIELD_DESCRIPTIONS
-                else f"mặc định: {html.escape(str(default_val))} · key: {field_name}"
-            )
+def _num_text(value) -> str:
+    """A setting's value as it should read in a box: 15.0 -> "15", 0.0005 -> "0.0005", 8 -> "8" (the boxes used to
+    show Python's float repr, "15,0" in a Vietnamese browser, for settings that are whole numbers)."""
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, int):
+        return str(value)
+    if isinstance(value, float):
+        text = repr(value)                                    # the shortest text that reads back as the same float
+        return text[:-2] if text.endswith(".0") else text
+    return str(value)
+
+
+# A "min"/"max" pair of settings reads as one row: "… (ms): [150] đến [450]". Found from the labels (the same text but
+# "— tối thiểu (unit)" / "— tối đa (unit)", the field names the same but min <-> max); the two that don't follow that
+# wording are listed by hand.
+_PAIR_MIN_RE = re.compile(r"^(?P<base>.+?)\s*—\s*tối thiểu\s*\((?P<unit>[^)]*)\)(?P<rest>.*)$")
+_PAIR_MAX_RE = re.compile(r"^(?P<base>.+?)\s*—\s*tối đa\s*\((?P<unit>[^)]*)\)(?P<rest>.*)$")
+_PAIR_OVERRIDES: dict[str, list[tuple[str, str, str, str]]] = {
+    "mouse": [("min_steps", "max_steps", "Số bước di chuyển chuột", "bước")],
+    "data_sync": [("quiet_hour_start_local", "quiet_hour_end_local", "Khung giờ yên tĩnh — không đặt lịch (giờ địa phương, 0–23)", "giờ")],
+}
+
+
+def _differs_from_default(value, default) -> bool:
+    """Numbers compare as numbers (15 == 15.0); anything else as is."""
+    try:
+        return float(value) != float(default)
+    except (TypeError, ValueError):
+        return value != default
+
+
+def _config_pairs(prefix: str, fields: list[str], labels: dict[str, str]) -> dict[str, tuple[str, str, str]]:
+    """first field -> (second field, shared label, unit) for every min/max pair among `fields`."""
+    pairs: dict[str, tuple[str, str, str]] = {}
+    for lo, hi, label, unit in _PAIR_OVERRIDES.get(prefix, []):
+        if lo in fields and hi in fields:
+            pairs[lo] = (hi, label, unit)
+    for lo in fields:
+        if lo in pairs:
+            continue
+        m = _PAIR_MIN_RE.match(labels.get(lo, ""))
+        hi = re.sub(r"(^|_)min(_|$)", r"\1max\2", lo, count=1)
+        if not m or hi == lo or hi not in fields:
+            continue
+        n = _PAIR_MAX_RE.match(labels.get(hi, ""))
+        if n and (n["base"], n["unit"], n["rest"]) == (m["base"], m["unit"], m["rest"]):
+            pairs[lo] = (hi, f'{m["base"]} ({m["unit"]}){m["rest"]}', m["unit"])
+    return pairs
+
+
+def _config_rows_html(config_cls, editable_fields, labels, current, prefix, field_subset=None, *, switch_attrs=None) -> str:
+    """The rows of one settings card. A number is a box with a unit in the label; a min/max pair is ONE row with two
+    boxes; every row that differs from the default says so, with the default and a "↺ đặt lại" (the page script keeps
+    that live as you type). The technical key is the label's tooltip, not a line of text. `switch_attrs(field)` (the AI tab):
+    extra attributes for a switch that saves ITSELF the moment it is flipped — such a switch carries no reset /
+    unsaved-change tracking."""
+    defaults = config_cls()
+    names = list(field_subset if field_subset is not None else editable_fields)
+    pairs = _config_pairs(prefix, names, labels)
+    second = {pair[0] for pair in pairs.values()}
+
+    def default_and_value(field):
+        default = getattr(defaults, field)
+        return default, current.get(field, default)
+
+    def differs(field) -> bool:
+        default, value = default_and_value(field)
+        return _differs_from_default(value, default)
+
+    def reset_html(changed: bool, shown_default: str) -> str:
+        return (
+            f'<span class="reset-wrap" data-reset-wrap{"" if changed else " hidden"}>đã chỉnh · mặc định <b>{html.escape(shown_default)}</b> '
+            f'<button type="button" class="reset-link" data-reset>↺ đặt lại</button></span>'
+        )
+
+    def number_box(field: str, aria: str = "") -> str:
+        default, value = default_and_value(field)
+        aria_attr = f' aria-label="{html.escape(aria)}"' if aria else ""
+        return (
+            f'<input type="number" step="any" name="{prefix}__{field}" value="{html.escape(_num_text(value))}" '
+            f'data-default="{html.escape(_num_text(default))}"{aria_attr}>'
+        )
+
+    rows = []
+    for field_name in names:
+        if field_name in second:
+            continue
+        label = labels.get(field_name, field_name)
+        help_text = _FIELD_HELP.get(f"{prefix}__{field_name}") or _FIELD_DESCRIPTIONS.get(field_name, "")
+        help_html = f'<div class="field-help">{html.escape(help_text)}</div>' if help_text else ""
+        if field_name in pairs:
+            other, pair_label, unit = pairs[field_name]
+            default_lo, _ = default_and_value(field_name)
+            default_hi, _ = default_and_value(other)
+            changed = differs(field_name) or differs(other)
             rows.append(f"""
-<div class="field-row">
-  <div class="field-label">{html.escape(label)}<div class="field-key">{sub_line}</div></div>
+<div class="field-row" data-field-row>
+  <div class="field-label" title="{html.escape(field_name)} · {html.escape(other)}">{html.escape(pair_label)}{help_html}<div class="field-key">{reset_html(changed, f"{_num_text(default_lo)} – {_num_text(default_hi)}")}</div></div>
+  <div class="field-input pair-input">{number_box(field_name, "từ")}<span class="pair-sep">đến</span>{number_box(other, "đến")}<span class="pair-unit">{html.escape(unit)}</span></div>
+</div>""")
+            continue
+        default, value = default_and_value(field_name)
+        if field_name in _BOOL_FIELDS:
+            checked = "checked" if value else ""
+            if switch_attrs:
+                extra, track = " " + switch_attrs(field_name), ""
+            else:
+                extra, track = "", f' data-default="{"true" if default else "false"}"'
+            input_html = (
+                f'<label class="switch"><input type="checkbox" name="{prefix}__{field_name}" value="true" {checked}{track}{extra}>'
+                f'<span class="switch-slider"></span></label>'
+            )
+            reset = "" if switch_attrs else f'<div class="field-key">{reset_html(bool(value) != bool(default), "bật" if default else "tắt")}</div>'
+        else:
+            input_html = number_box(field_name)
+            reset = f'<div class="field-key">{reset_html(differs(field_name), _num_text(default))}</div>'
+        tracked = "" if switch_attrs else " data-field-row"
+        rows.append(f"""
+<div class="field-row"{tracked}>
+  <div class="field-label" title="{html.escape(field_name)}">{html.escape(label)}{help_html}{reset}</div>
   <div class="field-input">{input_html}</div>
 </div>""")
-        return "".join(rows)
+    return "".join(rows)
 
-    def render_card(icon: str, title: str, rows_html: str) -> str:
-        return f"""
+
+def _config_card_html(icon: str, title: str, body_html: str, *, grid: bool = True) -> str:
+    """A settings card; `grid=False` when `body_html` already holds its own groups of rows."""
+    body = f'<div class="field-grid">{body_html}</div>' if grid else body_html
+    return f"""
 <div class="card">
   <h2>{icon} {html.escape(title)}</h2>
-  <div class="field-grid">{rows_html}</div>
+  {body}
 </div>"""
 
-    sections_html = []
-    for section_key, prefix, title, config_cls, editable_fields, labels, get_overrides, _save_fn in _CONFIG_SECTIONS:
-        current = get_overrides()
-        if section_key == "data_sync":
-            # Pulled out into the "ai" tab below, alongside the API key
-            # card — everything else from DataSyncConfig stays here.
-            fields_here = [f for f in editable_fields if f not in _AI_TOGGLE_FIELDS]
-        else:
-            fields_here = editable_fields
-        rows_html = render_rows(config_cls, editable_fields, labels, current, prefix, fields_here)
-        icon = _ICONS.get(prefix, "")
-        sections_html.append((section_key, render_card(icon, title, rows_html)))
 
-    data_sync_current = get_data_sync_overrides()
-    ai_toggle_rows = render_rows(
-        DataSyncConfig, EDITABLE_DATA_SYNC_FIELDS, _DATA_SYNC_LABELS, data_sync_current, "data_sync",
-        [f for f in EDITABLE_DATA_SYNC_FIELDS if f in _AI_TOGGLE_FIELDS],
+def _config_changed_count(config_cls, fields, current, prefix: str, labels: dict[str, str]) -> int:
+    """How many ROWS of a section differ from the default (a min/max pair is one row), like the page script counts."""
+    defaults = config_cls()
+    pairs = _config_pairs(prefix, list(fields), labels)
+    partner = {hi: lo for lo, (hi, _l, _u) in pairs.items()}
+    changed_rows = set()
+    for f in fields:
+        if f in current and _differs_from_default(current[f], getattr(defaults, f)):
+            changed_rows.add(partner.get(f, f))
+    return len(changed_rows)
+
+
+# The "Đồng bộ dữ liệu" tab: the fields grouped by what they are for. Fields not listed (a future one) land in "Nâng cao".
+_SYNC_GROUPS: list[tuple[str, list[str], bool]] = [
+    ("", ["enabled"], False),
+    ("Chu kỳ", ["poll_interval_minutes", "due_check_interval_seconds"], False),
+    ("Nhịp đăng", ["post_gap_min_minutes", "post_gap_max_minutes", "comment_gap_min_minutes", "comment_gap_max_minutes",
+                   "quiet_hour_start_local", "quiet_hour_end_local"], False),
+    ("Chọn việc để đăng", ["candidate_min_confidence", "candidate_max_age_days", "job_min_confidence"], False),
+    ("Nâng cao", ["cache_retention_days", "max_overflow_business_days", "max_cursor_holdback_days"], True),
+]
+
+# Behaviour tab: what an owner changes comes first; the typing / pacing / mouse / scroll simulation is folded away.
+_BEHAVIOR_PRIMARY = ("scheduling", "media", "safety_cooldown", "telegram")
+_BEHAVIOR_ADVANCED = ("human_typing", "pacing", "mouse", "scroll")
+
+
+def _ai_toggle_card_html(flash: str = "") -> str:
+    """The two AI on/off switches: each saves the moment it is flipped (its own tiny request — read-merge-write of the
+    data_sync section, so no other setting is touched), so this tab has ONE save button, the key card's own."""
+    def switch_attrs(field: str) -> str:
+        # Posts ONLY {field, value} (htmx would otherwise send the whole enclosing page form; and listing the checkbox in
+        # hx-params would send the literal "undefined" for an unticked one — hence an explicit `value`). The id keeps
+        # keyboard focus on the switch after the card is swapped.
+        return (
+            f'id="ai-toggle-{field}" hx-post="/admin/config/ai-toggle" hx-trigger="change" hx-target="#ai-toggle-card" '
+            f'hx-swap="outerHTML" hx-params="field,value" hx-vals=\'js:{{field: "{field}", value: event.target.checked}}\''
+        )
+
+    rows = _config_rows_html(
+        DataSyncConfig, EDITABLE_DATA_SYNC_FIELDS, _DATA_SYNC_LABELS, get_data_sync_overrides(), "data_sync",
+        [f for f in EDITABLE_DATA_SYNC_FIELDS if f in _AI_TOGGLE_FIELDS], switch_attrs=switch_attrs,
     )
-    ai_toggle_card = render_card("🤖", "Bật/tắt AI", ai_toggle_rows)
+    return f"""
+<div class="card" id="ai-toggle-card">
+  <h2>🤖 Bật/tắt AI</h2>
+  <p class="hint" style="margin-top:-6px;">Công tắc có hiệu lực ngay khi bật hoặc tắt — không cần bấm Lưu.</p>
+  {flash}
+  <div class="field-grid">{rows}</div>
+</div>"""
+
+
+@router.get("/config", response_class=HTMLResponse)
+async def config_form(request: Request, saved: bool = False, tab: str = "behavior", _: None = Depends(_require_login)) -> str:
+    sections = {sec[0]: sec for sec in _CONFIG_SECTIONS}
+    current_of = {key: sec[6]() for key, sec in sections.items()}
+
+    def card_for(key: str) -> str:
+        _key, prefix, title, config_cls, editable_fields, labels, _get_fn, _save_fn = sections[key]
+        rows_html = _config_rows_html(config_cls, editable_fields, labels, current_of[key], prefix)
+        return _config_card_html(_ICONS.get(prefix, ""), title, rows_html)
+
+    # --- tab "Cấu hình hành vi": the settings an owner touches first, then the human-simulation ones folded away
+    primary_keys = [k for k in _BEHAVIOR_PRIMARY if k in sections]
+    advanced_keys = [k for k in _BEHAVIOR_ADVANCED if k in sections]
+    other_keys = [k for k in sections if k not in _BEHAVIOR_PRIMARY and k not in _BEHAVIOR_ADVANCED and k != "data_sync"]
+    advanced_fields = sum(len(sections[k][4]) for k in advanced_keys)
+    advanced_changed = sum(_config_changed_count(sections[k][3], sections[k][4], current_of[k], sections[k][1], sections[k][5]) for k in advanced_keys)
+    changed_badge = f' <span class="badge badge-warn" data-adv-changed{"" if advanced_changed else " hidden"}>đã chỉnh {advanced_changed}</span>'
+    advanced_html = f"""
+<details class="cfg-adv">
+  <summary><span>🧑 Giả lập hành vi người</span> <span class="badge">{len(advanced_keys)} nhóm · {advanced_fields} mục</span>{changed_badge}<span class="cfg-adv-note">nâng cao — mặc định đã ổn, chỉ đổi khi hiểu rõ</span></summary>
+  <div class="cfg-adv-body">
+    <p class="hint">Cách bot gõ phím, chờ, di chuột và cuộn trang để giống người thật. Các giá trị mặc định đã được chọn để bot không lộ dấu hiệu tự động; đổi lung tung có thể khiến tài khoản dễ bị Facebook nhận ra.</p>
+    {"".join(card_for(k) for k in advanced_keys)}
+  </div>
+</details>""" if advanced_keys else ""
+    behavior_cards = "".join(card_for(k) for k in primary_keys + other_keys) + advanced_html
+
+    # --- tab "Đồng bộ dữ liệu bên B": grouped, the rarely-touched ones folded under "Nâng cao"
+    _k, sync_prefix, sync_title, sync_cls, sync_fields, sync_labels, _g, _s = sections["data_sync"]
+    sync_fields_here = [f for f in sync_fields if f not in _AI_TOGGLE_FIELDS]
+    listed = {f for _title, group_fields, _adv in _SYNC_GROUPS for f in group_fields}
+    sync_body = ""
+    for group_title, group_fields, advanced in _SYNC_GROUPS:
+        group_fields = [f for f in group_fields if f in sync_fields_here]
+        if advanced:
+            group_fields += [f for f in sync_fields_here if f not in listed]
+        if not group_fields:
+            continue
+        rows = _config_rows_html(sync_cls, sync_fields, sync_labels, current_of["data_sync"], sync_prefix, group_fields)
+        if advanced:
+            sync_body += f'<details class="cfg-adv cfg-adv-inline"><summary><span>{html.escape(group_title)}</span><span class="cfg-adv-note">hiếm khi cần đổi</span></summary><div class="field-grid">{rows}</div></details>'
+        else:
+            title_html = f'<div class="cfg-group-title">{html.escape(group_title)}</div>' if group_title else ""
+            sync_body += f'{title_html}<div class="field-grid">{rows}</div>'
+    sync_cards = _config_card_html(_ICONS.get("data_sync", ""), sync_title, sync_body, grid=False)
 
     flash = '<p class="flash">✅ Đã lưu cấu hình. Áp dụng ngay từ lần đăng bài tiếp theo.</p>' if saved else ""
-
-    behavior_cards = "".join(card for key, card in sections_html if key != "data_sync")
-    sync_cards = "".join(card for key, card in sections_html if key == "data_sync")
 
     active_tab = tab if tab in ("behavior", "sync", "ai", "content") else "behavior"
 
@@ -3474,7 +3785,7 @@ async def config_form(request: Request, saved: bool = False, tab: str = "behavio
 <h1>Cấu hình</h1>
 <p class="page-desc">Thay đổi có hiệu lực ngay, không cần khởi động lại.</p>
 {flash}
-<form method="post" action="/admin/config">
+<form method="post" action="/admin/config" data-config-form>
 <div data-tabs>
   <div class="tab-bar">
     {tab_btn("behavior", "🧑 Cấu hình hành vi")}
@@ -3495,7 +3806,7 @@ async def config_form(request: Request, saved: bool = False, tab: str = "behavio
   <div class="tab-panel" id="tab-ai"{panel_attrs("ai")}>
     <p class="page-desc">Nhà cung cấp AI, key, model và hai công tắc: AI soạn bài tin tuyển dụng, AI viết lại câu trả lời ứng viên.</p>
     {_ai_provider_card_html()}
-    {ai_toggle_card}
+    {_ai_toggle_card_html()}
   </div>
 
   <div class="tab-panel" id="tab-content"{panel_attrs("content")}>
@@ -3508,9 +3819,27 @@ async def config_form(request: Request, saved: bool = False, tab: str = "behavio
     )}
   </div>
 </div>
-<div class="form-actions" id="config-generic-save-actions"{' hidden' if active_tab == "content" else ''}><button type="submit">Lưu cấu hình</button></div>
+<div class="form-actions savebar" id="config-generic-save-actions"{' hidden' if active_tab in ("content", "ai") else ''}>
+  <span class="savebar-note" data-dirty-note>Chưa có thay đổi</span>
+  <span class="savebar-buttons"><button type="button" class="btn-secondary btn-small" data-discard hidden>Bỏ thay đổi</button><button type="submit">Lưu cấu hình</button></span>
+</div>
 </form>
 """, active="config", current_user=_build_current_user(request))
+
+
+@router.post("/config/ai-toggle", response_class=HTMLResponse)
+async def config_ai_toggle(request: Request, _: None = Depends(_require_login)) -> str:
+    """Saves ONE AI switch the moment it is flipped (the AI tab has no generic save button): `field` and `value`
+    ("true" / "false"). Read-merge-write: the data_sync section is REPLACED by save_data_sync_overrides(), so every
+    other setting in it is carried over."""
+    form = await request.form()
+    field = str(form.get("field", "")).strip()
+    if field not in _AI_TOGGLE_FIELDS:
+        raise HTTPException(status_code=400, detail="Unknown switch")
+    merged = dict(get_data_sync_overrides())
+    merged[field] = str(form["value"]).lower() == "true" if "value" in form else f"data_sync__{field}" in form
+    save_data_sync_overrides(merged)
+    return _ai_toggle_card_html(flash='<p class="flash">✅ Đã lưu.</p>')
 
 
 @router.post("/config")
@@ -3543,6 +3872,13 @@ async def config_save(request: Request, _: None = Depends(_require_login)) -> Re
         values: dict = {}
         for field_name in editable_fields:
             form_name = f"{prefix}__{field_name}"
+            if section_key == "data_sync" and field_name in _AI_TOGGLE_FIELDS:
+                # These save themselves when flipped (config_ai_toggle). The page may be stale (flipped in another
+                # tab, or a flip that never saved), so the page-wide save keeps what is STORED instead of the page.
+                stored = get_data_sync_overrides()
+                if field_name in stored:
+                    values[field_name] = stored[field_name]
+                continue
             if field_name in _BOOL_FIELDS:
                 values[field_name] = form_name in form
                 continue

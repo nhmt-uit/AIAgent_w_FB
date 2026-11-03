@@ -77,18 +77,18 @@ def test_config_page_each_tab_renders(client):
         assert resp.status_code == 200
 
 
-def test_config_generic_save_button_hidden_on_content_tab_only(client):
+def test_config_generic_save_button_hidden_on_the_content_and_ai_tabs_only(client):
     """Owner-reported 2026-10-01: the "Kho nội dung" tab has its own
     dedicated htmx save button and no dataclass-backed fields of its own
     at all — the generic full-page "Lưu cấu hình" submit (which only ever
     saves _CONFIG_SECTIONS fields) did nothing useful there and just
     confused "which button saves what". Initial server render must hide
-    it only for tab=content; "ai" still needs it (its 2 AI on/off
-    switches ARE real DataSyncConfig fields saved by that button, only
-    the key/model card has its own separate htmx button). The client-side
+    it for tab=content and (2026-11-02) tab=ai: the two AI on/off switches
+    there now save the moment they are flipped, so the tab has ONE save
+    button (the key/model card's own). The client-side
     JS toggle for switching tabs WITHOUT a page reload isn't covered here
     — pytest doesn't execute browser JS — see initTabs()'s own comment."""
-    for tab, expect_hidden in (("behavior", False), ("sync", False), ("ai", False), ("content", True)):
+    for tab, expect_hidden in (("behavior", False), ("sync", False), ("ai", True), ("content", True)):       # (ai: its switches save the moment they are flipped)
         resp = client.get(f"/admin/config?tab={tab}")
         has_hidden_attr = 'id="config-generic-save-actions" hidden' in resp.text
         assert has_hidden_attr == expect_hidden, f"tab={tab}"
@@ -192,7 +192,7 @@ def test_config_save_blank_numeric_field_does_not_crash_or_zero_out(client):
     save_*_overrides() in this project), so this does NOT mean a blank
     field survives an unrelated LATER, separate submission — the real
     admin page always resubmits every field's current value together
-    (see config_form()'s render_rows(), value=current-or-default), which
+    (see config_form() / _config_rows_html(), value=current-or-default), which
     is what actually keeps this safe in practice. A test sending only
     one field per request (unlike the real page) is not representative
     of a second submission's effect on the first's fields."""
