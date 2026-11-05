@@ -43,7 +43,7 @@ def _make_test_app() -> FastAPI:
 
 
 @pytest.fixture
-def client(isolated_runtime_config, isolated_accounts_dir, monkeypatch):
+def client(isolated_runtime_config, isolated_accounts_dir, isolated_db, monkeypatch):      # (isolated_db: the list reads the action log)
     monkeypatch.delenv("ADMIN_USERNAME", raising=False)
     monkeypatch.delenv("ADMIN_PASSWORD", raising=False)
     return TestClient(_make_test_app(), follow_redirects=False)

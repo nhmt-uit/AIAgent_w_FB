@@ -440,6 +440,28 @@ def failure_message_counts(account_id: str | None = None, since: str | None = No
         conn.close()
 
 
+def group_activity(account_id: str) -> list[sqlite3.Row]:
+    """Per group URL this account posted to: how many posts succeeded, how many failed (as summary_stats() counts
+    failures) and when the last success was — for the "Nhóm đã tham gia" list. All time, `post_to_group` only."""
+    conn = _connect()
+    try:
+        cur = conn.execute(
+            f"""
+            SELECT target_url,
+                   SUM(CASE WHEN success = 1 THEN 1 ELSE 0 END) AS ok,
+                   SUM(CASE WHEN {_FAILED_CLAUSE} THEN 1 ELSE 0 END) AS failed,
+                   MAX(CASE WHEN success = 1 THEN created_at END) AS last_ok
+            FROM action_log
+            WHERE account_id = ? AND action = 'post_to_group' AND target_url IS NOT NULL
+            GROUP BY target_url
+            """,
+            (account_id,),
+        )
+        return cur.fetchall()
+    finally:
+        conn.close()
+
+
 def failed_rows_posted_later(rows) -> set[int]:
     """Which of these failed rows (action_log rows) were meanwhile posted successfully by something else — the same
     account, target and content (or the same side-B job/candidate) logged after the failure, see success_logged_after().

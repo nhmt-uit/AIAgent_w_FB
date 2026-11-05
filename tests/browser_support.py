@@ -2,7 +2,7 @@
 
 Import them into a test module with `from tests.browser_support import live_admin, browser, page  # noqa: F401` — the
 module then skips itself when Playwright / uvicorn / Chromium is missing. `live_admin` serves the admin app on a
-free local port with every store path (runtime config, schedule folders) in a throwaway directory and the accounts
+free local port with every store path (runtime config, action log, schedule folders) in a throwaway directory and the accounts
 and groups faked; `page` blocks every request that leaves 127.0.0.1 (the CDN scripts are not needed for what is
 checked, and offline they would hang for 30 s)."""
 from __future__ import annotations
@@ -18,7 +18,7 @@ sync_api = pytest.importorskip("playwright.sync_api")
 uvicorn = pytest.importorskip("uvicorn")
 
 import human_bot.admin as admin_module
-from human_bot import content_strategist, runtime_config, schedule_store
+from human_bot import content_strategist, db, runtime_config, schedule_store
 from human_bot.config import RateLimits
 from tests.test_admin_post import _make_test_app
 from tests.test_admin_post_ui import GROUPS, _FakeAccount
@@ -33,6 +33,8 @@ def live_admin(tmp_path_factory, request):
     mp.delenv("ADMIN_USERNAME", raising=False)
     mp.delenv("ADMIN_PASSWORD", raising=False)
     mp.setattr(runtime_config, "RUNTIME_CONFIG_PATH", tmp / "runtime_config.json")
+    mp.setattr(db, "DB_PATH", tmp / "human_bot.db")                                    # never the real action log
+    db.ensure_schema()
     for name in ("PENDING_DIR", "POSTED_DIR", "FAILED_DIR", "CANCELLED_DIR", "MISSED_DIR", "NEEDS_REVIEW_DIR", "REJECTED_REVIEW_DIR"):
         mp.setattr(schedule_store, name, tmp / name.lower())
     accounts = {

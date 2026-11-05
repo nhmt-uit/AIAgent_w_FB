@@ -998,10 +998,10 @@ _PAGE_STYLE = """
   .field-stack .field-label, .fg-label { @apply text-sm text-gray-800 font-medium flex-none min-w-0; }
   .field-stack .field-input { @apply w-full; }
 
-  input[type=text], input[type=url], input[type=number], input[type=password], input[type=datetime-local], textarea, select {
+  input[type=text], input[type=url], input[type=search], input[type=number], input[type=password], input[type=datetime-local], textarea, select {
     @apply w-full box-border px-2.5 py-2 text-sm border border-gray-200 rounded-lg bg-white text-gray-900 font-sans;
   }
-  input[type=text]:focus, input[type=url]:focus, input[type=number]:focus, input[type=password]:focus, input[type=datetime-local]:focus, textarea:focus, select:focus {
+  input[type=text]:focus, input[type=url]:focus, input[type=search]:focus, input[type=number]:focus, input[type=password]:focus, input[type=datetime-local]:focus, textarea:focus, select:focus {
     @apply outline-none border-indigo-600 ring-4 ring-indigo-50;
   }
   input[type=checkbox] { @apply w-[18px] h-[18px] accent-indigo-600 cursor-pointer; }
@@ -1145,6 +1145,31 @@ _PAGE_STYLE = """
     .sched-actions .row-menu-pop { left: 0; right: auto; }
     .sched-edit { padding-left: 16px; }
   }
+  /* Rate-limit modal (2026-11-02): grouped, delays as a pair, the age presets as small chips. */
+  .rl-tiers { @apply mb-3; }
+  .rl-tier-buttons { @apply flex flex-wrap gap-1.5 mt-1.5; }
+  .rl-actions { @apply justify-between items-center gap-2 mt-5 flex-wrap flex-row-reverse; }
+  .rl-actions-main { @apply flex gap-2 flex-row-reverse; }
+  #rate-limits-body .field-grid > .cfg-group-title:first-child { @apply mt-1; }
+  /* Password box with a show / hide button; a single column of labelled fields (login, MOD forms). */
+  .pw-field { @apply flex items-stretch gap-2; }
+  .pw-field input { @apply flex-1 min-w-0; }
+  .pw-toggle { @apply flex-none bg-white text-gray-600 border border-gray-200 px-3 text-base; }
+  .pw-toggle:hover { @apply bg-gray-50 text-gray-900; }
+  .pw-toggle[aria-pressed="true"] { @apply bg-indigo-50 text-indigo-700 border-indigo-200; }
+  .form-col { @apply flex flex-col gap-4; }
+  .modal-box .form-col + .form-actions { @apply mt-5; }
+  /* /admin/groups (2026-11-02): one row per group — the name, its URL, what it got so far. */
+  .grp-line { @apply grid items-center gap-x-3 gap-y-2 px-4 py-3; grid-template-columns: minmax(0, 1fr) auto; }
+  .grp-main { @apply min-w-0; }
+  .grp-url { @apply text-xs text-gray-400 break-all mt-0.5; }
+  .grp-stats { @apply text-xs text-gray-500 mt-0.5; }
+  .grp-flag { @apply text-[11px] font-normal text-gray-500 bg-gray-100 rounded-full px-2 py-0.5 cursor-help; }
+  .grp-search { @apply flex items-center gap-3 mb-3; }
+  .grp-search input { @apply max-w-sm; }
+  .sched-target.muted { @apply text-gray-400 font-normal; }
+  .sched-item[hidden] { @apply hidden; }
+  @media (max-width: 720px) { .grp-line { grid-template-columns: minmax(0, 1fr); } }
   /* /admin/config (2026-11-02): rows that differ from the default, min/max pairs, folded "advanced" groups, sticky save bar. */
   .field-help { @apply text-xs text-gray-500 mt-0.5 leading-relaxed; }
   .field-row.is-changed { box-shadow: inset 3px 0 0 #818cf8; margin-inline: -.625rem; padding-inline: .625rem; }      /* the stripe sits outside; the text stays aligned */
@@ -2041,6 +2066,53 @@ _PAGE_STYLE = """
   document.addEventListener("htmx:responseError", aiSwitchFailed);
   document.addEventListener("htmx:sendError", aiSwitchFailed);
 
+  // Rate-limit modal: "1800" seconds means little at a glance, so each min/max delay row says it in words ("≈ 30 phút – 37
+  // phút"), live as the numbers change (the same rule as admin.py's _duration_vi).
+  function duration(seconds) {
+    var s = Math.max(0, Math.floor(Number(seconds) || 0));
+    if (s < 60) return s + " giây";
+    var m = Math.floor(s / 60), rest = s % 60;
+    if (s < 3600) return m + " phút" + (rest ? " " + rest + " giây" : "");
+    var h = Math.floor(m / 60); m = m % 60;
+    return h + " giờ" + (m ? " " + m + " phút" : "");
+  }
+  function initDurationHint(row) {
+    if (row.dataset.durationInit) return;
+    row.dataset.durationInit = "1";
+    var inputs = row.querySelectorAll("input[type=number]");
+    var hint = row.querySelector("[data-duration-hint]");
+    if (inputs.length !== 2 || !hint) return;
+    function update() { hint.textContent = "≈ " + duration(inputs[0].value) + " – " + duration(inputs[1].value); }
+    row.addEventListener("input", update);
+  }
+
+  // A search box above a list of rows: hides the rows whose data-search text does not contain what was typed, ignoring
+  // case and Vietnamese tone marks ("viec lam" finds "Việc làm"; the server writes data-search folded the same way,
+  // admin.py's _fold_vi), and says how many are left. Runs once at load too: a browser may restore the box's text.
+  function foldVi(text) {
+    return text.toLowerCase().replace(/đ/g, "d").normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+  }
+  function initListFilter(input) {
+    if (input.dataset.filterInit) return;
+    input.dataset.filterInit = "1";
+    var scope = input.closest(".card") || document;
+    var rows = scope.querySelectorAll("[data-filter-row]");
+    var count = scope.querySelector("[data-list-filter-count]");
+    var empty = scope.querySelector("[data-list-filter-empty]");
+    function apply() {
+      var q = foldVi(input.value.trim()), shown = 0;
+      rows.forEach(function (row) {
+        var hit = !q || row.getAttribute("data-search").indexOf(q) !== -1;
+        row.hidden = !hit;
+        if (hit) shown++;
+      });
+      if (count) count.textContent = q ? shown + " / " + rows.length : "";
+      if (empty) empty.hidden = shown !== 0;
+    }
+    input.addEventListener("input", apply);
+    apply();
+  }
+
   // Plain tab switcher (/admin/post's four compose tabs, the config tabs, ...) —
   // added because the page got long enough that having every section
   // always visible at once was more scrolling than scanning. No
@@ -2200,7 +2272,7 @@ _PAGE_STYLE = """
       Object.keys(btn.dataset).forEach(function (key) {
         if (key === "applyTier" || key === "applyTierInit") return;
         var input = form.querySelector('[name="' + key + '"]');
-        if (input) input.value = btn.dataset[key];
+        if (input) { input.value = btn.dataset[key]; input.dispatchEvent(new Event("input", { bubbles: true })); }
       });
     });
   }
@@ -2232,6 +2304,8 @@ _PAGE_STYLE = """
     root.querySelectorAll("[data-salary-period]").forEach(initSalaryHint);
     root.querySelectorAll("[data-tabs]").forEach(initTabs);
     root.querySelectorAll("[data-config-form]").forEach(initConfigForm);
+    root.querySelectorAll("[data-list-filter]").forEach(initListFilter);
+    root.querySelectorAll("[data-duration-pair]").forEach(initDurationHint);
   }
 
   // Owner-reported 2026-09-15: the datetime picker (data-schedule-field,
@@ -2538,6 +2612,18 @@ def _safe_next_path(next_raw: str | None) -> str:
     return "/admin"
 
 
+def _password_input_html(name: str, *, label: str = "Mật khẩu", autocomplete: str = "current-password", extra: str = "") -> str:
+    """A password box with a "👁" button that shows / hides what was typed (login and the MOD password forms). `label` is its
+    accessible name; the button's own name says what pressing it will do and follows the state."""
+    return (
+        f'<div class="pw-field"><input type="password" name="{html.escape(name)}" aria-label="{html.escape(label)}" autocomplete="{autocomplete}" required{extra}>'
+        '<button type="button" class="pw-toggle" aria-label="Hiện mật khẩu" title="Hiện / ẩn mật khẩu" aria-pressed="false" '
+        "onclick=\"var i=this.previousElementSibling; i.type = (i.type==='password' ? 'text' : 'password'); "
+        "this.setAttribute('aria-pressed', String(i.type==='text')); "
+        "this.setAttribute('aria-label', i.type==='text' ? 'Ẩn mật khẩu' : 'Hiện mật khẩu');\">👁</button></div>"
+    )
+
+
 def _login_layout(body: str) -> str:
     """Standalone minimal page shell for /admin/login — deliberately NOT
     _layout() reused: _layout()'s whole <nav> is meaningless (worse,
@@ -2568,21 +2654,13 @@ def _login_page_html(next_path: str, show_error: bool) -> str:
     return f"""
 <div class="card">
   <h1 style="margin-top:0;">🔒 Đăng nhập</h1>
-  <p class="page-desc" style="margin-top:0;">human_bot admin</p>
+  <p class="page-desc" style="margin-top:0;">Trang quản trị human_bot</p>
   {error_html}
-  <form method="post" action="/admin/login">
+  <form method="post" action="/admin/login" class="form-col">
     <input type="hidden" name="next" value="{html.escape(next_path)}">
-    <div class="field-stack">
-      <div class="field-label">Tên đăng nhập</div>
-      <div class="field-input"><input type="text" name="username" required autofocus autocomplete="username"></div>
-    </div>
-    <div class="field-stack" style="margin-top:10px;">
-      <div class="field-label">Mật khẩu</div>
-      <div class="field-input"><input type="password" name="password" required autocomplete="current-password"></div>
-    </div>
-    <div class="form-actions" style="margin-top:18px;">
-      <button type="submit" style="width:100%;">Đăng nhập</button>
-    </div>
+    {_fg("Tên đăng nhập", '<input type="text" name="username" required autofocus autocomplete="username">')}
+    {_fg("Mật khẩu", _password_input_html("password"), tag="div")}
+    <button type="submit" style="width:100%;">Đăng nhập</button>
   </form>
 </div>"""
 
@@ -2634,11 +2712,9 @@ async def logout(request: Request):
 
 # --- /admin/mod-users (ADMIN-only) ------------------------------------------
 #
-# Mirrors /admin/accounts's table/modal/hx-confirm pattern exactly (see
-# _accounts_content_html/_account_modal_html/accounts_add/accounts_delete
-# above) — same htmx conventions, same reused .modal-backdrop/.modal-box/
-# .data-table CSS, same custom-confirm-modal JS (already global, no changes
-# needed) for the delete button's hx-confirm.
+# Mirrors /admin/accounts's row / modal / hx-confirm pattern (see _acct_row_html / _account_modal_html /
+# accounts_add / accounts_delete above) — same htmx conventions, the same "⋯" menu and .sched-list rows, the
+# same custom-confirm-modal JS (already global) for the delete item's hx-confirm.
 
 def _mod_users_content_html(saved: bool = False, error: str | None = None) -> str:
     users = get_mod_users()
@@ -2646,40 +2722,44 @@ def _mod_users_content_html(saved: bool = False, error: str | None = None) -> st
     err = f'<p class="error">⚠️ {html.escape(error)}</p>' if error else ""
 
     if not users:
-        rows_html = '<tr><td colspan="3" class="muted">Chưa có tài khoản MOD nào.</td></tr>'
+        list_html = '<div class="empty-state">Chưa có tài khoản MOD nào. Bấm “➕ Thêm tài khoản MOD” để tạo tài khoản cho người cùng quản lý.</div>'
     else:
         rows = []
         for u in users:
             uname = html.escape(u["username"])
+            when = _local_dt_html(u["created_at"]) if u["created_at"] else "?"
+            menu = _row_menu_html([
+                _menu_form(
+                    f"/admin/mod-users/{uname}/delete", {}, "🗑 Xoá tài khoản", "Họ sẽ bị đăng xuất ở thao tác kế tiếp",
+                    target="#mod-users-content", danger=True,
+                    confirm=f"Xoá tài khoản MOD '{uname}'? Phiên đăng nhập hiện tại của tài khoản này (nếu có) sẽ bị đăng xuất ngay ở lần thao tác kế tiếp của họ.",
+                ),
+            ])
             rows.append(f"""
-<tr>
-  <td>{uname}</td>
-  <td>{_local_dt_html(u["created_at"]) if u["created_at"] else "?"}</td>
-  <td class="col-actions">
-    <button type="button" class="btn-small"
-            hx-get="/admin/mod-users/{uname}/edit-password-modal" hx-target="#modal-root" hx-swap="innerHTML">🔑 Đổi mật khẩu</button>
-    <form method="post" action="/admin/mod-users/{uname}/delete" style="display:inline;"
-          hx-post="/admin/mod-users/{uname}/delete" hx-target="#mod-users-content" hx-swap="outerHTML"
-          hx-confirm="Xoá tài khoản MOD '{uname}'? Phiên đăng nhập hiện tại của tài khoản này (nếu có) sẽ bị đăng xuất ngay ở lần thao tác kế tiếp của họ.">
-      <button type="submit" class="btn-secondary btn-small">Xoá</button>
-    </form>
-  </td>
-</tr>""")
-        rows_html = "".join(rows)
-
-    add_btn = '<button type="button" hx-get="/admin/mod-users/add-modal" hx-target="#modal-root" hx-swap="innerHTML">➕ Thêm tài khoản MOD</button>'
+<div class="sched-item">
+  <div class="grp-line">
+    <div class="grp-main">
+      <div class="sched-title"><span class="sched-target">{uname}</span></div>
+      <div class="grp-stats">Tạo lúc {when}</div>
+    </div>
+    <div class="sched-actions">
+      <button type="button" class="btn-small btn-secondary"
+              hx-get="/admin/mod-users/{uname}/edit-password-modal" hx-target="#modal-root" hx-swap="innerHTML">🔑 Đổi mật khẩu</button>
+      {menu}
+    </div>
+  </div>
+</div>""")
+        list_html = f'<div class="sched-list">{"".join(rows)}</div>'
 
     return f"""
-<div class="card" id="mod-users-content">
+<div id="mod-users-content">
   {flash}{err}
-  <p class="page-desc" style="margin-top:0;">{len(users)} tài khoản MOD — có đủ quyền như ADMIN ở mọi trang, trừ trang này (chỉ ADMIN vào được).</p>
-  {add_btn}
-  <div class="table-scroll" style="margin-top:12px;">
-    <table class="data-table">
-      <thead><tr><th>Tên đăng nhập</th><th>Tạo lúc</th><th>Thao tác</th></tr></thead>
-      <tbody>{rows_html}</tbody>
-    </table>
+  <div class="account-filter">
+    <span class="badge">{len(users)} tài khoản MOD</span>
+    <button type="button" class="btn-small" style="margin-left:auto;"
+            hx-get="/admin/mod-users/add-modal" hx-target="#modal-root" hx-swap="innerHTML">➕ Thêm tài khoản MOD</button>
   </div>
+  {list_html}
 </div>"""
 
 
@@ -2694,17 +2774,10 @@ def _mod_user_add_modal_html(username: str = "", error: str | None = None) -> st
     </div>
     {err_html}
     <form method="post" action="/admin/mod-users/add" hx-post="/admin/mod-users/add" hx-target="#modal-root" hx-swap="innerHTML">
-      <div class="field-stack">
-        <div class="field-label">Tên đăng nhập</div>
-        <div class="field-input"><input type="text" name="username" value="{html.escape(username)}" required autofocus></div>
-      </div>
-      <div class="field-stack" style="margin-top:10px;">
-        <div class="field-label">Mật khẩu</div>
-        <div class="field-input"><input type="password" name="password" required minlength="6"></div>
-      </div>
-      <div class="field-stack" style="margin-top:10px;">
-        <div class="field-label">Nhập lại mật khẩu</div>
-        <div class="field-input"><input type="password" name="password_confirm" required minlength="6"></div>
+      <div class="form-col">
+        {_fg("Tên đăng nhập", f'<input type="text" name="username" value="{html.escape(username)}" required autofocus autocomplete="off">')}
+        {_fg("Mật khẩu", _password_input_html("password", autocomplete="new-password", extra=' minlength="6"'), tag="div", hint="Ít nhất 6 ký tự.")}
+        {_fg("Nhập lại mật khẩu", _password_input_html("password_confirm", label="Nhập lại mật khẩu", autocomplete="new-password", extra=' minlength="6"'), tag="div")}
       </div>
       <div class="form-actions">
         <button type="button" class="btn-secondary" style="margin-right:8px;" onclick="this.closest('.modal-backdrop').remove()">Huỷ</button>
@@ -2727,13 +2800,9 @@ def _mod_user_password_modal_html(username: str, error: str | None = None) -> st
     </div>
     {err_html}
     <form method="post" action="/admin/mod-users/{uname}/edit-password" hx-post="/admin/mod-users/{uname}/edit-password" hx-target="#modal-root" hx-swap="innerHTML">
-      <div class="field-stack">
-        <div class="field-label">Mật khẩu mới</div>
-        <div class="field-input"><input type="password" name="new_password" required minlength="6" autofocus></div>
-      </div>
-      <div class="field-stack" style="margin-top:10px;">
-        <div class="field-label">Nhập lại mật khẩu mới</div>
-        <div class="field-input"><input type="password" name="new_password_confirm" required minlength="6"></div>
+      <div class="form-col">
+        {_fg("Mật khẩu mới", _password_input_html("new_password", label="Mật khẩu mới", autocomplete="new-password", extra=' minlength="6" autofocus'), tag="div", hint="Ít nhất 6 ký tự.")}
+        {_fg("Nhập lại mật khẩu mới", _password_input_html("new_password_confirm", label="Nhập lại mật khẩu mới", autocomplete="new-password", extra=' minlength="6"'), tag="div")}
       </div>
       <div class="form-actions">
         <button type="button" class="btn-secondary" style="margin-right:8px;" onclick="this.closest('.modal-backdrop').remove()">Huỷ</button>
@@ -2751,6 +2820,7 @@ async def mod_users_page(request: Request, saved: bool = False, error: str | Non
         return content
     return _layout(f"""
 <h1>Quản lý tài khoản MOD</h1>
+<p class="page-desc">Tài khoản MOD có đủ quyền như ADMIN ở mọi trang, trừ trang này — chỉ ADMIN vào được trang quản lý tài khoản đăng nhập.</p>
 {content}
 """, active="mod_users", current_user=_build_current_user(request))
 
@@ -4217,6 +4287,22 @@ async def accounts_bootstrap_login_cancel(request: Request, _: None = Depends(_r
     return '<div id="bootstrap-login-status"><p class="page-desc">Đã đóng trình duyệt, chưa lưu phiên đăng nhập.</p></div>'
 
 
+def _duration_vi(seconds) -> str:
+    """1800 -> "30 phút", 45 -> "45 giây", 3900 -> "1 giờ 5 phút" (the page script has the same rule, for live typing)."""
+    s = int(seconds)
+    if s < 60:
+        return f"{s} giây"
+    minutes, rest = divmod(s, 60)
+    if s < 3600:
+        return f"{minutes} phút" + (f" {rest} giây" if rest else "")
+    hours, minutes = divmod(s // 60, 60)
+    return f"{hours} giờ" + (f" {minutes} phút" if minutes else "")
+
+
+def _duration_range_vi(low, high) -> str:
+    return f"≈ {_duration_vi(low)} – {_duration_vi(high)}"
+
+
 _RATE_LIMITS_LABELS: dict[str, str] = {
     "posts_per_day": "Số bài đăng tối đa / ngày",
     "comments_per_hour": "Số comment tối đa / giờ",
@@ -4240,15 +4326,37 @@ def _rate_limits_modal_body_html(account_id: str, limits: RateLimits, is_overrid
     time — swapping only this inner, id-tagged div instead means the
     backdrop/box never unmounts, so there's nothing left to jump."""
     err_html = f'<p class="error">⚠️ {html.escape(error)}</p>' if error else ""
-    rows = "".join(
-        f'''<div class="field-row">
-  <div class="field-label">{html.escape(label)}<div class="field-key">key: {field}</div></div>
-  <div class="field-input"><input type="number" step="1" min="0" name="{field}" value="{getattr(limits, field)}" required></div>
+
+    def box(field: str, aria: str = "") -> str:
+        aria_attr = f' aria-label="{html.escape(aria)}"' if aria else ""
+        return f'<input type="number" step="1" min="0" name="{field}" value="{getattr(limits, field)}" required{aria_attr}>'
+
+    def count_row(field: str) -> str:
+        return f'''<div class="field-row">
+  <div class="field-label" title="{field}">{html.escape(_RATE_LIMITS_LABELS[field])}</div>
+  <div class="field-input">{box(field)}</div>
 </div>'''
-        for field, label in _RATE_LIMITS_LABELS.items()
+
+    def delay_row(label: str, lo: str, hi: str) -> str:
+        tip = f"{_RATE_LIMITS_LABELS[lo]} · {_RATE_LIMITS_LABELS[hi]}"
+        return f'''<div class="field-row" data-duration-pair>
+  <div class="field-label" title="{html.escape(tip)}">{html.escape(label)}<div class="field-help" data-duration-hint>{_duration_range_vi(getattr(limits, lo), getattr(limits, hi))}</div></div>
+  <div class="field-input pair-input">{box(lo, f"{label}: tối thiểu (giây)")}<span class="pair-sep">đến</span>{box(hi, f"{label}: tối đa (giây)")}<span class="pair-unit">giây</span></div>
+</div>'''
+
+    delay_pairs = [("Giữa 2 bài đăng", "post_min_delay_seconds", "post_max_delay_seconds"),
+                   ("Giữa 2 comment", "comment_min_delay_seconds", "comment_max_delay_seconds")]
+    count_fields = ["posts_per_day", "comments_per_hour", "comments_per_day", "likes_per_hour", "max_groups_per_post"]
+    known = set(count_fields) | {f for _l, lo, hi in delay_pairs for f in (lo, hi)}
+    count_fields += [f for f in _RATE_LIMITS_LABELS if f not in known]       # a field added later still gets its box
+    rows = (
+        '<div class="cfg-group-title">Số lượng tối đa</div>'
+        + "".join(count_row(f) for f in count_fields)
+        + '<div class="cfg-group-title">Khoảng chờ giữa 2 hành động</div>'
+        + "".join(delay_row(*pair) for pair in delay_pairs)
     )
     reset_note = (
-        '<p class="page-desc">Tài khoản này đang dùng giá trị tuỳ chỉnh riêng — bấm "Khôi phục mặc định" để quay lại giá trị chuẩn trong code.</p>'
+        '<p class="page-desc">Tài khoản này đang dùng giá trị tuỳ chỉnh riêng — bấm "Khôi phục mặc định" để quay lại giá trị chuẩn.</p>'
         if is_override
         else '<p class="page-desc">Tài khoản này đang dùng giá trị mặc định chung (chưa tuỳ chỉnh riêng).</p>'
     )
@@ -4278,7 +4386,7 @@ def _rate_limits_modal_body_html(account_id: str, limits: RateLimits, is_overrid
     # numbers alone can't tell a tier-button click apart from someone
     # typing coincidentally-matching values by hand.
     tier_buttons = "".join(
-        f'''<button type="button" class="btn-small btn-secondary" style="margin:2px;" data-apply-tier
+        f'''<button type="button" class="btn-small btn-secondary" data-apply-tier
         data-tier_key="{tier_key}"
         {" ".join(f'data-{field}="{getattr(rl, field)}"' for field in _RATE_LIMITS_LABELS if field != "max_groups_per_post")}
         >{html.escape(label)} ({rl.posts_per_day} bài/ngày)</button>'''
@@ -4287,8 +4395,7 @@ def _rate_limits_modal_body_html(account_id: str, limits: RateLimits, is_overrid
     return f"""<div id="rate-limits-body">
     {reset_note}
     {err_html}
-    <p class="page-desc">Áp nhanh theo tuổi tài khoản Facebook:</p>
-    <div>{tier_buttons}</div>
+    <div class="rl-tiers"><span class="fg-label">Áp nhanh theo tuổi tài khoản Facebook</span><div class="rl-tier-buttons">{tier_buttons}</div></div>
     <form method="post" action="/admin/accounts/rate-limits" hx-post="/admin/accounts/rate-limits" hx-target="#modal-root" hx-swap="innerHTML">
       <input type="hidden" name="account_id" value="{html.escape(account_id)}">
       <!-- Filled by initApplyTierButton() (this module's page script) when
@@ -4302,10 +4409,15 @@ def _rate_limits_modal_body_html(account_id: str, limits: RateLimits, is_overrid
            separate from these raw numbers in the first place). -->
       <input type="hidden" name="tier_key" value="">
       <div class="field-grid">{rows}</div>
-      <div class="form-actions">
-        <button type="submit" name="reset" value="1" class="btn-secondary" style="margin-right:8px;">Khôi phục mặc định</button>
-        <button type="button" class="btn-secondary" style="margin-right:8px;" onclick="this.closest('.modal-backdrop').remove()">Huỷ</button>
-        <button type="submit">Lưu</button>
+      <!-- DOM order = Lưu first: pressing Enter in a number box submits with the FIRST submit button, and that must be
+           Lưu, never "Khôi phục mặc định" (which throws the typed values away). CSS row-reverse puts them back in the
+           order people expect: reset on the left, Huỷ then Lưu on the right. -->
+      <div class="form-actions rl-actions">
+        <span class="rl-actions-main">
+          <button type="submit">Lưu</button>
+          <button type="button" class="btn-secondary" onclick="this.closest('.modal-backdrop').remove()">Huỷ</button>
+        </span>
+        <button type="submit" name="reset" value="1" class="btn-secondary">Khôi phục mặc định</button>
       </div>
     </form>
 </div>"""
@@ -7702,13 +7814,65 @@ def _groups_redirect(account_id: str, **params) -> RedirectResponse:
     return RedirectResponse(url=f"/admin/groups?{urlencode(query)}", status_code=303)
 
 
+def _ago_vi(iso: str | None, now: datetime | None = None) -> str:
+    """"vừa xong" / "5 phút trước" / "3 giờ trước" for the last 24 hours; after that by CALENDAR day in Japan (the
+    business timezone, like the Telegram bot): "hôm qua" / "6 ngày trước". A timestamp without an offset is UTC."""
+    if not iso:
+        return ""
+    try:
+        then = datetime.fromisoformat(iso.replace("Z", "+00:00"))
+    except ValueError:
+        return ""
+    if then.tzinfo is None:
+        then = then.replace(tzinfo=timezone.utc)
+    now = now or datetime.now(timezone.utc)
+    seconds = (now - then).total_seconds()
+    if seconds < 60:
+        return "vừa xong"
+    if seconds < 3600:
+        return f"{int(seconds // 60)} phút trước"
+    if seconds < 86400:
+        return f"{int(seconds // 3600)} giờ trước"
+    days = ((now + timedelta(hours=9)).date() - (then + timedelta(hours=9)).date()).days
+    return "hôm qua" if days <= 1 else f"{days} ngày trước"
+
+
+def _group_key(url: str) -> str:
+    """What identifies a group in a URL: its numeric id or vanity slug (a slug is case-insensitive on Facebook), else the URL."""
+    from human_bot.actions import _group_id_from_url
+    return (_group_id_from_url(url) or url).casefold()
+
+
+def _fold_vi(text: str) -> str:
+    """Lower-case with the Vietnamese tone marks and the đ stripped: "Việc làm" -> "viec lam" (what the search box matches on,
+    so "viec lam" finds it; the page script folds what is typed the same way)."""
+    import unicodedata
+    decomposed = unicodedata.normalize("NFD", text.casefold().replace("đ", "d"))
+    return "".join(c for c in decomposed if not unicodedata.combining(c))
+
+
+def _group_stats_text(stats: dict | None, now: datetime | None = None) -> str:
+    """"Đã đăng 7 bài · gần nhất 3 ngày trước · 2 lần lỗi" for one group, or "chưa đăng lần nào"."""
+    if not stats or not (stats["ok"] or stats["failed"]):
+        return "chưa đăng lần nào"
+    parts = [f"Đã đăng {stats['ok']} bài" if stats["ok"] else "Chưa đăng được bài nào"]
+    ago = _ago_vi(stats["last_ok"], now) if stats["last_ok"] else ""
+    if ago:                                                                      # (unreadable timestamp -> no dangling "gần nhất")
+        parts.append(f"gần nhất {ago}")
+    if stats["failed"]:
+        parts.append(f"{stats['failed']} lần lỗi")
+    return " · ".join(parts)
+
+
 def _groups_content_html(
     account_id: str | None, saved: bool = False, error: str | None = None, oob: bool = False
 ) -> str:
+    from human_bot.actions import _group_id_from_url
+
     accounts = get_all_accounts()
     account_ids = list(accounts)
     if not account_ids:
-        return '<div id="groups-content"><div class="empty-state">Chưa có tài khoản nào — đăng ký ở /admin/accounts trước.</div></div>'
+        return '<div id="groups-content"><div class="empty-state">Chưa có tài khoản nào — đăng ký ở <a href="/admin/accounts">Tài khoản</a> trước.</div></div>'
     if account_id not in accounts:
         account_id = account_ids[0]
     account = accounts[account_id]
@@ -7734,36 +7898,70 @@ def _groups_content_html(
 </div>"""
 
     if groups:
+        # What each group got so far, matched by the group's id/slug (the log may hold either URL form of it).
+        activity: dict[str, dict] = {}
+        try:
+            activity_rows = db.group_activity(account_id)
+        except Exception:  # noqa: BLE001 — a statistic is never worth failing the page (a locked / unreadable log)
+            logger.exception("groups: could not read the action log")
+            activity_rows = []
+        for r in activity_rows:
+            key = _group_key(r["target_url"])
+            entry = activity.setdefault(key, {"ok": 0, "failed": 0, "last_ok": None})
+            entry["ok"] += r["ok"] or 0
+            entry["failed"] += r["failed"] or 0
+            if r["last_ok"] and (entry["last_ok"] is None or r["last_ok"] > entry["last_ok"]):
+                entry["last_ok"] = r["last_ok"]
+        now = datetime.now(timezone.utc)
         rows = []
         for g in groups:
-            name_display = html.escape(g.name) if g.name else '<span class="muted">(chưa đặt tên)</span>'
-            url_display = html.escape(g.url)
+            esc_id, esc_account = html.escape(g.id), html.escape(account_id)
+            url_e = html.escape(g.url)
+            group_key = _group_id_from_url(g.url)
+            name_html = html.escape(g.name) if g.name else "(chưa đặt tên)"
+            muted = "" if g.name else " muted"
+            vanity = (
+                ' <span class="grp-flag" title="URL dạng tên tuỳ chỉnh. Dạng ID số (…/groups/1234567) bền hơn: tên có thể bị admin nhóm đổi.">tên tuỳ chỉnh</span>'
+                if group_key and not group_key.isdigit() else ""
+            )
+            stats = _group_stats_text(activity.get(_group_key(g.url)), now)
+            menu = _row_menu_html([
+                _copy_url_button(g.url),
+                '<hr class="row-menu-sep">',
+                _menu_form(
+                    "/admin/groups/delete", {"account_id": account_id, "group_id": g.id}, "🗑 Xoá khỏi danh sách",
+                    "Bot sẽ không chọn nhóm này nữa", target="#groups-content", danger=True,
+                    confirm=f"Xoá nhóm {html.escape(g.name or g.url)} khỏi danh sách?",
+                ),
+            ])
+            search = html.escape(_fold_vi(f"{g.name} {g.url}"), quote=True)
             rows.append(f"""
-<tr>
-  <td>{name_display}</td>
-  <td class="row-url"><a href="{url_display}" target="_blank" rel="noopener">{url_display}</a></td>
-  <td class="col-actions">
-    <button type="button" class="btn-small btn-secondary"
-            hx-get="/admin/groups/edit-modal?account_id={html.escape(account_id)}&group_id={html.escape(g.id)}"
-            hx-target="#modal-root" hx-swap="innerHTML">Sửa</button>
-    <form method="post" action="/admin/groups/delete"
-          hx-post="/admin/groups/delete" hx-target="#groups-content" hx-swap="outerHTML"
-          hx-confirm="Xoá nhóm này khỏi danh sách?">
-      <input type="hidden" name="account_id" value="{html.escape(account_id)}">
-      <input type="hidden" name="group_id" value="{html.escape(g.id)}">
-      <button type="submit" class="btn-small btn-secondary">Xoá</button>
-    </form>
-  </td>
-</tr>""")
+<div class="sched-item" data-filter-row data-search="{search}">
+  <div class="grp-line">
+    <div class="grp-main">
+      <div class="sched-title"><a class="sched-target{muted}" href="{url_e}" target="_blank" rel="noopener" title="Mở nhóm trên Facebook">{name_html}</a>{vanity}</div>
+      <div class="grp-url">{url_e}</div>
+      <div class="grp-stats">{html.escape(stats)}</div>
+    </div>
+    <div class="sched-actions">
+      <button type="button" class="btn-small btn-secondary"
+              hx-get="/admin/groups/edit-modal?account_id={esc_account}&group_id={esc_id}"
+              hx-target="#modal-root" hx-swap="innerHTML">✎ Sửa</button>
+      {menu}
+    </div>
+  </div>
+</div>""")
+        search_html = (
+            '<div class="grp-search"><input type="search" placeholder="Tìm nhóm theo tên hoặc URL…" data-list-filter aria-label="Tìm nhóm">'
+            '<span class="muted" data-list-filter-count></span></div>'
+            if len(groups) > 8 else ""
+        )
         table_html = f"""
 <div class="card">
-  <h2>👥 Danh sách nhóm — {html.escape(account.display_name)}</h2>
-  <div class="table-scroll">
-  <table class="data-table">
-    <thead><tr><th>Tên nhóm</th><th>URL nhóm</th><th></th></tr></thead>
-    <tbody>{''.join(rows)}</tbody>
-  </table>
-  </div>
+  <h2>👥 Nhóm của {html.escape(account.display_name)}</h2>
+  {search_html}
+  <div class="sched-list">{''.join(rows)}</div>
+  <div class="empty-state" data-list-filter-empty hidden>Không có nhóm nào khớp.</div>
 </div>"""
     else:
         table_html = '<div class="empty-state">Tài khoản này chưa có nhóm nào. Bấm "➕ Thêm nhóm mới" ở trên để thêm nhóm đầu tiên.</div>'
